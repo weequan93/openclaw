@@ -62,23 +62,23 @@
 
 ### Implementation for User Story 5
 
-- [ ] T015 [P] [US5] Create Tenant model in src/models/tenant.ts
-- [ ] T016 [P] [US5] Create User model with tenant_id in src/models/user.ts
-- [ ] T017 [P] [US5] Create Agent model with tenant_id in src/models/agent.ts
-- [ ] T018 [P] [US5] Create Session model with tenant_id in src/models/session.ts
-- [ ] T019 [P] [US5] Create AuditLog model in src/models/audit-log.ts
-- [ ] T020 [US5] Create PostgreSQL migration 001_create_tenants_table in src/infra/migrations/001_create_tenants.sql
-- [ ] T021 [US5] Create PostgreSQL migration 002_create_users_table in src/infra/migrations/002_create_users.sql
-- [ ] T022 [US5] Create PostgreSQL migration 003_create_agents_table in src/infra/migrations/003_create_agents.sql
-- [ ] T023 [US5] Create PostgreSQL migration 004_create_sessions_table in src/infra/migrations/004_create_sessions.sql
-- [ ] T024 [US5] Create PostgreSQL migration 005_create_audit_logs_table in src/infra/migrations/005_create_audit_logs.sql
-- [ ] T025 [US5] Implement Row-Level Security policies in src/infra/migrations/006_enable_rls.sql
-- [ ] T026 [US5] Implement TenantService in src/services/tenant-service.ts
-- [ ] T027 [US5] Implement UserService with RBAC in src/services/user-service.ts
-- [ ] T028 [US5] Implement AgentService with tenant isolation in src/services/agent-service.ts
-- [ ] T029 [US5] Implement SessionService with PostgreSQL backend in src/sessions/postgres-session-manager.ts
-- [ ] T030 [US5] Implement AuditLogService in src/services/audit-log-service.ts
-- [ ] T031 [US5] Implement ResourceQuotaService in src/services/resource-quota-service.ts
+- [x] T015 [P] [US5] Create Tenant model in src/models/tenant.ts
+- [x] T016 [P] [US5] Create User model with tenant_id in src/models/user.ts
+- [x] T017 [P] [US5] Create Agent model with tenant_id in src/models/agent.ts
+- [x] T018 [P] [US5] Create Session model with tenant_id in src/models/session.ts
+- [x] T019 [P] [US5] Create AuditLog model in src/models/audit-log.ts
+- [x] T020 [US5] Create PostgreSQL migration 001_create_tenants_table in src/infra/migrations/001_create_tenants.sql
+- [x] T021 [US5] Create PostgreSQL migration 002_create_users_table in src/infra/migrations/002_create_users.sql
+- [x] T022 [US5] Create PostgreSQL migration 003_create_agents_table in src/infra/migrations/003_create_agents.sql
+- [x] T023 [US5] Create PostgreSQL migration 004_create_sessions_table in src/infra/migrations/004_create_sessions.sql
+- [x] T024 [US5] Create PostgreSQL migration 005_create_audit_logs_table in src/infra/migrations/005_create_audit_logs.sql
+- [x] T025 [US5] Implement Row-Level Security policies in src/infra/migrations/006_enable_rls.sql
+- [x] T026 [US5] Implement TenantService in src/services/tenant-service.ts
+- [x] T027 [US5] Implement UserService with RBAC in src/services/user-service.ts
+- [x] T028 [US5] Implement AgentService with tenant isolation in src/services/agent-service.ts
+- [x] T029 [US5] Implement SessionService with PostgreSQL backend in src/sessions/postgres-session-manager.ts
+- [x] T030 [US5] Implement AuditLogService in src/services/audit-log-service.ts
+- [x] T031 [US5] Implement ResourceQuotaService in src/services/resource-quota-service.ts
 - [ ] T032 [US5] Add tenant context to Gateway routing in src/gateway/server.ts
 - [ ] T033 [US5] Implement tenant admin API endpoints in src/api/tenant-admin.ts
 - [ ] T034 [US5] Implement billing integration hooks in src/services/billing-service.ts
