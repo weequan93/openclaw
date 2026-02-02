@@ -26,11 +26,11 @@
 
 **Purpose**: Project initialization and basic structure for enterprise features
 
-- [ ] T001 Review existing OpenClaw architecture in docs/architecture/OVERVIEW.md
-- [ ] T002 [P] Create enterprise feature branch from main
-- [ ] T003 [P] Update package.json with PostgreSQL dependencies (pg, @types/pg)
-- [ ] T004 [P] Update package.json with observability dependencies (OpenTelemetry, Jaeger client)
-- [ ] T005 [P] Update package.json with SSO dependencies (passport, passport-saml)
+- [x] T001 Review existing OpenClaw architecture in docs/architecture/OVERVIEW.md
+- [x] T002 [P] Create enterprise feature branch from main (Using dev branch + feature flags)
+- [x] T003 [P] Update package.json with PostgreSQL dependencies (pg, @types/pg)
+- [x] T004 [P] Update package.json with observability dependencies (OpenTelemetry, Jaeger client)
+- [x] T005 [P] Update package.json with SSO dependencies (passport, passport-saml)
 
 ---
 
@@ -40,15 +40,15 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T006 Create PostgreSQL schema design document in docs/architecture/database-schema.md
-- [ ] T007 [P] Design Row-Level Security (RLS) policies in docs/architecture/rls-policies.md
-- [ ] T008 [P] Design RBAC permission matrix in docs/architecture/rbac-matrix.md
-- [ ] T009 Create database migration framework in src/infra/migrations/
-- [ ] T010 [P] Implement database connection pool in src/infra/database/pool.ts
-- [ ] T011 [P] Implement tenant context middleware in src/infra/database/tenant-context.ts
-- [ ] T012 Create OpenTelemetry configuration in src/infra/observability/telemetry.ts
-- [ ] T013 [P] Implement distributed tracing spans in src/infra/observability/tracing.ts
-- [ ] T014 [P] Implement Prometheus metrics exporter in src/infra/observability/metrics.ts
+- [x] T006 Create PostgreSQL schema design document in docs/architecture/database-schema.md
+- [x] T007 [P] Design Row-Level Security (RLS) policies in docs/architecture/rls-policies.md
+- [x] T008 [P] Design RBAC permission matrix in docs/architecture/rbac-matrix.md
+- [x] T009 Create database migration framework in src/infra/migrations/
+- [x] T010 [P] Implement database connection pool in src/infra/database/pool.ts
+- [x] T011 [P] Implement tenant context middleware in src/infra/database/tenant-context.ts
+- [x] T012 Create OpenTelemetry configuration in src/infra/observability/telemetry.ts
+- [x] T013 [P] Implement distributed tracing spans in src/infra/observability/tracing.ts
+- [x] T014 [P] Implement Prometheus metrics exporter in src/infra/observability/metrics.ts
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
