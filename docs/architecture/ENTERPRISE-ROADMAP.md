@@ -53,17 +53,6 @@ This roadmap provides **production-ready designs** for:
 - **Phase 4** (2 months): Security hardening (SOC 2 prep)
 - **Phase 5** (2 months): Beta testing + production launch
 
-### ROI & Business Case
-
-**Development Cost**: ~$1.2M (salaries + infrastructure + audits)
-
-**Revenue Potential**:
-- **Enterprise SaaS**: $5K-$50K/month per tenant (50 tenants = $3M-$30M ARR)
-- **Self-Hosted Licenses**: $25K-$100K/year per customer (100 customers = $2.5M-$10M ARR)
-- **Professional Services**: $200-$300/hour (consulting, training, custom integrations)
-
-**Break-Even**: 6-9 months after launch (assuming 20 enterprise customers)
-
 ### Security & Compliance
 
 **Achievable with this roadmap**:
@@ -94,9 +83,8 @@ This roadmap provides **production-ready designs** for:
 - 24/7 vendor support
 
 **For OpenClaw**:
-- Unlock enterprise market ($10M+ ARR potential)
+- Unlock enterprise market potential
 - Establish vendor moat (complex to replicate)
-- Build professional services revenue stream
 - Create ecosystem (skill marketplace, integrations)
 
 ---

@@ -776,7 +776,6 @@ OpenClaw is an **excellent personal/team productivity tool** with **comprehensiv
 **NEW: Minimum Viable Enterprise Product (MVEP)**:
 - Timeline: **14 months** full-time dedicated team (designs complete, implementation required)
 - Team Size: 8 engineers (4 frontend + 3 backend + 1 DevOps/SRE)
-- Cost: ~$1.2M (salaries + infrastructure + audits)
 - **Key Advantage**: Clear blueprints eliminate design risk
 
 **Phased Approach** (Updated):
@@ -787,14 +786,12 @@ OpenClaw is an **excellent personal/team productivity tool** with **comprehensiv
 - Audit logging
 - Multi-Tenant Admin Portal
 - PostgreSQL migration
-- Cost: ~$400K
 
 **Phase 2: End User Experience (3 months)**
 - End User Web Interface
 - Developer Console
 - WebSocket infrastructure
 - Authentication/SSO
-- Cost: ~$300K
 
 **Phase 3: Observability & Self-Hosted (3 months)**
 - Observability Dashboard
@@ -802,7 +799,6 @@ OpenClaw is an **excellent personal/team productivity tool** with **comprehensiv
 - License management
 - Remote support access
 - OpenTelemetry integration
-- Cost: ~$250K
 
 **Phase 4: Security Hardening (2 months)**
 - Encryption at rest
@@ -810,7 +806,6 @@ OpenClaw is an **excellent personal/team productivity tool** with **comprehensiv
 - Penetration testing
 - Security documentation
 - SOC 2 prep
-- Cost: ~$150K + $50K audit fees
 
 **Phase 5: Beta & Launch (2 months)**
 - Beta customer testing
@@ -818,9 +813,6 @@ OpenClaw is an **excellent personal/team productivity tool** with **comprehensiv
 - Load testing
 - Documentation finalization
 - Professional services framework
-- Cost: ~$100K
-
-**Total**: ~$1.2M over 14 months
 
 ### 13.9 Alternative: Enterprise Edition Strategy
 
@@ -852,7 +844,7 @@ Instead of making core OpenClaw enterprise-ready, consider:
 ### 13.10 Competitive Enterprise Landscape
 
 **Direct Competitors:**
-- **Dust.tt** - SOC 2, enterprise-ready, $50K+ contracts
+- **Dust.tt** - SOC 2, enterprise-ready
 - **LangSmith** - LangChain's enterprise offering, SOC 2
 - **Fixie.ai** - Enterprise conversational AI, SOC 2
 - **AutoGPT Cloud** - Moving toward enterprise
@@ -863,7 +855,6 @@ Instead of making core OpenClaw enterprise-ready, consider:
 - Enterprise sales team
 - Dedicated support
 - Custom deployment options
-- Higher pricing ($$$)
 
 **OpenClaw Advantages:**
 - **Open source** (trust, customization)
@@ -902,15 +893,14 @@ Instead of making core OpenClaw enterprise-ready, consider:
 **Long Term (15-24 months): Market Leadership**
 1. Additional compliance (HIPAA, ISO 27001)
 2. Multi-region deployments
-3. Enterprise sales team (5-10 reps)
+3. Enterprise sales team
 4. Skill marketplace launch
-5. **Goal**: $10M+ ARR, market leader in enterprise AI agents
+5. **Goal**: Market leader in enterprise AI agents
 
 **⚡ Key Success Factors**
 
 **Must Have Before ANY Implementation**:
-- ✅ **Design Partners Secured** - 2-3 enterprises committed to pilot (ideally paying)
-- ✅ **Funding Secured** - $1.2M+ for 14-month development cycle
+- ✅ **Design Partners Secured** - 2-3 enterprises committed to pilot
 - ✅ **Team Hired** - 8 engineers (don't start without full team)
 - ✅ **Tech Stack Finalized** - No mid-implementation pivots
 - ✅ **Legal Framework Ready** - MSA, DPA, SLA templates reviewed
@@ -924,32 +914,10 @@ Instead of making core OpenClaw enterprise-ready, consider:
 
 **Risk Mitigation**:
 - 🚨 **Biggest Risk**: Building without customers (solution: design partners)
-- 🚨 **Second Risk**: Team turnover mid-project (solution: competitive comp, equity)
+- 🚨 **Second Risk**: Team turnover mid-project (solution: competitive retention strategies)
 - 🚨 **Third Risk**: Scope creep (solution: strict phasing, no new features until GA)
 
-**Alternative: Incremental Approach** (if funding constrained)
-1. Start with **Admin Portal only** (12 weeks, 2 engineers, ~$100K)
-2. Sell to mid-market companies who don't need web chat
-3. Use revenue to fund remaining development
-4. **Trade-off**: Slower growth, but self-funded
-
-**📊 Expected Outcomes**
-
-**12 Months Post-Launch**:
-- 50 enterprise SaaS tenants @ $10K/month avg = $6M ARR
-- 20 self-hosted customers @ $50K/year = $1M ARR
-- **Total ARR**: $7M
-- **Team Size**: 25 (engineering, sales, support, ops)
-- **Gross Margin**: 75-80% (typical SaaS)
-
-**24 Months Post-Launch**:
-- 150 enterprise SaaS tenants = $18M ARR
-- 50 self-hosted customers = $2.5M ARR
-- Professional services = $500K ARR
-- **Total ARR**: $21M ARR
-- **Valuation**: $100M-$150M (5-7x ARR for enterprise SaaS)
-
-**Bottom Line**: Enterprise roadmap is **complete and actionable**. Next step is **validation + funding**, then **execute**.
+**Bottom Line**: Enterprise roadmap is **complete and actionable**. Next step is **validation**, then **execute**.
 
 ### 13.12 Critical Success Factors
 
