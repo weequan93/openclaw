@@ -1,0 +1,168 @@
+{
+    "dashboard": {
+        "title": "OpenClaw Session & Messaging Metrics",
+        "tags": [
+            "openclaw",
+            "sessions",
+            "messages"
+        ],
+        "timezone": "browser",
+        "schemaVersion": 16,
+        "version": 1,
+        "refresh": "10s",
+        "panels": [
+            {
+                "id": 1,
+                "title": "Active Sessions",
+                "type": "stat",
+                "gridPos": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 6,
+                    "h": 4
+                },
+                "targets": [
+                    {
+                        "expr": "sessions_active",
+                        "refId": "A"
+                    }
+                ],
+                "options": {
+                    "graphMode": "area",
+                    "colorMode": "value"
+                }
+            },
+            {
+                "id": 2,
+                "title": "Session Creation Rate",
+                "type": "graph",
+                "gridPos": {
+                    "x": 6,
+                    "y": 0,
+                    "w": 9,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(sessions_total[5m])",
+                        "legendFormat": "{{tenant_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "ops",
+                        "label": "Sessions/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 3,
+                "title": "Messages per Minute",
+                "type": "graph",
+                "gridPos": {
+                    "x": 15,
+                    "y": 0,
+                    "w": 9,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(session_messages_total[1m]) * 60",
+                        "legendFormat": "{{role}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Messages/min"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 4,
+                "title": "User vs Assistant Messages",
+                "type": "piechart",
+                "gridPos": {
+                    "x": 0,
+                    "y": 8,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (role) (rate(session_messages_total[5m]))",
+                        "legendFormat": "{{role}}",
+                        "refId": "A"
+                    }
+                ]
+            },
+            {
+                "id": 5,
+                "title": "Average Session Duration",
+                "type": "graph",
+                "gridPos": {
+                    "x": 8,
+                    "y": 8,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "avg(time() - session_created_timestamp_seconds)",
+                        "legendFormat": "Avg Duration",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "s",
+                        "label": "Duration"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 6,
+                "title": "Message Processing Latency",
+                "type": "graph",
+                "gridPos": {
+                    "x": 16,
+                    "y": 8,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "histogram_quantile(0.95, rate(message_processing_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P95",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.50, rate(message_processing_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P50",
+                        "refId": "B"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "ms",
+                        "label": "Latency"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            }
+        ]
+    }
+}

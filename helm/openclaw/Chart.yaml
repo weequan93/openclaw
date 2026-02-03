@@ -1,0 +1,27 @@
+apiVersion: v2
+name: openclaw
+description: OpenClaw - AI-powered automation platform with multi-tenant SaaS
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - openclaw
+  - ai
+  - automation
+  - multi-tenant
+  - saas
+home: https://github.com/openclaw/openclaw
+sources:
+  - https://github.com/openclaw/openclaw
+maintainers:
+  - name: OpenClaw Team
+    email: team@openclaw.com
+dependencies:
+  - name: postgresql
+    version: "12.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled
+  - name: redis
+    version: "17.x.x"
+    repository: https://charts.bitnami.com/bitnami
+    condition: redis.enabled

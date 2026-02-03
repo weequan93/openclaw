@@ -1,0 +1,208 @@
+/**
+ * SAML 2.0 Authentication Provider
+ * Supports enterprise SSO with Okta, Azure AD, OneLogin, etc.
+ */
+
+import type { Request, Response } from 'express';
+
+export interface SAMLConfig {
+    entryPoint: string;
+    issuer: string;
+    callbackUrl: string;
+    cert: string;
+    privateKey?: string;
+    identifierFormat?: string;
+}
+
+export interface SAMLAttributes {
+    email: string;
+    firstName?: string;
+    lastName?: string;
+    displayName?: string;
+    groups?: string[];
+    [key: string]: any;
+}
+
+export interface SAMLUser {
+    id: string;
+    email: string;
+    name: string;
+    role: string;
+    attributes: SAMLAttributes;
+}
+
+export class SAMLAuthProvider {
+    private config: SAMLConfig;
+
+    constructor(config: SAMLConfig) {
+        this.config = config;
+    }
+
+    /**
+     * Generate SAML authentication request
+     */
+    async generateAuthRequest(relayState?: string): Promise<string> {
+        // In production, use passport-saml or saml2-js
+        const request = {
+            id: this.generateId(),
+            issueInstant: new Date().toISOString(),
+            destination: this.config.entryPoint,
+            issuer: this.config.issuer,
+            nameIdFormat: this.config.identifierFormat || 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress',
+            assertionConsumerServiceURL: this.config.callbackUrl,
+            relayState,
+        };
+
+        // TODO: Implement actual SAML request generation
+        // This is a placeholder - use passport-saml in production
+        return Buffer.from(JSON.stringify(request)).toString('base64');
+    }
+
+    /**
+     * Validate SAML response
+     */
+    async validateResponse(samlResponse: string): Promise<SAMLUser> {
+        // In production, use passport-saml to validate signature and assertions
+        try {
+            const decoded = Buffer.from(samlResponse, 'base64').toString('utf-8');
+            const response = JSON.parse(decoded);
+
+            // TODO: Implement actual SAML response validation
+            // - Verify signature
+            // - Check timestamps
+            // - Validate issuer
+            // - Extract assertions
+
+            const attributes: SAMLAttributes = {
+                email: response.email || '',
+                firstName: response.firstName,
+                lastName: response.lastName,
+                displayName: response.displayName,
+                groups: response.groups || [],
+            };
+
+            return this.mapAttributes(attributes);
+        } catch (error) {
+            throw new Error(`SAML validation failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+    }
+
+    /**
+     * Get SAML metadata XML
+     */
+    async getMetadata(): Promise<string> {
+        const metadata = `<?xml version="1.0"?>
+<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata"
+                  entityID="${this.config.issuer}">
+  <SPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol">
+    <AssertionConsumerService
+      Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST"
+      Location="${this.config.callbackUrl}"
+      index="0" />
+  </SPSSODescriptor>
+</EntityDescriptor>`;
+
+        return metadata;
+    }
+
+    /**
+     * Map SAML attributes to user object
+     */
+    mapAttributes(attributes: SAMLAttributes): SAMLUser {
+        // Map SAML groups to OpenClaw roles
+        const role = this.mapGroupsToRole(attributes.groups || []);
+
+        return {
+            id: attributes.email, // Use email as ID
+            email: attributes.email,
+            name: attributes.displayName || `${attributes.firstName || ''} ${attributes.lastName || ''}`.trim(),
+            role,
+            attributes,
+        };
+    }
+
+    /**
+     * Map SAML groups to OpenClaw roles
+     */
+    private mapGroupsToRole(groups: string[]): string {
+        // Priority: owner > admin > developer > operator > viewer
+        if (groups.includes('openclaw-owners')) return 'owner';
+        if (groups.includes('openclaw-admins')) return 'admin';
+        if (groups.includes('openclaw-developers')) return 'developer';
+        if (groups.includes('openclaw-operators')) return 'operator';
+        return 'viewer';
+    }
+
+    /**
+     * Generate unique ID
+     */
+    private generateId(): string {
+        return `_${Math.random().toString(36).substr(2, 9)}`;
+    }
+}
+
+/**
+ * Express middleware for SAML authentication
+ */
+export function createSAMLAuthMiddleware(config: SAMLConfig) {
+    const provider = new SAMLAuthProvider(config);
+
+    return {
+        /**
+         * Initiate SAML login
+         */
+        login: async (req: Request, res: Response) => {
+            try {
+                const relayState = req.query.returnTo as string;
+                const authRequest = await provider.generateAuthRequest(relayState);
+
+                // Redirect to IdP
+                const redirectUrl = `${config.entryPoint}?SAMLRequest=${encodeURIComponent(authRequest)}`;
+                res.redirect(redirectUrl);
+            } catch (error) {
+                res.status(500).json({
+                    error: 'SAML login failed',
+                    message: error instanceof Error ? error.message : 'Unknown error',
+                });
+            }
+        },
+
+        /**
+         * Handle SAML callback
+         */
+        callback: async (req: Request, res: Response) => {
+            try {
+                const samlResponse = req.body.SAMLResponse;
+                if (!samlResponse) {
+                    throw new Error('Missing SAML response');
+                }
+
+                const user = await provider.validateResponse(samlResponse);
+
+                // TODO: Create session, issue JWT token
+                // For now, just return user info
+                res.json({ user });
+            } catch (error) {
+                res.status(401).json({
+                    error: 'SAML authentication failed',
+                    message: error instanceof Error ? error.message : 'Unknown error',
+                });
+            }
+        },
+
+        /**
+         * Serve SAML metadata
+         */
+        metadata: async (req: Request, res: Response) => {
+            try {
+                const metadata = await provider.getMetadata();
+                res.type('application/xml').send(metadata);
+            } catch (error) {
+                res.status(500).json({
+                    error: 'Failed to generate metadata',
+                    message: error instanceof Error ? error.message : 'Unknown error',
+                });
+            }
+        },
+    };
+}

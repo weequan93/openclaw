@@ -1,0 +1,276 @@
+{
+    "dashboard": {
+        "title": "OpenClaw Gateway Metrics",
+        "tags": [
+            "openclaw",
+            "gateway",
+            "http"
+        ],
+        "timezone": "browser",
+        "schemaVersion": 16,
+        "version": 1,
+        "refresh": "10s",
+        "panels": [
+            {
+                "id": 1,
+                "title": "Request Rate",
+                "type": "graph",
+                "gridPos": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(http_requests_total[5m])",
+                        "legendFormat": "{{method}} {{path}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "reqps",
+                        "label": "Requests/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 2,
+                "title": "Average Latency",
+                "type": "graph",
+                "gridPos": {
+                    "x": 8,
+                    "y": 0,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P95",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P50",
+                        "refId": "B"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "ms",
+                        "label": "Latency"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 3,
+                "title": "Error Rate",
+                "type": "graph",
+                "gridPos": {
+                    "x": 16,
+                    "y": 0,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(http_requests_total{status=~\"5..\"}[5m]) / rate(http_requests_total[5m])",
+                        "legendFormat": "Error Rate",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "percentunit",
+                        "label": "Error %"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ],
+                "alert": {
+                    "conditions": [
+                        {
+                            "evaluator": {
+                                "params": [
+                                    0.05
+                                ],
+                                "type": "gt"
+                            },
+                            "operator": {
+                                "type": "and"
+                            },
+                            "query": {
+                                "params": [
+                                    "A",
+                                    "5m",
+                                    "now"
+                                ]
+                            },
+                            "reducer": {
+                                "params": [],
+                                "type": "avg"
+                            },
+                            "type": "query"
+                        }
+                    ],
+                    "executionErrorState": "alerting",
+                    "frequency": "60s",
+                    "handler": 1,
+                    "name": "High Error Rate",
+                    "noDataState": "no_data",
+                    "notifications": []
+                }
+            },
+            {
+                "id": 4,
+                "title": "Active WebSocket Connections",
+                "type": "gauge",
+                "gridPos": {
+                    "x": 0,
+                    "y": 8,
+                    "w": 24,
+                    "h": 6
+                },
+                "targets": [
+                    {
+                        "expr": "websocket_connections_active",
+                        "refId": "A"
+                    }
+                ],
+                "options": {
+                    "showThresholdLabels": false,
+                    "showThresholdMarkers": true
+                },
+                "fieldConfig": {
+                    "defaults": {
+                        "thresholds": {
+                            "mode": "absolute",
+                            "steps": [
+                                {
+                                    "color": "green",
+                                    "value": null
+                                },
+                                {
+                                    "color": "yellow",
+                                    "value": 100
+                                },
+                                {
+                                    "color": "red",
+                                    "value": 500
+                                }
+                            ]
+                        },
+                        "unit": "short"
+                    }
+                }
+            },
+            {
+                "id": 5,
+                "title": "Request Duration Distribution",
+                "type": "heatmap",
+                "gridPos": {
+                    "x": 0,
+                    "y": 14,
+                    "w": 24,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(http_request_duration_seconds_bucket[5m])",
+                        "format": "heatmap",
+                        "refId": "A"
+                    }
+                ],
+                "dataFormat": "tsbuckets"
+            },
+            {
+                "id": 6,
+                "title": "Status Code Distribution",
+                "type": "piechart",
+                "gridPos": {
+                    "x": 0,
+                    "y": 22,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (status) (rate(http_requests_total[5m]))",
+                        "legendFormat": "{{status}}",
+                        "refId": "A"
+                    }
+                ]
+            },
+            {
+                "id": 7,
+                "title": "Top Endpoints by Traffic",
+                "type": "table",
+                "gridPos": {
+                    "x": 8,
+                    "y": 22,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "topk(10, sum by (path) (rate(http_requests_total[5m])))",
+                        "format": "table",
+                        "instant": true,
+                        "refId": "A"
+                    }
+                ],
+                "transformations": [
+                    {
+                        "id": "organize",
+                        "options": {
+                            "excludeByName": {
+                                "Time": true
+                            },
+                            "indexByName": {},
+                            "renameByName": {
+                                "Value": "Requests/sec",
+                                "path": "Endpoint"
+                            }
+                        }
+                    }
+                ]
+            },
+            {
+                "id": 8,
+                "title": "Error Timeline",
+                "type": "graph",
+                "gridPos": {
+                    "x": 16,
+                    "y": 22,
+                    "w": 8,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (status) (rate(http_requests_total{status=~\"[45]..\"}[5m]))",
+                        "legendFormat": "{{status}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "reqps",
+                        "label": "Errors/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            }
+        ]
+    }
+}

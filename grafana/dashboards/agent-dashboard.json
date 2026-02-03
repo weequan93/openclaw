@@ -1,0 +1,193 @@
+{
+    "dashboard": {
+        "title": "OpenClaw Agent Metrics",
+        "tags": [
+            "openclaw",
+            "agents",
+            "execution"
+        ],
+        "timezone": "browser",
+        "schemaVersion": 16,
+        "version": 1,
+        "refresh": "10s",
+        "panels": [
+            {
+                "id": 1,
+                "title": "Executions per Agent",
+                "type": "graph",
+                "gridPos": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (agent_id) (rate(agent_executions_total[5m]))",
+                        "legendFormat": "{{agent_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "ops",
+                        "label": "Executions/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 2,
+                "title": "Average Execution Time",
+                "type": "graph",
+                "gridPos": {
+                    "x": 12,
+                    "y": 0,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "histogram_quantile(0.95, rate(agent_execution_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P95",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "histogram_quantile(0.50, rate(agent_execution_duration_seconds_bucket[5m]))",
+                        "legendFormat": "P50",
+                        "refId": "B"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "s",
+                        "label": "Duration"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 3,
+                "title": "Success Rate by Agent",
+                "type": "graph",
+                "gridPos": {
+                    "x": 0,
+                    "y": 8,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (agent_id) (rate(agent_executions_total{status=\"success\"}[5m])) / sum by (agent_id) (rate(agent_executions_total[5m]))",
+                        "legendFormat": "{{agent_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "percentunit",
+                        "label": "Success Rate",
+                        "max": 1,
+                        "min": 0
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 4,
+                "title": "Execution Duration Distribution",
+                "type": "heatmap",
+                "gridPos": {
+                    "x": 12,
+                    "y": 8,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "rate(agent_execution_duration_seconds_bucket[5m])",
+                        "format": "heatmap",
+                        "refId": "A"
+                    }
+                ],
+                "dataFormat": "tsbuckets"
+            },
+            {
+                "id": 5,
+                "title": "Error Count by Agent",
+                "type": "table",
+                "gridPos": {
+                    "x": 0,
+                    "y": 16,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "topk(10, sum by (agent_id) (rate(agent_executions_total{status=\"error\"}[5m])))",
+                        "format": "table",
+                        "instant": true,
+                        "refId": "A"
+                    }
+                ],
+                "transformations": [
+                    {
+                        "id": "organize",
+                        "options": {
+                            "excludeByName": {
+                                "Time": true
+                            },
+                            "renameByName": {
+                                "Value": "Errors/sec",
+                                "agent_id": "Agent ID"
+                            }
+                        }
+                    }
+                ]
+            },
+            {
+                "id": 6,
+                "title": "Execution Timeline",
+                "type": "graph",
+                "gridPos": {
+                    "x": 12,
+                    "y": 16,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum(rate(agent_executions_total[5m]))",
+                        "legendFormat": "Total Executions",
+                        "refId": "A"
+                    },
+                    {
+                        "expr": "sum(rate(agent_executions_total{status=\"success\"}[5m]))",
+                        "legendFormat": "Successful",
+                        "refId": "B"
+                    },
+                    {
+                        "expr": "sum(rate(agent_executions_total{status=\"error\"}[5m]))",
+                        "legendFormat": "Failed",
+                        "refId": "C"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "ops",
+                        "label": "Executions/sec"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            }
+        ]
+    }
+}

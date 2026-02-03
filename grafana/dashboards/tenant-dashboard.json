@@ -1,0 +1,233 @@
+{
+    "dashboard": {
+        "title": "OpenClaw Tenant Metrics",
+        "tags": [
+            "openclaw",
+            "tenants",
+            "multi-tenant"
+        ],
+        "timezone": "browser",
+        "schemaVersion": 16,
+        "version": 1,
+        "refresh": "30s",
+        "panels": [
+            {
+                "id": 1,
+                "title": "Total Tenants",
+                "type": "stat",
+                "gridPos": {
+                    "x": 0,
+                    "y": 0,
+                    "w": 6,
+                    "h": 4
+                },
+                "targets": [
+                    {
+                        "expr": "tenants_active",
+                        "refId": "A"
+                    }
+                ],
+                "options": {
+                    "graphMode": "area",
+                    "colorMode": "value"
+                }
+            },
+            {
+                "id": 2,
+                "title": "Users by Tenant",
+                "type": "graph",
+                "gridPos": {
+                    "x": 6,
+                    "y": 0,
+                    "w": 9,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "tenant_users_total",
+                        "legendFormat": "{{tenant_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Users"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 3,
+                "title": "Agents by Tenant",
+                "type": "graph",
+                "gridPos": {
+                    "x": 15,
+                    "y": 0,
+                    "w": 9,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "tenant_agents_total",
+                        "legendFormat": "{{tenant_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "short",
+                        "label": "Agents"
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 4,
+                "title": "Quota Usage - Users",
+                "type": "graph",
+                "gridPos": {
+                    "x": 0,
+                    "y": 8,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "quota_usage{resource=\"users\"} / quota_limit{resource=\"users\"}",
+                        "legendFormat": "{{tenant_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "percentunit",
+                        "label": "Usage %",
+                        "max": 1,
+                        "min": 0
+                    },
+                    {
+                        "format": "short"
+                    }
+                ],
+                "alert": {
+                    "conditions": [
+                        {
+                            "evaluator": {
+                                "params": [
+                                    0.9
+                                ],
+                                "type": "gt"
+                            },
+                            "operator": {
+                                "type": "and"
+                            },
+                            "query": {
+                                "params": [
+                                    "A",
+                                    "5m",
+                                    "now"
+                                ]
+                            },
+                            "reducer": {
+                                "params": [],
+                                "type": "avg"
+                            },
+                            "type": "query"
+                        }
+                    ],
+                    "executionErrorState": "alerting",
+                    "frequency": "60s",
+                    "handler": 1,
+                    "name": "Tenant Approaching User Limit",
+                    "noDataState": "no_data"
+                }
+            },
+            {
+                "id": 5,
+                "title": "Quota Usage - Agents",
+                "type": "graph",
+                "gridPos": {
+                    "x": 12,
+                    "y": 8,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "quota_usage{resource=\"agents\"} / quota_limit{resource=\"agents\"}",
+                        "legendFormat": "{{tenant_id}}",
+                        "refId": "A"
+                    }
+                ],
+                "yaxes": [
+                    {
+                        "format": "percentunit",
+                        "label": "Usage %",
+                        "max": 1,
+                        "min": 0
+                    },
+                    {
+                        "format": "short"
+                    }
+                ]
+            },
+            {
+                "id": 6,
+                "title": "Tenant Activity Heatmap",
+                "type": "heatmap",
+                "gridPos": {
+                    "x": 0,
+                    "y": 16,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "sum by (tenant_id) (rate(sessions_total[1h]))",
+                        "format": "heatmap",
+                        "refId": "A"
+                    }
+                ],
+                "dataFormat": "tsbuckets"
+            },
+            {
+                "id": 7,
+                "title": "Top Tenants by Usage",
+                "type": "table",
+                "gridPos": {
+                    "x": 12,
+                    "y": 16,
+                    "w": 12,
+                    "h": 8
+                },
+                "targets": [
+                    {
+                        "expr": "topk(10, sum by (tenant_id) (rate(sessions_total[1h])))",
+                        "format": "table",
+                        "instant": true,
+                        "refId": "A"
+                    }
+                ],
+                "transformations": [
+                    {
+                        "id": "organize",
+                        "options": {
+                            "excludeByName": {
+                                "Time": true
+                            },
+                            "renameByName": {
+                                "Value": "Sessions/hour",
+                                "tenant_id": "Tenant ID"
+                            }
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+}

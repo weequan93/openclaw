@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: openclaw-gateway
+  labels:
+    app: openclaw
+    component: gateway
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: openclaw
+      component: gateway
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: openclaw
+        component: gateway
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: openclaw
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        fsGroup: 1001
+      containers:
+      - name: gateway
+        image: openclaw:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: POSTGRES_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: postgres.host
+        - name: POSTGRES_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: postgres.port
+        - name: POSTGRES_DB
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: postgres.database
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: postgres.user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: postgres.password
+        - name: JWT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: jwt.secret
+        - name: ENABLE_SSO
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: sso.enabled
+        - name: SAML_ENTRY_POINT
+          valueFrom:
+            configMapKeyRef:
+              name: openclaw-config
+              key: saml.entryPoint
+              optional: true
+        - name: OAUTH2_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: oauth2.clientId
+              optional: true
+        - name: OAUTH2_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: openclaw-secrets
+              key: oauth2.clientSecret
+              optional: true
+        resources:
+          requests:
+            cpu: 500m
+            memory: 512Mi
+          limits:
+            cpu: 2000m
+            memory: 2Gi
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 3
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: workspace
+          mountPath: /app/workspace
+      volumes:
+      - name: config
+        configMap:
+          name: openclaw-config
+      - name: workspace
+        persistentVolumeClaim:
+          claimName: openclaw-workspace
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: openclaw
+  labels:
+    app: openclaw

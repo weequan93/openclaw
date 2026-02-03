@@ -1,0 +1,184 @@
+# Default values for openclaw
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 3
+
+image:
+  repository: openclaw/openclaw
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: false
+  allowPrivilegeEscalation: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+  metricsPort: 9090
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/websocket-services: openclaw-gateway
+    nginx.ingress.kubernetes.io/rate-limit: "100"
+  hosts:
+    - host: openclaw.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: openclaw-tls
+      hosts:
+        - openclaw.example.com
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 512Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values:
+                  - openclaw
+          topologyKey: kubernetes.io/hostname
+
+# PostgreSQL configuration
+postgresql:
+  enabled: true
+  auth:
+    username: openclaw
+    password: changeme
+    database: openclaw
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+# Redis configuration
+redis:
+  enabled: false
+  auth:
+    enabled: true
+    password: changeme
+
+# Application configuration
+config:
+  nodeEnv: production
+  logLevel: info
+  
+  # Database
+  postgres:
+    host: openclaw-postgresql
+    port: 5432
+    database: openclaw
+  
+  # SSO
+  sso:
+    enabled: true
+    saml:
+      entryPoint: ""
+      issuer: openclaw
+      callbackUrl: ""
+      cert: ""
+      privateKey: ""
+    oauth2:
+      authorizationUrl: ""
+      tokenUrl: ""
+      userInfoUrl: ""
+      callbackUrl: ""
+      clientId: ""
+      clientSecret: ""
+  
+  # Features
+  features:
+    multiTenant: true
+    billing: true
+    auditLog: true
+    licenseCheck: true
+  
+  # Observability
+  metrics:
+    enabled: true
+    port: 9090
+  tracing:
+    enabled: true
+    jaegerEndpoint: http://jaeger-collector:14268/api/traces
+  
+  # Resource Limits
+  quota:
+    maxTenantsPerLicense: 100
+    maxUsersPerTenant: 1000
+    maxAgentsPerTenant: 50
+
+# Secrets (should be overridden in production)
+secrets:
+  jwt:
+    secret: changeme
+    issuer: https://openclaw.example.com
+  postgres:
+    password: changeme
+  stripe:
+    apiKey: ""
+    webhookSecret: ""
+  paddle:
+    apiKey: ""
+    webhookSecret: ""
+  license:
+    publicKey: ""
+    privateKey: ""
+
+# Persistence
+persistence:
+  enabled: true
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi

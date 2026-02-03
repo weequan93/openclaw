@@ -1,0 +1,214 @@
+groups:
+  - name: openclaw_errors
+    interval: 30s
+    rules:
+      - alert: HighHTTPErrorRate
+        expr: |
+          rate(http_requests_total{status=~"5.."}[5m]) /
+          rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          component: gateway
+        annotations:
+          summary: "High HTTP error rate detected"
+          description: "HTTP error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+          runbook: "https://docs.openclaw.com/runbooks/high-error-rate"
+
+      - alert: HighAgentFailureRate
+        expr: |
+          rate(agent_executions_total{status="error"}[5m]) /
+          rate(agent_executions_total[5m]) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: agents
+        annotations:
+          summary: "High agent execution failure rate"
+          description: "Agent failure rate is {{ $value | humanizePercentage }} for agent {{$labels.agent_id}}"
+          runbook: "https://docs.openclaw.com/runbooks/agent-failures"
+
+      - alert: DatabaseConnectionErrors
+        expr: database_connection_errors_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection errors detected"
+          description: "{{ $value }} database connection errors in the last minute"
+          runbook: "https://docs.openclaw.com/runbooks/database-errors"
+
+      - alert: WebSocketConnectionFailures
+        expr: rate(websocket_connection_failures_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: websocket
+        annotations:
+          summary: "WebSocket connection failures"
+          description: "{{ $value }} WebSocket connection failures per second"
+
+  - name: openclaw_performance
+    interval: 30s
+    rules:
+      - alert: HighRequestLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "High request latency detected"
+          description: "P95 latency is {{ $value }}s (threshold: 1s)"
+          runbook: "https://docs.openclaw.com/runbooks/high-latency"
+
+      - alert: HighAgentExecutionTime
+        expr: |
+          histogram_quantile(0.95,
+            rate(agent_execution_duration_seconds_bucket[5m])
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: agents
+        annotations:
+          summary: "High agent execution time"
+          description: "P95 execution time is {{ $value }}s for agent {{$labels.agent_id}}"
+          runbook: "https://docs.openclaw.com/runbooks/slow-agents"
+
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            rate(database_query_duration_seconds_bucket[5m])
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Slow database queries detected"
+          description: "P95 query duration is {{ $value }}s"
+          runbook: "https://docs.openclaw.com/runbooks/slow-queries"
+
+  - name: openclaw_resources
+    interval: 30s
+    rules:
+      - alert: HighCPUUsage
+        expr: |
+          rate(process_cpu_seconds_total[5m]) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value }}%"
+
+      - alert: HighMemoryUsage
+        expr: |
+          (process_resident_memory_bytes / process_virtual_memory_max_bytes) * 100 > 85
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage"
+          description: "Memory usage is {{ $value }}%"
+
+      - alert: DatabaseConnectionPoolExhausted
+        expr: database_connections_active >= database_connections_max
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhausted"
+          description: "All {{ $value }} database connections are in use"
+          runbook: "https://docs.openclaw.com/runbooks/connection-pool"
+
+  - name: openclaw_quotas
+    interval: 60s
+    rules:
+      - alert: TenantApproachingUserLimit
+        expr: |
+          quota_usage{resource="users"} / quota_limit{resource="users"} > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: quota
+        annotations:
+          summary: "Tenant approaching user limit"
+          description: "Tenant {{$labels.tenant_id}} is at {{ $value | humanizePercentage }} of user limit"
+
+      - alert: TenantApproachingAgentLimit
+        expr: |
+          quota_usage{resource="agents"} / quota_limit{resource="agents"} > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: quota
+        annotations:
+          summary: "Tenant approaching agent limit"
+          description: "Tenant {{$labels.tenant_id}} is at {{ $value | humanizePercentage }} of agent limit"
+
+      - alert: TenantApproachingSessionLimit
+        expr: |
+          quota_usage{resource="sessions"} / quota_limit{resource="sessions"} > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: quota
+        annotations:
+          summary: "Tenant approaching session limit"
+          description: "Tenant {{$labels.tenant_id}} is at {{ $value | humanizePercentage }} of monthly session limit"
+
+      - alert: LicenseExpiringSoon
+        expr: |
+          (license_expiration_timestamp_seconds - time()) < (30 * 24 * 60 * 60)
+        for: 1h
+        labels:
+          severity: warning
+          component: license
+        annotations:
+          summary: "License expiring soon"
+          description: "License expires in {{ $value | humanizeDuration }}"
+
+  - name: openclaw_availability
+    interval: 30s
+    rules:
+      - alert: ServiceDown
+        expr: up{job="openclaw-gateway"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: gateway
+        annotations:
+          summary: "OpenClaw service is down"
+          description: "Service has been down for more than 1 minute"
+          runbook: "https://docs.openclaw.com/runbooks/service-down"
+
+      - alert: DatabaseUnreachable
+        expr: up{job="postgres"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database is unreachable"
+          description: "Database has been unreachable for more than 1 minute"
+          runbook: "https://docs.openclaw.com/runbooks/database-down"
+
+      - alert: HighPodRestartRate
+        expr: |
+          rate(kube_pod_container_status_restarts_total{pod=~"openclaw-.*"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "High pod restart rate"
+          description: "Pod {{$labels.pod}} is restarting frequently"
