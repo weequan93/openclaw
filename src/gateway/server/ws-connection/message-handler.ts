@@ -30,6 +30,7 @@ import { verifyTenantToken } from "../../admin-auth.js";
 import { buildDeviceAuthPayload } from "../../device-auth.js";
 import { isLoopbackAddress, isTrustedProxyAddress, resolveGatewayClientIp } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
+import { checkBrowserOrigin } from "../../origin-check.js";
 import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
 import {
   type ConnectParams,
@@ -105,7 +106,7 @@ function formatGatewayAuthFailureMessage(params: {
   const isCli = isGatewayCliClient(client);
   const isControlUi = client?.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
   const isWebchat = isWebchatClient(client);
-  const uiHint = "open a tokenized dashboard URL or paste token in Control UI settings";
+  const uiHint = "open the dashboard URL and paste the token in Control UI settings";
   const tokenHint = isCli
     ? "set gateway.remote.token to match gateway.auth.token"
     : isControlUi || isWebchat
@@ -388,6 +389,38 @@ export function attachGatewayWsMessageHandler(params: {
         connectParams.role = role;
         connectParams.scopes = scopes;
 
+        const isControlUi = connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
+        const isWebchat = isWebchatConnect(connectParams);
+        if (isControlUi || isWebchat) {
+          const originCheck = checkBrowserOrigin({
+            requestHost,
+            origin: requestOrigin,
+            allowedOrigins: configSnapshot.gateway?.controlUi?.allowedOrigins,
+          });
+          if (!originCheck.ok) {
+            const errorMessage =
+              "origin not allowed (open the Control UI from the gateway host or allow it in gateway.controlUi.allowedOrigins)";
+            setHandshakeState("failed");
+            setCloseCause("origin-mismatch", {
+              origin: requestOrigin ?? "n/a",
+              host: requestHost ?? "n/a",
+              reason: originCheck.reason,
+              client: connectParams.client.id,
+              clientDisplayName: connectParams.client.displayName,
+              mode: connectParams.client.mode,
+              version: connectParams.client.version,
+            });
+            send({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: errorShape(ErrorCodes.INVALID_REQUEST, errorMessage),
+            });
+            close(1008, truncateCloseReason(errorMessage));
+            return;
+          }
+        }
+
         const deviceRaw = connectParams.device;
         let devicePublicKey: string | null = null;
         const rawAuthToken =
@@ -395,7 +428,6 @@ export function attachGatewayWsMessageHandler(params: {
         const hasTokenAuth = Boolean(rawAuthToken);
         const hasPasswordAuth = Boolean(connectParams.auth?.password);
         const hasSharedAuth = hasTokenAuth || hasPasswordAuth;
-        const isControlUi = connectParams.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI;
         const allowInsecureControlUi =
           isControlUi && configSnapshot.gateway?.controlUi?.allowInsecureAuth === true;
         const disableControlUiDeviceAuth =
@@ -404,8 +436,64 @@ export function attachGatewayWsMessageHandler(params: {
         const allowControlUiBypass =
           allowInsecureControlUi || disableControlUiDeviceAuth || Boolean(tenantAuth);
         const device = disableControlUiDeviceAuth ? null : deviceRaw;
+
+        const authResult = await authorizeGatewayConnect({
+          auth: resolvedAuth,
+          connectAuth: connectParams.auth,
+          req: upgradeReq,
+          trustedProxies,
+        });
+        let authOk = authResult.ok;
+        let authMethod: "token" | "password" | "tailscale" | "device-token" | "tenant-token" =
+          authResult.method ?? (resolvedAuth.mode === "password" ? "password" : "token");
+        const sharedAuthResult = hasSharedAuth
+          ? await authorizeGatewayConnect({
+              auth: { ...resolvedAuth, allowTailscale: false },
+              connectAuth: connectParams.auth,
+              req: upgradeReq,
+              trustedProxies,
+            })
+          : null;
+        const sharedAuthOk =
+          sharedAuthResult?.ok === true &&
+          (sharedAuthResult.method === "token" || sharedAuthResult.method === "password");
+        const rejectUnauthorized = (reasonOverride?: string) => {
+          const reason = reasonOverride ?? authResult.reason;
+          setHandshakeState("failed");
+          logWsControl.warn(
+            `unauthorized conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version} reason=${reason ?? "unknown"}`,
+          );
+          const authProvided: AuthProvidedKind = connectParams.auth?.token
+            ? "token"
+            : connectParams.auth?.password
+              ? "password"
+              : "none";
+          const authMessage = formatGatewayAuthFailureMessage({
+            authMode: resolvedAuth.mode,
+            authProvided,
+            reason,
+            client: connectParams.client,
+          });
+          setCloseCause("unauthorized", {
+            authMode: resolvedAuth.mode,
+            authProvided,
+            authReason: reason,
+            allowTailscale: resolvedAuth.allowTailscale,
+            client: connectParams.client.id,
+            clientDisplayName: connectParams.client.displayName,
+            mode: connectParams.client.mode,
+            version: connectParams.client.version,
+          });
+          send({
+            type: "res",
+            id: frame.id,
+            ok: false,
+            error: errorShape(ErrorCodes.INVALID_REQUEST, authMessage),
+          });
+          close(1008, truncateCloseReason(authMessage));
+        };
         if (!device) {
-          const canSkipDevice = allowControlUiBypass ? hasSharedAuth : hasTokenAuth;
+          const canSkipDevice = sharedAuthOk || Boolean(tenantAuth);
 
           if (isControlUi && !allowControlUiBypass) {
             const errorMessage = "control ui requires HTTPS or localhost (secure context)";
@@ -426,8 +514,16 @@ export function attachGatewayWsMessageHandler(params: {
             return;
           }
 
-          // Allow token-authenticated connections (e.g., control-ui) to skip device identity
+          // Allow shared-secret authenticated connections (e.g., control-ui) to skip device identity
           if (!canSkipDevice) {
+            if (isControlUi && !tenantAuth) {
+              rejectUnauthorized("tenant_auth_required");
+              return;
+            }
+            if (!authOk && hasSharedAuth) {
+              rejectUnauthorized();
+              return;
+            }
             setHandshakeState("failed");
             setCloseCause("device-required", {
               client: connectParams.client.id,
@@ -594,86 +690,39 @@ export function attachGatewayWsMessageHandler(params: {
           }
         }
 
-        let authOk = false;
-        let authMethod:
-          | ResolvedGatewayAuth["mode"]
-          | "device-token"
-          | "tenant-token"
-          | "tailscale" = "token";
-        let authReason: string | undefined;
-
         if (isControlUi) {
-          if (!tenantAuth) {
-            authOk = false;
-            authReason = "tenant_auth_required";
-          } else {
+          if (tenantAuth) {
             authOk = true;
             authMethod = "tenant-token";
             scopes = resolveTenantScopes(tenantAuth.role);
             connectParams.scopes = scopes;
-          }
-        } else {
-          const authResult = await authorizeGatewayConnect({
-            auth: resolvedAuth,
-            connectAuth: connectParams.auth,
-            req: upgradeReq,
-            trustedProxies,
-          });
-          authOk = authResult.ok;
-          authReason = authResult.reason;
-          authMethod =
-            authResult.method ?? (resolvedAuth.mode === "password" ? "password" : "token");
-          if (!authOk && connectParams.auth?.token && device) {
-            const tokenCheck = await verifyDeviceToken({
-              deviceId: device.id,
-              token: connectParams.auth.token,
-              role,
-              scopes,
-            });
-            if (tokenCheck.ok) {
-              authOk = true;
-              authMethod = "device-token";
-            }
+          } else {
+            authOk = false;
           }
         }
 
+        if (!isControlUi && !authOk && connectParams.auth?.token && device) {
+          const tokenCheck = await verifyDeviceToken({
+            deviceId: device.id,
+            token: connectParams.auth.token,
+            role,
+            scopes,
+          });
+          if (tokenCheck.ok) {
+            authOk = true;
+            authMethod = "device-token";
+          }
+        }
         if (!authOk) {
-          setHandshakeState("failed");
-          logWsControl.warn(
-            `unauthorized conn=${connId} remote=${remoteAddr ?? "?"} client=${clientLabel} ${connectParams.client.mode} v${connectParams.client.version} reason=${authReason ?? "unknown"}`,
-          );
-          const authProvided: AuthProvidedKind = connectParams.auth?.token
-            ? "token"
-            : connectParams.auth?.password
-              ? "password"
-              : "none";
-          const authMessage = formatGatewayAuthFailureMessage({
-            authMode: resolvedAuth.mode,
-            authProvided,
-            reason: authReason,
-            client: connectParams.client,
-          });
-          setCloseCause("unauthorized", {
-            authMode: resolvedAuth.mode,
-            authProvided,
-            authReason,
-            allowTailscale: resolvedAuth.allowTailscale,
-            client: connectParams.client.id,
-            clientDisplayName: connectParams.client.displayName,
-            mode: connectParams.client.mode,
-            version: connectParams.client.version,
-          });
-          send({
-            type: "res",
-            id: frame.id,
-            ok: false,
-            error: errorShape(ErrorCodes.INVALID_REQUEST, authMessage),
-          });
-          close(1008, truncateCloseReason(authMessage));
+          if (isControlUi) {
+            rejectUnauthorized("tenant_auth_required");
+          } else {
+            rejectUnauthorized();
+          }
           return;
         }
 
-        const skipPairing = allowControlUiBypass && hasSharedAuth;
+        const skipPairing = allowControlUiBypass && (sharedAuthOk || Boolean(tenantAuth));
         if (device && devicePublicKey && !skipPairing) {
           const requirePairing = async (reason: string, _paired?: { deviceId: string }) => {
             const pairing = await requestDevicePairing({
@@ -880,6 +929,7 @@ export function attachGatewayWsMessageHandler(params: {
           connect: connectParams,
           connId,
           presenceKey,
+          clientIp: reportedClientIp,
         };
         setClient(nextClient);
         setHandshakeState("connected");
