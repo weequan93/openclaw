@@ -11,6 +11,13 @@ const createHost = (tab: Tab): SettingsHost => ({
   settings: {
     gatewayUrl: "",
     token: "",
+    tenantSlug: "",
+    tenantEmail: "",
+    tenantRole: "",
+    tenantName: "",
+    tenantId: "",
+    tenantUserId: "",
+    tenantUserName: "",
     sessionKey: "main",
     lastActiveSessionKey: "main",
     theme: "system",

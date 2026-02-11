@@ -101,8 +101,10 @@ export class BillingService {
         // Audit log
         await this.auditService.createAuditLog({
             tenantId: event.tenantId,
+            userId: 'system',
             action: `billing.${event.type}`,
             resourceType: 'billing',
+            resourceId: event.subscriptionId || event.tenantId,
             details: event,
         });
     }
@@ -182,7 +184,7 @@ export class BillingService {
      */
     private async handleInvoicePaid(event: BillingEvent): Promise<void> {
         // Reset monthly quotas if needed
-        await this.quotaService.resetMonthlyQuotas();
+        await this.quotaService.resetMonthlyQuotas(event.tenantId);
     }
 
     /**

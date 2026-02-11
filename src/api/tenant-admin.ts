@@ -13,7 +13,19 @@ import { PostgresSessionManager } from '../sessions/postgres-session-manager.js'
 import { AuditLogService, AuditActions } from '../services/audit-log-service.js';
 import { ResourceQuotaService } from '../services/resource-quota-service.js';
 
-const router = Router();
+// Extend Express Request to include authenticated user
+declare global {
+    namespace Express {
+        interface User {
+            id: string;
+            tenantId: string;
+            email: string;
+            role: string;
+        }
+    }
+}
+
+const router: Router = Router();
 
 const tenantService = new TenantService();
 const userService = new UserService();
@@ -39,6 +51,16 @@ function requireRole(...roles: string[]) {
     };
 }
 
+/**
+ * Helper to ensure param is a string (not string[])
+ */
+function ensureString(param: string | string[] | undefined): string {
+    if (Array.isArray(param)) {
+        return param[0] || '';
+    }
+    return param || '';
+}
+
 // ============================================================================
 // Tenant Management
 // ============================================================================
@@ -52,7 +74,7 @@ router.get('/tenants', async (req: Request, res: Response) => {
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
 
-        const tenants = await tenantService.listTenants(limit, offset);
+        const tenants = await tenantService.listTenants({ limit, offset });
         res.json({ tenants });
     } catch (error) {
         res.status(500).json({ error: (error as Error).message });
@@ -65,7 +87,7 @@ router.get('/tenants', async (req: Request, res: Response) => {
  */
 router.get('/tenants/:id', async (req: Request, res: Response) => {
     try {
-        const tenant = await tenantService.getTenantById(req.params.id);
+        const tenant = await tenantService.getTenantById(ensureString(req.params.id));
         if (!tenant) {
             return res.status(404).json({ error: 'Tenant not found' });
         }
@@ -85,7 +107,7 @@ router.post('/tenants', async (req: Request, res: Response) => {
 
         await auditService.createAuditLog({
             tenantId: tenant.id,
-            userId: req.user?.id,
+            userId: req.user?.id || 'system',
             action: 'tenant.created',
             resourceType: 'tenant',
             resourceId: tenant.id,
@@ -102,11 +124,11 @@ router.post('/tenants', async (req: Request, res: Response) => {
 
 /**
  * PATCH /api/admin/tenants/:id
- * Update tenant (owner only)
+ * Update tenant (tenant admin only)
  */
-router.patch('/tenants/:id', requireRole('owner'), async (req: Request, res: Response) => {
+router.patch('/tenants/:id', requireRole('tenant_admin'), async (req: Request, res: Response) => {
     try {
-        const tenant = await tenantService.updateTenant(req.params.id, req.body);
+        const tenant = await tenantService.updateTenant(ensureString(req.params.id), req.body);
 
         await auditService.createAuditLog({
             tenantId: tenant.id,
@@ -127,18 +149,18 @@ router.patch('/tenants/:id', requireRole('owner'), async (req: Request, res: Res
 
 /**
  * DELETE /api/admin/tenants/:id
- * Delete tenant (owner only)
+ * Delete tenant (tenant admin only)
  */
-router.delete('/tenants/:id', requireRole('owner'), async (req: Request, res: Response) => {
+router.delete('/tenants/:id', requireRole('tenant_admin'), async (req: Request, res: Response) => {
     try {
-        await tenantService.deleteTenant(req.params.id);
+        await tenantService.deleteTenant(ensureString(req.params.id));
 
         await auditService.createAuditLog({
-            tenantId: req.params.id,
+            tenantId: ensureString(req.params.id),
             userId: req.user!.id,
             action: 'tenant.deleted',
             resourceType: 'tenant',
-            resourceId: req.params.id,
+            resourceId: ensureString(req.params.id),
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
         });
@@ -162,7 +184,7 @@ router.get('/users', async (req: Request, res: Response) => {
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
 
-        const users = await userService.listUsers(req.user!.tenantId, limit, offset);
+        const users = await userService.listUsers(req.user!.tenantId, { limit, offset });
         res.json({ users });
     } catch (error) {
         res.status(500).json({ error: (error as Error).message });
@@ -175,7 +197,7 @@ router.get('/users', async (req: Request, res: Response) => {
  */
 router.get('/users/:id', async (req: Request, res: Response) => {
     try {
-        const user = await userService.getUserById(req.params.id);
+        const user = await userService.getUserById(ensureString(req.params.id));
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
@@ -187,9 +209,9 @@ router.get('/users/:id', async (req: Request, res: Response) => {
 
 /**
  * POST /api/admin/users
- * Create new user (admin+ only)
+ * Create new user (tenant admin or admin only)
  */
-router.post('/users', requireRole('owner', 'admin'), async (req: Request, res: Response) => {
+router.post('/users', requireRole('tenant_admin', 'admin'), async (req: Request, res: Response) => {
     try {
         // Check quota
         const quotaCheck = await quotaService.checkQuota(req.user!.tenantId, 'users');
@@ -202,8 +224,10 @@ router.post('/users', requireRole('owner', 'admin'), async (req: Request, res: R
         }
 
         const user = await userService.createUser({
-            ...req.body,
             tenantId: req.user!.tenantId,
+            email: req.body.email,
+            fullName: req.body.fullName,
+            role: req.body.role,
         });
 
         await quotaService.incrementUsage(req.user!.tenantId, 'users');
@@ -231,8 +255,8 @@ router.post('/users', requireRole('owner', 'admin'), async (req: Request, res: R
  */
 router.patch('/users/:id', async (req: Request, res: Response) => {
     try {
-        const isSelf = req.params.id === req.user!.id;
-        const isAdmin = ['owner', 'admin'].includes(req.user!.role);
+        const isSelf = ensureString(req.params.id) === req.user!.id;
+        const isAdmin = ['tenant_admin', 'admin'].includes(req.user!.role);
 
         if (!isSelf && !isAdmin) {
             return res.status(403).json({ error: 'Forbidden' });
@@ -243,7 +267,7 @@ router.patch('/users/:id', async (req: Request, res: Response) => {
             return res.status(403).json({ error: 'Cannot change own role' });
         }
 
-        const user = await userService.updateUser(req.params.id, req.body);
+        const user = await userService.updateUser(ensureString(req.params.id), req.body);
 
         await auditService.createAuditLog({
             tenantId: req.user!.tenantId,
@@ -264,11 +288,11 @@ router.patch('/users/:id', async (req: Request, res: Response) => {
 
 /**
  * DELETE /api/admin/users/:id
- * Delete user (owner only)
+ * Delete user (tenant admin only)
  */
-router.delete('/users/:id', requireRole('owner'), async (req: Request, res: Response) => {
+router.delete('/users/:id', requireRole('tenant_admin'), async (req: Request, res: Response) => {
     try {
-        await userService.deleteUser(req.params.id);
+        await userService.deleteUser(ensureString(req.params.id));
         await quotaService.decrementUsage(req.user!.tenantId, 'users');
 
         await auditService.createAuditLog({
@@ -276,7 +300,7 @@ router.delete('/users/:id', requireRole('owner'), async (req: Request, res: Resp
             userId: req.user!.id,
             action: AuditActions.USER_DELETED,
             resourceType: 'user',
-            resourceId: req.params.id,
+            resourceId: ensureString(req.params.id),
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
         });
@@ -300,7 +324,7 @@ router.get('/agents', async (req: Request, res: Response) => {
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
 
-        const agents = await agentService.listAgents(req.user!.tenantId, limit, offset);
+        const agents = await agentService.listAgents(req.user!.tenantId, { limit, offset });
         res.json({ agents });
     } catch (error) {
         res.status(500).json({ error: (error as Error).message });
@@ -313,7 +337,7 @@ router.get('/agents', async (req: Request, res: Response) => {
  */
 router.get('/agents/:id', async (req: Request, res: Response) => {
     try {
-        const agent = await agentService.getAgentById(req.params.id);
+        const agent = await agentService.getAgentById(ensureString(req.params.id));
         if (!agent) {
             return res.status(404).json({ error: 'Agent not found' });
         }
@@ -327,7 +351,7 @@ router.get('/agents/:id', async (req: Request, res: Response) => {
  * POST /api/admin/agents
  * Create new agent (developer+ only)
  */
-router.post('/agents', requireRole('owner', 'admin', 'developer', 'operator'), async (req: Request, res: Response) => {
+router.post('/agents', requireRole('tenant_admin', 'admin', 'developer', 'operator'), async (req: Request, res: Response) => {
     try {
         // Check quota
         const quotaCheck = await quotaService.checkQuota(req.user!.tenantId, 'agents');
@@ -367,9 +391,9 @@ router.post('/agents', requireRole('owner', 'admin', 'developer', 'operator'), a
  * PATCH /api/admin/agents/:id
  * Update agent (developer+ only)
  */
-router.patch('/agents/:id', requireRole('owner', 'admin', 'developer', 'operator'), async (req: Request, res: Response) => {
+router.patch('/agents/:id', requireRole('tenant_admin', 'admin', 'developer', 'operator'), async (req: Request, res: Response) => {
     try {
-        const agent = await agentService.updateAgent(req.params.id, req.body);
+        const agent = await agentService.updateAgent(ensureString(req.params.id), req.body);
 
         await auditService.createAuditLog({
             tenantId: req.user!.tenantId,
@@ -390,11 +414,12 @@ router.patch('/agents/:id', requireRole('owner', 'admin', 'developer', 'operator
 
 /**
  * DELETE /api/admin/agents/:id
- * Delete agent (admin+ only)
+ * Delete agent (tenant admin or admin only)
  */
-router.delete('/agents/:id', requireRole('owner', 'admin'), async (req: Request, res: Response) => {
+router.delete('/agents/:id', requireRole('tenant_admin', 'admin'), async (req: Request, res: Response) => {
     try {
-        await agentService.deleteAgent(req.params.id);
+        const agentId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+        await agentService.deleteAgent(agentId);
         await quotaService.decrementUsage(req.user!.tenantId, 'agents');
 
         await auditService.createAuditLog({
@@ -402,7 +427,7 @@ router.delete('/agents/:id', requireRole('owner', 'admin'), async (req: Request,
             userId: req.user!.id,
             action: AuditActions.AGENT_DELETED,
             resourceType: 'agent',
-            resourceId: req.params.id,
+            resourceId: agentId,
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
         });
@@ -426,7 +451,7 @@ router.get('/sessions', async (req: Request, res: Response) => {
         const limit = parseInt(req.query.limit as string) || 50;
         const offset = parseInt(req.query.offset as string) || 0;
 
-        const sessions = await sessionManager.listSessionsForTenant(req.user!.tenantId, limit, offset);
+        const sessions = await sessionManager.listSessionsForTenant(req.user!.tenantId, { limit, offset });
         res.json({ sessions });
     } catch (error) {
         res.status(500).json({ error: (error as Error).message });
@@ -439,7 +464,8 @@ router.get('/sessions', async (req: Request, res: Response) => {
  */
 router.get('/sessions/:id', async (req: Request, res: Response) => {
     try {
-        const session = await sessionManager.getSessionById(req.params.id);
+        const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+        const session = await sessionManager.getSessionById(sessionId);
         if (!session) {
             return res.status(404).json({ error: 'Session not found' });
         }
@@ -451,18 +477,19 @@ router.get('/sessions/:id', async (req: Request, res: Response) => {
 
 /**
  * DELETE /api/admin/sessions/:id
- * Delete session (admin+ only)
+ * Delete session (tenant admin or admin only)
  */
-router.delete('/sessions/:id', requireRole('owner', 'admin'), async (req: Request, res: Response) => {
+router.delete('/sessions/:id', requireRole('tenant_admin', 'admin'), async (req: Request, res: Response) => {
     try {
-        await sessionManager.deleteSession(req.params.id);
+        const sessionId = Array.isArray(req.params.id) ? req.params.id[0] : req.params.id;
+        await sessionManager.deleteSession(sessionId);
 
         await auditService.createAuditLog({
             tenantId: req.user!.tenantId,
             userId: req.user!.id,
             action: AuditActions.SESSION_DELETED,
             resourceType: 'session',
-            resourceId: req.params.id,
+            resourceId: sessionId,
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
         });
@@ -494,9 +521,9 @@ router.get('/quotas', async (req: Request, res: Response) => {
 
 /**
  * PATCH /api/admin/quotas
- * Update resource quotas (owner only)
+ * Update resource quotas (tenant admin only)
  */
-router.patch('/quotas', requireRole('owner'), async (req: Request, res: Response) => {
+router.patch('/quotas', requireRole('tenant_admin'), async (req: Request, res: Response) => {
     try {
         const quota = await quotaService.updateQuotaLimits(req.user!.tenantId, req.body);
 
@@ -505,7 +532,7 @@ router.patch('/quotas', requireRole('owner'), async (req: Request, res: Response
             userId: req.user!.id,
             action: AuditActions.QUOTA_UPDATED,
             resourceType: 'quota',
-            resourceId: quota.id,
+            resourceId: req.user!.tenantId,
             details: req.body,
             ipAddress: req.ip,
             userAgent: req.get('user-agent'),
@@ -530,7 +557,6 @@ router.get('/audit-logs', async (req: Request, res: Response) => {
         const logs = await auditService.getAuditLogs(req.user!.tenantId, {
             userId: req.query.userId as string,
             action: req.query.action as string,
-            resourceType: req.query.resourceType as string,
             limit: parseInt(req.query.limit as string) || 100,
             offset: parseInt(req.query.offset as string) || 0,
         });

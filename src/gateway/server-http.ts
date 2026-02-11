@@ -30,6 +30,11 @@ import {
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
+import { handleAdminApiHttpRequest } from "./admin-api-http.js";
+import { handlePlatformApiHttpRequest } from "./platform-api-http.js";
+import { handleTenantApiHttpRequest } from "./tenant-api-http.js";
+import { handleSsoHttpRequest } from "./sso-http.js";
+import { handleHealthHttpRequest } from "./health.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
@@ -88,8 +93,8 @@ export function createHooksRequestHandler(
     if (fromQuery) {
       logHooks.warn(
         "Hook token provided via query parameter is deprecated for security reasons. " +
-          "Tokens in URLs appear in logs, browser history, and referrer headers. " +
-          "Use Authorization: Bearer <token> or X-OpenClaw-Token header instead.",
+        "Tokens in URLs appear in logs, browser history, and referrer headers. " +
+        "Use Authorization: Bearer <token> or X-OpenClaw-Token header instead.",
       );
     }
 
@@ -227,11 +232,11 @@ export function createGatewayHttpServer(opts: {
   } = opts;
   const httpServer: HttpServer = opts.tlsOptions
     ? createHttpsServer(opts.tlsOptions, (req, res) => {
-        void handleRequest(req, res);
-      })
+      void handleRequest(req, res);
+    })
     : createHttpServer((req, res) => {
-        void handleRequest(req, res);
-      });
+      void handleRequest(req, res);
+    });
 
   async function handleRequest(req: IncomingMessage, res: ServerResponse) {
     // Don't interfere with WebSocket upgrades; ws handles the 'upgrade' event.
@@ -240,9 +245,27 @@ export function createGatewayHttpServer(opts: {
     }
 
     try {
+      if (await handleHealthHttpRequest(req, res)) {
+        return;
+      }
       const configSnapshot = loadConfig();
       const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
       if (await handleHooksRequest(req, res)) {
+        return;
+      }
+      // Admin API endpoints (must be before other handlers to avoid being caught by Control UI)
+      if (await handlePlatformApiHttpRequest(req, res)) {
+        return;
+      }
+      if (await handleTenantApiHttpRequest(req, res)) {
+        return;
+      }
+      // Legacy platform admin API
+      if (await handleAdminApiHttpRequest(req, res)) {
+        return;
+      }
+      // SSO Authentication
+      if (await handleSsoHttpRequest(req, res)) {
         return;
       }
       if (

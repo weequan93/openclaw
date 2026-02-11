@@ -1,0 +1,11 @@
+{
+    "gateway": {
+        "auth": {
+            "token": "dev-token-123"
+        }
+    },
+    "logging": {
+        "level": "debug",
+        "consoleStyle": "pretty"
+    }
+}

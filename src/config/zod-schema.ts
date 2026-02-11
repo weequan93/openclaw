@@ -179,6 +179,32 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    sso: z
+      .object({
+        enabled: z.boolean().optional(),
+        saml: z
+          .object({
+            entryPoint: z.string().optional(),
+            issuer: z.string().optional(),
+            callbackUrl: z.string().optional(),
+            cert: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+        oauth2: z
+          .object({
+            authorizationUrl: z.string().optional(),
+            tokenUrl: z.string().optional(),
+            userInfoUrl: z.string().optional(),
+            callbackUrl: z.string().optional(),
+            clientId: z.string().optional(),
+            clientSecret: z.string().optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     auth: z
       .object({
         profiles: z

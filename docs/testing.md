@@ -327,6 +327,11 @@ Useful env vars:
 - `OPENCLAW_LIVE_GATEWAY_MODELS=...` / `OPENCLAW_LIVE_MODELS=...` to narrow the run
 - `OPENCLAW_LIVE_REQUIRE_PROFILE_KEYS=1` to ensure creds come from the profile store (not env)
 
+## Docker full stack testing
+
+For a full app stack in Docker (gateway + Control UI + Admin UIs + Postgres + Redis),
+see [Docker Full Stack Testing](/testing/docker-full-stack).
+
 ## Docs sanity
 
 Run docs checks after doc edits: `pnpm docs:list`.

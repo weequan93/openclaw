@@ -1,244 +1,199 @@
 /**
  * User Service
- * 
- * Manages users with RBAC in multi-tenant system.
+ * Manages user accounts within tenants
  */
 
-import { PoolClient } from 'pg';
-import { User, CreateUserInput, UpdateUserInput, UserRole } from '../models/user.js';
-import { getDatabasePool } from '../infra/database/pool.js';
-import { withTenantContext } from '../infra/database/tenant-context.js';
-import * as crypto from 'crypto';
+import { pool } from '../infra/database/pool.js';
+import type { UserRole } from '../models/user.js';
+
+export interface User {
+    id: string;
+    tenantId: string;
+    email: string;
+    fullName?: string;
+    passwordHash?: string;
+    role: UserRole;
+    createdAt: Date;
+    updatedAt: Date;
+}
 
 export class UserService {
     /**
      * Create a new user
      */
-    async createUser(input: CreateUserInput): Promise<User> {
-        const pool = getDatabasePool();
-
-        const passwordHash = input.password
-            ? await this.hashPassword(input.password)
-            : null;
-
-        const result = await pool.query<User>(
-            `INSERT INTO users (tenant_id, email, password_hash, role, full_name, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6)
+    async createUser(data: {
+        tenantId: string;
+        email: string;
+        fullName?: string;
+        passwordHash?: string;
+        role: UserRole;
+    }): Promise<User> {
+        const result = await pool.query(
+            `INSERT INTO users (tenant_id, email, full_name, password_hash, role)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-            [
-                input.tenantId,
-                input.email,
-                passwordHash,
-                input.role || 'viewer',
-                input.fullName || null,
-                JSON.stringify(input.metadata || {}),
-            ]
+            [data.tenantId, data.email, data.fullName || null, data.passwordHash || null, data.role]
         );
 
-        return this.mapRow(result[0]);
+        return this.mapRow(result.rows[0]);
     }
 
     /**
      * Get user by ID
      */
-    async getUserById(userId: string): Promise<User | null> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<User>(
-            'SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL',
-            [userId]
+    async getUserById(id: string): Promise<User | null> {
+        const result = await pool.query(
+            'SELECT * FROM users WHERE id = $1',
+            [id]
         );
 
-        return result[0] ? this.mapRow(result[0]) : null;
+        return result.rows[0] ? this.mapRow(result.rows[0]) : null;
     }
 
     /**
-     * Get user by email (within tenant)
+     * Get user by email
      */
-    async getUserByEmail(tenantId: string, email: string): Promise<User | null> {
-        const pool = getDatabasePool();
+    async getUserByEmail(email: string): Promise<User | null> {
+        const result = await pool.query(
+            'SELECT * FROM users WHERE email = $1',
+            [email]
+        );
 
-        const result = await pool.query<User>(
-            'SELECT * FROM users WHERE tenant_id = $1 AND email = $2 AND deleted_at IS NULL',
+        return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+    }
+
+    /**
+     * Get user by email within a tenant
+     */
+    async getUserByEmailForTenant(tenantId: string, email: string): Promise<User | null> {
+        const result = await pool.query(
+            'SELECT * FROM users WHERE tenant_id = $1 AND email = $2',
             [tenantId, email]
         );
 
-        return result[0] ? this.mapRow(result[0]) : null;
+        return result.rows[0] ? this.mapRow(result.rows[0]) : null;
+    }
+
+    /**
+     * Find or create user by email (for SSO)
+     */
+    async findOrCreateByEmail(data: {
+        email: string;
+        fullName?: string;
+        role?: UserRole;
+        tenantId: string;
+    }): Promise<User> {
+        const existing = await this.getUserByEmail(data.email);
+        if (existing) {
+            // Update name if changed
+            if ((existing.fullName || '') !== (data.fullName || '')) {
+                return this.updateUser(existing.id, { fullName: data.fullName });
+            }
+            return existing;
+        }
+
+        return this.createUser({
+            email: data.email,
+            fullName: data.fullName,
+            role: data.role || 'viewer',
+            tenantId: data.tenantId,
+        });
     }
 
     /**
      * Update user
      */
-    async updateUser(userId: string, input: UpdateUserInput): Promise<User> {
-        const pool = getDatabasePool();
-
-        const updates: string[] = [];
+    async updateUser(
+        id: string,
+        data: Omit<Partial<User>, "passwordHash"> & { passwordHash?: string | null },
+    ): Promise<User> {
+        const fields: string[] = [];
         const values: any[] = [];
         let paramIndex = 1;
 
-        if (input.email) {
-            updates.push(`email = $${paramIndex++}`);
-            values.push(input.email);
+        if (data.fullName !== undefined) {
+            fields.push(`full_name = $${paramIndex++}`);
+            values.push(data.fullName);
+        }
+        if (data.passwordHash !== undefined) {
+            fields.push(`password_hash = $${paramIndex++}`);
+            values.push(data.passwordHash ?? null);
+        }
+        if (data.role) {
+            fields.push(`role = $${paramIndex++}`);
+            values.push(data.role);
         }
 
-        if (input.password) {
-            const passwordHash = await this.hashPassword(input.password);
-            updates.push(`password_hash = $${paramIndex++}`);
-            values.push(passwordHash);
-        }
+        fields.push(`updated_at = NOW()`);
+        values.push(id);
 
-        if (input.role) {
-            updates.push(`role = $${paramIndex++}`);
-            values.push(input.role);
-        }
-
-        if (input.fullName !== undefined) {
-            updates.push(`full_name = $${paramIndex++}`);
-            values.push(input.fullName);
-        }
-
-        if (input.metadata) {
-            // Merge with existing metadata
-            const user = await this.getUserById(userId);
-            if (!user) {
-                throw new Error('User not found');
-            }
-
-            const mergedMetadata = {
-                ...user.metadata,
-                ...input.metadata,
-                preferences: { ...user.metadata.preferences, ...input.metadata.preferences },
-                sso: { ...user.metadata.sso, ...input.metadata.sso },
-            };
-
-            updates.push(`metadata = $${paramIndex++}`);
-            values.push(JSON.stringify(mergedMetadata));
-        }
-
-        if (updates.length === 0) {
-            throw new Error('No updates provided');
-        }
-
-        values.push(userId);
-
-        const result = await pool.query<User>(
-            `UPDATE users SET ${updates.join(', ')}, updated_at = NOW()
-       WHERE id = $${paramIndex} AND deleted_at IS NULL
-       RETURNING *`,
+        const result = await pool.query(
+            `UPDATE users SET ${fields.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
             values
         );
 
-        if (!result[0]) {
-            throw new Error('User not found');
+        return this.mapRow(result.rows[0]);
+    }
+
+    /**
+     * Delete user
+     */
+    async deleteUser(id: string): Promise<void> {
+        await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    }
+
+    /**
+     * List users for a tenant
+     */
+    async listUsersForTenant(
+        tenantId: string,
+        options?: {
+            limit?: number;
+            offset?: number;
+            role?: string;
+        }
+    ): Promise<User[]> {
+        const limit = options?.limit || 100;
+        const offset = options?.offset || 0;
+
+        let query = 'SELECT * FROM users WHERE tenant_id = $1';
+        const params: any[] = [tenantId];
+
+        if (options?.role) {
+            params.push(options.role);
+            query += ` AND role = $${params.length}`;
         }
 
-        return this.mapRow(result[0]);
+        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+        return result.rows.map(this.mapRow);
     }
 
     /**
-     * Delete user (soft delete)
+     * Alias for listUsersForTenant - used by some APIs
      */
-    async deleteUser(userId: string): Promise<void> {
-        const pool = getDatabasePool();
-
-        // Check if user is last owner
-        const user = await this.getUserById(userId);
-        if (!user) {
-            throw new Error('User not found');
-        }
-
-        if (user.role === 'owner') {
-            const ownerCount = await this.countUsersByRole(user.tenantId, 'owner');
-            if (ownerCount <= 1) {
-                throw new Error('Cannot delete last owner');
-            }
-        }
-
-        await pool.query(
-            'UPDATE users SET deleted_at = NOW() WHERE id = $1',
-            [userId]
-        );
+    async listUsers(tenantId: string, options?: {
+        limit?: number;
+        offset?: number;
+        role?: string;
+    }): Promise<User[]> {
+        return this.listUsersForTenant(tenantId, options);
     }
 
-    /**
-     * List users in tenant
-     */
-    async listUsers(tenantId: string, limit = 50, offset = 0): Promise<User[]> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<User>(
-            `SELECT * FROM users 
-       WHERE tenant_id = $1 AND deleted_at IS NULL 
-       ORDER BY created_at DESC 
-       LIMIT $2 OFFSET $3`,
-            [tenantId, limit, offset]
-        );
-
-        return result.map(row => this.mapRow(row));
-    }
-
-    /**
-     * Count users by role
-     */
-    async countUsersByRole(tenantId: string, role: UserRole): Promise<number> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<{ count: string }>(
-            'SELECT COUNT(*) as count FROM users WHERE tenant_id = $1 AND role = $2 AND deleted_at IS NULL',
-            [tenantId, role]
-        );
-
-        return parseInt(result[0].count, 10);
-    }
-
-    /**
-     * Verify password
-     */
-    async verifyPassword(userId: string, password: string): Promise<boolean> {
-        const user = await this.getUserById(userId);
-        if (!user || !user.passwordHash) {
-            return false;
-        }
-
-        const hash = await this.hashPassword(password);
-        return hash === user.passwordHash;
-    }
-
-    /**
-     * Update last login timestamp
-     */
-    async updateLastLogin(userId: string): Promise<void> {
-        const pool = getDatabasePool();
-
-        await pool.query(
-            'UPDATE users SET last_login_at = NOW() WHERE id = $1',
-            [userId]
-        );
-    }
-
-    /**
-     * Hash password (simple implementation - use bcrypt in production)
-     */
-    private async hashPassword(password: string): Promise<string> {
-        return crypto.createHash('sha256').update(password).digest('hex');
-    }
-
-    /**
-     * Map database row to User model
-     */
     private mapRow(row: any): User {
         return {
             id: row.id,
             tenantId: row.tenant_id,
             email: row.email,
-            passwordHash: row.password_hash,
+            fullName: row.full_name ?? undefined,
+            passwordHash: row.password_hash ?? undefined,
             role: row.role,
-            fullName: row.full_name,
-            metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
-            createdAt: new Date(row.created_at),
-            updatedAt: new Date(row.updated_at),
-            deletedAt: row.deleted_at ? new Date(row.deleted_at) : undefined,
-            lastLoginAt: row.last_login_at ? new Date(row.last_login_at) : undefined,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
         };
     }
 }
+
+export default new UserService();

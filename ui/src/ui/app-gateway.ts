@@ -118,10 +118,15 @@ export function connectGateway(host: GatewayHost) {
   host.execApprovalError = null;
 
   host.client?.stop();
+  host.client = null;
+  const token = host.settings.token.trim();
+  if (!token) {
+    host.lastError = "Sign in to your tenant account to connect.";
+    return;
+  }
   host.client = new GatewayBrowserClient({
     url: host.settings.gatewayUrl,
-    token: host.settings.token.trim() ? host.settings.token : undefined,
-    password: host.password.trim() ? host.password : undefined,
+    token,
     clientName: "openclaw-control-ui",
     mode: "webchat",
     onHello: (hello) => {

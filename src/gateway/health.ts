@@ -1,188 +1,166 @@
 /**
- * Health Check Endpoints
- * Provides liveness, readiness, and general health checks for Kubernetes
+ * Health Check HTTP endpoints.
+ *
+ * The gateway HTTP server is built on top of `node:http` (not Express), so these
+ * handlers are implemented against `IncomingMessage`/`ServerResponse`.
  */
 
-import type { Request, Response } from 'express';
-import { getDatabasePool } from '../infra/database/pool';
+import fs from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { URL } from "node:url";
+import { resolveStateDir } from "../config/paths.js";
+import { pool } from "../infra/database/pool.js";
+import { VERSION } from "../version.js";
+import { sendJson, sendText } from "./http-common.js";
 
 export interface HealthCheck {
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    message?: string;
-    latency?: number;
+  status: "healthy" | "degraded" | "unhealthy";
+  message?: string;
+  latency?: number;
 }
 
 export interface HealthStatus {
-    status: 'healthy' | 'degraded' | 'unhealthy';
-    checks: {
-        database: HealthCheck;
-        disk: HealthCheck;
-        memory: HealthCheck;
-    };
-    uptime: number;
-    version: string;
-    timestamp: string;
+  status: "healthy" | "degraded" | "unhealthy";
+  checks: {
+    database: HealthCheck;
+    stateDir: HealthCheck;
+    memory: HealthCheck;
+  };
+  uptime: number;
+  version: string;
+  timestamp: string;
 }
 
-/**
- * Check database connectivity
- */
 async function checkDatabase(): Promise<HealthCheck> {
-    const start = Date.now();
-
-    try {
-        const pool = getDatabasePool();
-        await pool.query('SELECT 1');
-
-        return {
-            status: 'healthy',
-            latency: Date.now() - start,
-        };
-    } catch (error) {
-        return {
-            status: 'unhealthy',
-            message: error instanceof Error ? error.message : 'Database connection failed',
-            latency: Date.now() - start,
-        };
-    }
+  const start = Date.now();
+  try {
+    await pool.query("SELECT 1");
+    return { status: "healthy", latency: Date.now() - start };
+  } catch (error) {
+    return {
+      status: "unhealthy",
+      message: error instanceof Error ? error.message : "Database connection failed",
+      latency: Date.now() - start,
+    };
+  }
 }
 
-/**
- * Check disk space
- */
-function checkDisk(): HealthCheck {
-    try {
-        // Simple check - in production, use actual disk space monitoring
-        const usage = process.memoryUsage();
-        const heapUsedPercent = (usage.heapUsed / usage.heapTotal) * 100;
-
-        if (heapUsedPercent > 90) {
-            return {
-                status: 'unhealthy',
-                message: `Heap usage at ${heapUsedPercent.toFixed(1)}%`,
-            };
-        } else if (heapUsedPercent > 75) {
-            return {
-                status: 'degraded',
-                message: `Heap usage at ${heapUsedPercent.toFixed(1)}%`,
-            };
-        }
-
-        return {
-            status: 'healthy',
-        };
-    } catch (error) {
-        return {
-            status: 'unhealthy',
-            message: error instanceof Error ? error.message : 'Disk check failed',
-        };
-    }
+function checkStateDir(): HealthCheck {
+  const start = Date.now();
+  const dir = resolveStateDir();
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return { status: "healthy", latency: Date.now() - start };
+  } catch (error) {
+    return {
+      status: "unhealthy",
+      message: error instanceof Error ? error.message : "State directory is not writable",
+      latency: Date.now() - start,
+    };
+  }
 }
 
-/**
- * Check memory usage
- */
 function checkMemory(): HealthCheck {
-    try {
-        const usage = process.memoryUsage();
-        const rssPercent = (usage.rss / (2 * 1024 * 1024 * 1024)) * 100; // Assume 2GB limit
-
-        if (rssPercent > 90) {
-            return {
-                status: 'unhealthy',
-                message: `Memory usage at ${rssPercent.toFixed(1)}%`,
-            };
-        } else if (rssPercent > 75) {
-            return {
-                status: 'degraded',
-                message: `Memory usage at ${rssPercent.toFixed(1)}%`,
-            };
-        }
-
-        return {
-            status: 'healthy',
-        };
-    } catch (error) {
-        return {
-            status: 'unhealthy',
-            message: error instanceof Error ? error.message : 'Memory check failed',
-        };
+  try {
+    const usage = process.memoryUsage();
+    const rssPercent = (usage.rss / (2 * 1024 * 1024 * 1024)) * 100; // assume 2GB limit
+    if (rssPercent > 90) {
+      return {
+        status: "unhealthy",
+        message: `Memory usage at ${rssPercent.toFixed(1)}%`,
+      };
     }
+    if (rssPercent > 75) {
+      return {
+        status: "degraded",
+        message: `Memory usage at ${rssPercent.toFixed(1)}%`,
+      };
+    }
+    return { status: "healthy" };
+  } catch (error) {
+    return {
+      status: "unhealthy",
+      message: error instanceof Error ? error.message : "Memory check failed",
+    };
+  }
 }
 
-/**
- * GET /health - General health check
- * Returns overall health status with all checks
- */
-export async function handleHealthCheck(req: Request, res: Response): Promise<void> {
-    const checks = {
-        database: await checkDatabase(),
-        disk: checkDisk(),
-        memory: checkMemory(),
-    };
-
-    // Determine overall status
-    const statuses = Object.values(checks).map((c) => c.status);
-    let overallStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
-
-    if (statuses.includes('unhealthy')) {
-        overallStatus = 'unhealthy';
-    } else if (statuses.includes('degraded')) {
-        overallStatus = 'degraded';
-    }
-
-    const health: HealthStatus = {
-        status: overallStatus,
-        checks,
-        uptime: process.uptime(),
-        version: process.env.npm_package_version || '1.0.0',
-        timestamp: new Date().toISOString(),
-    };
-
-    const statusCode = overallStatus === 'healthy' ? 200 : overallStatus === 'degraded' ? 200 : 503;
-    res.status(statusCode).json(health);
+function resolveOverallStatus(checks: HealthStatus["checks"]): HealthStatus["status"] {
+  const statuses = Object.values(checks).map((check) => check.status);
+  if (statuses.includes("unhealthy")) {
+    return "unhealthy";
+  }
+  if (statuses.includes("degraded")) {
+    return "degraded";
+  }
+  return "healthy";
 }
 
-/**
- * GET /health/live - Liveness probe
- * Returns 200 if the application is running
- * Kubernetes will restart the pod if this fails
- */
-export function handleLivenessProbe(req: Request, res: Response): void {
-    res.status(200).json({
-        status: 'alive',
-        timestamp: new Date().toISOString(),
+function normalizePathname(pathname: string): string {
+  if (pathname.length > 1 && pathname.endsWith("/")) {
+    return pathname.slice(0, -1);
+  }
+  return pathname;
+}
+
+export async function handleHealthHttpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+): Promise<boolean> {
+  const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+  let pathname = normalizePathname(url.pathname);
+  if (pathname === "/api/health" || pathname.startsWith("/api/health/")) {
+    pathname = `/health${pathname.slice("/api/health".length)}`;
+  }
+  if (pathname !== "/health" && !pathname.startsWith("/health/")) {
+    return false;
+  }
+
+  if (req.method !== "GET") {
+    res.setHeader("Allow", "GET");
+    sendText(res, 405, "Method Not Allowed");
+    return true;
+  }
+
+  res.setHeader("Cache-Control", "no-store");
+
+  if (pathname === "/health/live") {
+    sendJson(res, 200, { status: "alive", timestamp: new Date().toISOString() });
+    return true;
+  }
+
+  if (pathname === "/health/ready") {
+    const [database, stateDir] = await Promise.all([checkDatabase(), Promise.resolve(checkStateDir())]);
+    const status =
+      database.status === "healthy" && stateDir.status === "healthy" ? "ready" : "not ready";
+    const statusCode = status === "ready" ? 200 : 503;
+    sendJson(res, statusCode, {
+      status,
+      checks: { database, stateDir },
+      timestamp: new Date().toISOString(),
     });
-}
+    return true;
+  }
 
-/**
- * GET /health/ready - Readiness probe
- * Returns 200 if the application can serve traffic
- * Kubernetes will remove the pod from service if this fails
- */
-export async function handleReadinessProbe(req: Request, res: Response): Promise<void> {
-    try {
-        // Check critical dependencies
-        const dbCheck = await checkDatabase();
+  if (pathname === "/health") {
+    const checks: HealthStatus["checks"] = {
+      database: await checkDatabase(),
+      stateDir: checkStateDir(),
+      memory: checkMemory(),
+    };
+    const overallStatus = resolveOverallStatus(checks);
+    const health: HealthStatus = {
+      status: overallStatus,
+      checks,
+      uptime: process.uptime(),
+      version: VERSION,
+      timestamp: new Date().toISOString(),
+    };
+    sendJson(res, overallStatus === "unhealthy" ? 503 : 200, health);
+    return true;
+  }
 
-        if (dbCheck.status === 'unhealthy') {
-            res.status(503).json({
-                status: 'not ready',
-                reason: 'Database not available',
-                timestamp: new Date().toISOString(),
-            });
-            return;
-        }
-
-        res.status(200).json({
-            status: 'ready',
-            timestamp: new Date().toISOString(),
-        });
-    } catch (error) {
-        res.status(503).json({
-            status: 'not ready',
-            reason: error instanceof Error ? error.message : 'Unknown error',
-            timestamp: new Date().toISOString(),
-        });
-    }
+  sendJson(res, 404, { error: "Not found" });
+  return true;
 }

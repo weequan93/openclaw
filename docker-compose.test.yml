@@ -1,0 +1,123 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: openclaw-postgres
+    environment:
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: changeme_dev_only
+      POSTGRES_DB: openclaw
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openclaw"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: openclaw-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openclaw-gateway
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # Database
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: openclaw
+      POSTGRES_USER: openclaw
+      POSTGRES_PASSWORD: changeme_dev_only
+
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      
+      # JWT
+      JWT_SECRET: dev-secret-key-min-32-characters-long
+      
+      # Application
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      PORT: 3000
+      OPENCLAW_GATEWAY_TOKEN: "dev-token-123"
+      OPENCLAW_STATE_DIR: "/openclaw-state"
+      OPENCLAW_CONFIG_PATH: "/config/openclaw.json"
+      # Platform admin bootstrap (dev-only)
+      OPENCLAW_PLATFORM_ADMIN_EMAIL: "admin@openclaw.local"
+      OPENCLAW_PLATFORM_ADMIN_PASSWORD: "changeme_dev_only"
+      
+      # Features
+      MULTI_TENANT_ENABLED: "true"
+      SSO_ENABLED: "false"
+      BILLING_ENABLED: "false"
+      
+      # Gateway
+      OPENCLAW_GATEWAY_MODE: "local"
+
+      
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./workspace:/workspace
+      - ./workspace/openclaw-state:/openclaw-state
+      - ./config:/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/health/ready >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  ui-admin:
+    build:
+      context: ./ui-admin
+      dockerfile: Dockerfile
+      args:
+        VITE_ADMIN_MODE: platform
+        VITE_ADMIN_API_BASE: /api/v1/platform
+        VITE_ADMIN_STORAGE_KEY: openclaw_platform_admin_token
+    container_name: openclaw-admin-ui
+    ports:
+      - "3001:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+  ui-tenant:
+    build:
+      context: ./ui-admin
+      dockerfile: Dockerfile
+      args:
+        VITE_ADMIN_MODE: tenant
+        VITE_ADMIN_API_BASE: /api/v1/tenant
+        VITE_ADMIN_STORAGE_KEY: openclaw_tenant_admin_token
+    container_name: openclaw-tenant-ui
+    ports:
+      - "3002:80"
+    depends_on:
+      gateway:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local

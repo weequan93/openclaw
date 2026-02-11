@@ -32,6 +32,23 @@ export type OpenClawConfig = {
     lastTouchedAt?: string;
   };
   auth?: AuthConfig;
+  sso?: {
+    enabled?: boolean;
+    saml?: {
+      entryPoint?: string;
+      issuer?: string;
+      callbackUrl?: string;
+      cert?: string;
+    };
+    oauth2?: {
+      authorizationUrl?: string;
+      tokenUrl?: string;
+      userInfoUrl?: string;
+      callbackUrl?: string;
+      clientId?: string;
+      clientSecret?: string;
+    };
+  };
   env?: {
     /** Opt-in: import missing secrets from a login shell environment (exec `$SHELL -l -c 'env -0'`). */
     shellEnv?: {
@@ -43,10 +60,10 @@ export type OpenClawConfig = {
     vars?: Record<string, string>;
     /** Sugar: allow env vars directly under env (string values only). */
     [key: string]:
-      | string
-      | Record<string, string>
-      | { enabled?: boolean; timeoutMs?: number }
-      | undefined;
+    | string
+    | Record<string, string>
+    | { enabled?: boolean; timeoutMs?: number }
+    | undefined;
   };
   wizard?: {
     lastRunAt?: string;

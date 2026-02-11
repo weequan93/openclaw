@@ -191,6 +191,8 @@ export function renderApp(state: AppViewState) {
                 settings: state.settings,
                 password: state.password,
                 lastError: state.lastError,
+                tenantAuthLoading: state.tenantAuthLoading,
+                tenantAuthError: state.tenantAuthError,
                 presenceCount,
                 sessionsCount,
                 cronEnabled: state.cronStatus?.enabled ?? null,
@@ -209,6 +211,8 @@ export function renderApp(state: AppViewState) {
                   });
                   void state.loadAssistantIdentity();
                 },
+                onTenantLogin: () => state.handleTenantLogin(),
+                onTenantLogout: () => state.handleTenantLogout(),
                 onConnect: () => state.connect(),
                 onRefresh: () => state.loadOverview(),
               })

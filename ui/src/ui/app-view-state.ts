@@ -38,6 +38,8 @@ export type AppViewState = {
   themeResolved: "light" | "dark";
   hello: GatewayHelloOk | null;
   lastError: string | null;
+  tenantAuthLoading: boolean;
+  tenantAuthError: string | null;
   eventLog: EventLogEntry[];
   assistantName: string;
   assistantAvatar: string | null;
@@ -163,6 +165,8 @@ export type AppViewState = {
   handleNostrProfileImport: () => Promise<void>;
   handleNostrProfileToggleAdvanced: () => void;
   handleExecApprovalDecision: (decision: "allow-once" | "allow-always" | "deny") => Promise<void>;
+  handleTenantLogin: () => Promise<void>;
+  handleTenantLogout: () => void;
   handleGatewayUrlConfirm: () => void;
   handleGatewayUrlCancel: () => void;
   handleConfigLoad: () => Promise<void>;

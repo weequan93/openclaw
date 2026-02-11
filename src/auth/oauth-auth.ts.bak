@@ -165,7 +165,12 @@ export class OAuth2Provider {
 /**
  * Express middleware for OAuth2 authentication
  */
-export function createOAuth2Middleware(config: OAuth2Config) {
+export function createOAuth2Middleware(config: OAuth2Config): {
+    login: (req: Request, res: Response) => Promise<void>;
+    callback: (req: Request, res: Response) => Promise<void>;
+    userInfo: (req: Request, res: Response) => Promise<void>;
+    refresh: (req: Request, res: Response) => Promise<void>;
+} {
     const provider = new OAuth2Provider(config);
 
     return {

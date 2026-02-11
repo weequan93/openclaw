@@ -1,136 +1,140 @@
 /**
  * Audit Log Service
- * 
- * Manages immutable audit trail for compliance.
+ * Tracks all administrative actions for compliance and security
  */
 
-import { AuditLog, CreateAuditLogInput } from '../models/audit-log.js';
-import { getDatabasePool } from '../infra/database/pool.js';
+import { pool } from '../infra/database/pool.js';
+
+export enum AuditActions {
+    TENANT_CREATED = 'tenant.created',
+    TENANT_UPDATED = 'tenant.updated',
+    TENANT_DELETED = 'tenant.deleted',
+    USER_CREATED = 'user.created',
+    USER_UPDATED = 'user.updated',
+    USER_DELETED = 'user.deleted',
+    AGENT_CREATED = 'agent.created',
+    AGENT_UPDATED = 'agent.updated',
+    AGENT_DELETED = 'agent.deleted',
+    SESSION_STARTED = 'session.started',
+    SESSION_ENDED = 'session.ended',
+    SESSION_DELETED = 'session.deleted',
+    QUOTA_UPDATED = 'quota.updated',
+    BILLING_SUBSCRIPTION_CREATED = 'billing.subscription.created',
+    BILLING_SUBSCRIPTION_UPDATED = 'billing.subscription.updated',
+    BILLING_SUBSCRIPTION_CANCELLED = 'billing.subscription.cancelled',
+    BILLING_INVOICE_PAID = 'billing.invoice.paid',
+    BILLING_INVOICE_FAILED = 'billing.invoice.failed',
+}
+
+export interface AuditLogEntry {
+    id: string;
+    tenantId: string;
+    userId: string;
+    action: AuditActions | string;
+    resourceType: string;
+    resourceId: string;
+    details?: Record<string, any>;
+    ipAddress?: string;
+    userAgent?: string;
+    createdAt: Date;
+}
 
 export class AuditLogService {
     /**
-     * Create audit log entry
+     * Log an audit event
      */
-    async createAuditLog(input: CreateAuditLogInput): Promise<AuditLog> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<AuditLog>(
-            `INSERT INTO audit_logs (tenant_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
-            [
-                input.tenantId,
-                input.userId || null,
-                input.action,
-                input.resourceType || null,
-                input.resourceId || null,
-                JSON.stringify(input.details || {}),
-                input.ipAddress || null,
-                input.userAgent || null,
-            ]
-        );
-
-        return this.mapRow(result[0]);
+    async log(entry: Omit<AuditLogEntry, 'id' | 'createdAt'>): Promise<void> {
+        try {
+            await pool.query(
+                `INSERT INTO audit_logs (tenant_id, user_id, action, resource_type, resource_id, details, ip_address, user_agent)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+                [
+                    entry.tenantId,
+                    entry.userId,
+                    entry.action,
+                    entry.resourceType,
+                    entry.resourceId,
+                    JSON.stringify(entry.details || {}),
+                    entry.ipAddress,
+                    entry.userAgent,
+                ]
+            );
+        } catch (error) {
+            console.error('Failed to log audit event:', error);
+            // Don't throw - audit logging should not break the main flow
+        }
     }
 
     /**
-     * Get audit logs for tenant
+     * Get audit logs for a tenant
      */
-    async getAuditLogs(
+    async getLogsForTenant(
         tenantId: string,
-        options: {
-            userId?: string;
-            action?: string;
-            resourceType?: string;
-            resourceId?: string;
-            startDate?: Date;
-            endDate?: Date;
+        options?: {
             limit?: number;
             offset?: number;
-        } = {}
-    ): Promise<AuditLog[]> {
-        const pool = getDatabasePool();
+            action?: AuditActions | string;
+            userId?: string;
+        }
+    ): Promise<AuditLogEntry[]> {
+        const limit = options?.limit || 100;
+        const offset = options?.offset || 0;
 
-        const conditions: string[] = ['tenant_id = $1'];
-        const values: any[] = [tenantId];
-        let paramIndex = 2;
+        let query = `
+      SELECT * FROM audit_logs
+      WHERE tenant_id = $1
+    `;
+        const params: any[] = [tenantId];
 
-        if (options.userId) {
-            conditions.push(`user_id = $${paramIndex++}`);
-            values.push(options.userId);
+        if (options?.action) {
+            params.push(options.action);
+            query += ` AND action = $${params.length}`;
         }
 
-        if (options.action) {
-            conditions.push(`action = $${paramIndex++}`);
-            values.push(options.action);
+        if (options?.userId) {
+            params.push(options.userId);
+            query += ` AND user_id = $${params.length}`;
         }
 
-        if (options.resourceType) {
-            conditions.push(`resource_type = $${paramIndex++}`);
-            values.push(options.resourceType);
-        }
+        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
 
-        if (options.resourceId) {
-            conditions.push(`resource_id = $${paramIndex++}`);
-            values.push(options.resourceId);
-        }
-
-        if (options.startDate) {
-            conditions.push(`created_at >= $${paramIndex++}`);
-            values.push(options.startDate);
-        }
-
-        if (options.endDate) {
-            conditions.push(`created_at <= $${paramIndex++}`);
-            values.push(options.endDate);
-        }
-
-        const limit = options.limit || 100;
-        const offset = options.offset || 0;
-
-        values.push(limit, offset);
-
-        const result = await pool.query<AuditLog>(
-            `SELECT * FROM audit_logs 
-       WHERE ${conditions.join(' AND ')}
-       ORDER BY created_at DESC
-       LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
-            values
-        );
-
-        return result.map(row => this.mapRow(row));
-    }
-
-    /**
-     * Export audit logs (for compliance)
-     */
-    async exportAuditLogs(
-        tenantId: string,
-        startDate: Date,
-        endDate: Date
-    ): Promise<AuditLog[]> {
-        return this.getAuditLogs(tenantId, {
-            startDate,
-            endDate,
-            limit: 10000, // Large limit for export
-        });
-    }
-
-    /**
-     * Map database row to AuditLog model
-     */
-    private mapRow(row: any): AuditLog {
-        return {
+        const result = await pool.query(query, params);
+        return result.rows.map((row: any) => ({
             id: row.id,
             tenantId: row.tenant_id,
             userId: row.user_id,
             action: row.action,
             resourceType: row.resource_type,
             resourceId: row.resource_id,
-            details: typeof row.details === 'string' ? JSON.parse(row.details) : row.details,
+            details: row.details,
             ipAddress: row.ip_address,
             userAgent: row.user_agent,
-            createdAt: new Date(row.created_at),
-        };
+            createdAt: row.created_at,
+        }));
+    }
+
+    /**
+     * Alias for log() - used by some APIs
+     */
+    async createAuditLog(entry: Omit<AuditLogEntry, 'id' | 'createdAt'>): Promise<void> {
+        return this.log(entry);
+    }
+
+    /**
+     * Alias for getLogsForTenant() - used by some APIs
+     */
+    async getAuditLogs(
+        tenantId: string,
+        options?: {
+            limit?: number;
+            offset?: number;
+            action?: AuditActions | string;
+            userId?: string;
+        }
+    ): Promise<AuditLogEntry[]> {
+        return this.getLogsForTenant(tenantId, options);
     }
 }
+
+export default new AuditLogService();

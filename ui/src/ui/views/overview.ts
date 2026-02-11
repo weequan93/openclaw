@@ -10,6 +10,8 @@ export type OverviewProps = {
   settings: UiSettings;
   password: string;
   lastError: string | null;
+  tenantAuthLoading: boolean;
+  tenantAuthError: string | null;
   presenceCount: number;
   sessionsCount: number | null;
   cronEnabled: boolean | null;
@@ -18,6 +20,8 @@ export type OverviewProps = {
   onSettingsChange: (next: UiSettings) => void;
   onPasswordChange: (next: string) => void;
   onSessionKeyChange: (next: string) => void;
+  onTenantLogin: () => void;
+  onTenantLogout: () => void;
   onConnect: () => void;
   onRefresh: () => void;
 };
@@ -28,6 +32,11 @@ export function renderOverview(props: OverviewProps) {
     | undefined;
   const uptime = snapshot?.uptimeMs ? formatDurationMs(snapshot.uptimeMs) : "n/a";
   const tick = snapshot?.policy?.tickIntervalMs ? `${snapshot.policy.tickIntervalMs}ms` : "n/a";
+  const isLoggedIn = Boolean(props.settings.token.trim());
+  const tenantLabel =
+    props.settings.tenantName?.trim() || props.settings.tenantSlug?.trim() || "tenant";
+  const userLabel =
+    props.settings.tenantUserName?.trim() || props.settings.tenantEmail?.trim() || "user";
   const authHint = (() => {
     if (props.connected || !props.lastError) {
       return null;
@@ -37,43 +46,16 @@ export function renderOverview(props: OverviewProps) {
     if (!authFailed) {
       return null;
     }
-    const hasToken = Boolean(props.settings.token.trim());
-    const hasPassword = Boolean(props.password.trim());
-    if (!hasToken && !hasPassword) {
+    if (!isLoggedIn) {
       return html`
         <div class="muted" style="margin-top: 8px">
-          This gateway requires auth. Add a token or password, then click Connect.
-          <div style="margin-top: 6px">
-            <span class="mono">openclaw dashboard --no-open</span> → tokenized URL<br />
-            <span class="mono">openclaw doctor --generate-gateway-token</span> → set token
-          </div>
-          <div style="margin-top: 6px">
-            <a
-              class="session-link"
-              href="https://docs.openclaw.ai/web/dashboard"
-              target="_blank"
-              rel="noreferrer"
-              title="Control UI auth docs (opens in new tab)"
-              >Docs: Control UI auth</a
-            >
-          </div>
+          Sign in with your tenant account, then click Connect.
         </div>
       `;
     }
     return html`
       <div class="muted" style="margin-top: 8px">
-        Auth failed. Re-copy a tokenized URL with
-        <span class="mono">openclaw dashboard --no-open</span>, or update the token, then click Connect.
-        <div style="margin-top: 6px">
-          <a
-            class="session-link"
-            href="https://docs.openclaw.ai/web/dashboard"
-            target="_blank"
-            rel="noreferrer"
-            title="Control UI auth docs (opens in new tab)"
-            >Docs: Control UI auth</a
-          >
-        </div>
+        Auth failed. Sign in again, then click Connect.
       </div>
     `;
   })();
@@ -123,8 +105,8 @@ export function renderOverview(props: OverviewProps) {
   return html`
     <section class="grid grid-cols-2">
       <div class="card">
-        <div class="card-title">Gateway Access</div>
-        <div class="card-sub">Where the dashboard connects and how it authenticates.</div>
+        <div class="card-title">Tenant Access</div>
+        <div class="card-sub">Sign in with your tenant account to use the dashboard.</div>
         <div class="form-grid" style="margin-top: 16px;">
           <label class="field">
             <span>WebSocket URL</span>
@@ -138,14 +120,26 @@ export function renderOverview(props: OverviewProps) {
             />
           </label>
           <label class="field">
-            <span>Gateway Token</span>
+            <span>Tenant Slug</span>
             <input
-              .value=${props.settings.token}
+              .value=${props.settings.tenantSlug}
               @input=${(e: Event) => {
                 const v = (e.target as HTMLInputElement).value;
-                props.onSettingsChange({ ...props.settings, token: v });
+                props.onSettingsChange({ ...props.settings, tenantSlug: v });
               }}
-              placeholder="OPENCLAW_GATEWAY_TOKEN"
+              placeholder="acme"
+            />
+          </label>
+          <label class="field">
+            <span>Email</span>
+            <input
+              .value=${props.settings.tenantEmail}
+              @input=${(e: Event) => {
+                const v = (e.target as HTMLInputElement).value;
+                props.onSettingsChange({ ...props.settings, tenantEmail: v });
+              }}
+              placeholder="you@acme.test"
+              autocomplete="username"
             />
           </label>
           <label class="field">
@@ -157,7 +151,8 @@ export function renderOverview(props: OverviewProps) {
                 const v = (e.target as HTMLInputElement).value;
                 props.onPasswordChange(v);
               }}
-              placeholder="system or shared password"
+              placeholder="••••••••"
+              autocomplete="current-password"
             />
           </label>
           <label class="field">
@@ -172,10 +167,38 @@ export function renderOverview(props: OverviewProps) {
           </label>
         </div>
         <div class="row" style="margin-top: 14px;">
-          <button class="btn" @click=${() => props.onConnect()}>Connect</button>
-          <button class="btn" @click=${() => props.onRefresh()}>Refresh</button>
-          <span class="muted">Click Connect to apply connection changes.</span>
+          ${
+            isLoggedIn
+              ? html`
+                  <button class="btn" @click=${() => props.onConnect()}>Connect</button>
+                  <button class="btn" @click=${() => props.onRefresh()}>Refresh</button>
+                  <button class="btn ghost" @click=${() => props.onTenantLogout()}>
+                    Sign out
+                  </button>
+                `
+              : html`
+                  <button
+                    class="btn"
+                    ?disabled=${props.tenantAuthLoading}
+                    @click=${() => props.onTenantLogin()}
+                  >
+                    ${props.tenantAuthLoading ? "Signing in..." : "Sign in"}
+                  </button>
+                `
+          }
+          <span class="muted">
+            ${isLoggedIn
+              ? html`Signed in as <span class="mono">${userLabel}</span> (${tenantLabel})`
+              : "Sign in to connect."}
+          </span>
         </div>
+        ${
+          props.tenantAuthError
+            ? html`<div class="callout danger" style="margin-top: 12px;">
+                ${props.tenantAuthError}
+              </div>`
+            : ""
+        }
       </div>
 
       <div class="card">

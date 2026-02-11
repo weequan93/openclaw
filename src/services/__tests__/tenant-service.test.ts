@@ -51,16 +51,16 @@ describe('Tenant Isolation', () => {
         const user1 = await userService.createUser({
             tenantId: tenant1Id,
             email: 'user1@tenant1.com',
-            password: 'password123',
-            role: 'owner',
+            fullName: 'Tenant 1 Owner',
+            role: 'tenant_admin',
         });
         user1Id = user1.id;
 
         const user2 = await userService.createUser({
             tenantId: tenant2Id,
             email: 'user2@tenant2.com',
-            password: 'password123',
-            role: 'owner',
+            fullName: 'Tenant 2 Owner',
+            role: 'tenant_admin',
         });
         user2Id = user2.id;
 
@@ -112,7 +112,7 @@ describe('Tenant Isolation', () => {
 
     it('should prevent cross-tenant user access', async () => {
         // Try to get Tenant 2's user from Tenant 1's context
-        const user = await userService.getUserByEmail(tenant1Id, 'user2@tenant2.com');
+        const user = await userService.getUserByEmailForTenant(tenant1Id, 'user2@tenant2.com');
         expect(user).toBeNull();
     });
 

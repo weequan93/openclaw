@@ -96,7 +96,7 @@ export class MigrationRunner {
         await this.initialize();
 
         const migrations = await this.loadMigrations();
-        const applied = await getAppliedMigrations();
+        const applied = await this.getAppliedMigrations();
 
         const pending = migrations.filter(m => !applied.includes(m.version));
 

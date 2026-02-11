@@ -1,295 +1,75 @@
 /**
  * PostgreSQL Session Manager
- * 
- * Replaces JSONL-based session storage with PostgreSQL backend.
- * Provides multi-tenant session persistence with message history.
+ * Manages chat sessions in PostgreSQL
  */
 
-import { Session, CreateSessionInput, UpdateSessionInput, SessionMessage } from '../models/session.js';
-import { getDatabasePool } from '../infra/database/pool.js';
+import { pool } from '../infra/database/pool.js';
+
+export interface Session {
+    id: string;
+    tenantId: string;
+    userId: string;
+    agentId: string;
+    status: 'active' | 'ended';
+    createdAt: Date;
+    updatedAt: Date;
+}
 
 export class PostgresSessionManager {
-    /**
-     * Create a new session
-     */
-    async createSession(input: CreateSessionInput): Promise<Session> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            `INSERT INTO sessions (tenant_id, agent_id, user_id, session_key, messages, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-            [
-                input.tenantId,
-                input.agentId,
-                input.userId || null,
-                input.sessionKey,
-                JSON.stringify([]),
-                JSON.stringify(input.metadata || {}),
-            ]
+    async createSession(data: {
+        tenantId: string;
+        userId: string;
+        agentId: string;
+    }): Promise<Session> {
+        const result = await pool.query(
+            `INSERT INTO sessions (tenant_id, user_id, agent_id, status) VALUES ($1, $2, $3, 'active') RETURNING *`,
+            [data.tenantId, data.userId, data.agentId]
         );
-
-        return this.mapRow(result[0]);
+        return this.mapRow(result.rows[0]);
     }
 
-    /**
-     * Get session by ID
-     */
-    async getSessionById(sessionId: string): Promise<Session | null> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            'SELECT * FROM sessions WHERE id = $1',
-            [sessionId]
-        );
-
-        return result[0] ? this.mapRow(result[0]) : null;
+    async getSessionById(id: string): Promise<Session | null> {
+        const result = await pool.query('SELECT * FROM sessions WHERE id = $1', [id]);
+        return result.rows[0] ? this.mapRow(result.rows[0]) : null;
     }
 
-    /**
-     * Get session by key
-     */
-    async getSessionByKey(tenantId: string, sessionKey: string): Promise<Session | null> {
-        const pool = getDatabasePool();
+    async listSessionsForTenant(tenantId: string, options?: { limit?: number; offset?: number; userId?: string }): Promise<Session[]> {
+        const limit = options?.limit || 100;
+        const offset = options?.offset || 0;
 
-        const result = await pool.query<Session>(
-            'SELECT * FROM sessions WHERE tenant_id = $1 AND session_key = $2',
-            [tenantId, sessionKey]
-        );
+        let query = 'SELECT * FROM sessions WHERE tenant_id = $1';
+        const params: any[] = [tenantId];
 
-        return result[0] ? this.mapRow(result[0]) : null;
-    }
-
-    /**
-     * Add message to session
-     */
-    async addMessage(
-        sessionId: string,
-        message: SessionMessage,
-        tokenCount = 0
-    ): Promise<Session> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            `UPDATE sessions 
-       SET messages = messages || $1::jsonb,
-           message_count = message_count + 1,
-           token_count = token_count + $2,
-           last_message_at = NOW(),
-           updated_at = NOW()
-       WHERE id = $3
-       RETURNING *`,
-            [JSON.stringify(message), tokenCount, sessionId]
-        );
-
-        if (!result[0]) {
-            throw new Error('Session not found');
+        if (options?.userId) {
+            params.push(options.userId);
+            query += ` AND user_id = $${params.length}`;
         }
 
-        return this.mapRow(result[0]);
+        query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+        params.push(limit, offset);
+
+        const result = await pool.query(query, params);
+        return result.rows.map(this.mapRow);
     }
 
-    /**
-     * Update session metadata
-     */
-    async updateSession(sessionId: string, input: UpdateSessionInput): Promise<Session> {
-        const pool = getDatabasePool();
-
-        const updates: string[] = [];
-        const values: any[] = [];
-        let paramIndex = 1;
-
-        if (input.messages) {
-            updates.push(`messages = $${paramIndex++}`);
-            values.push(JSON.stringify(input.messages));
-        }
-
-        if (input.metadata) {
-            // Merge with existing metadata
-            const session = await this.getSessionById(sessionId);
-            if (!session) {
-                throw new Error('Session not found');
-            }
-
-            const mergedMetadata = {
-                ...session.metadata,
-                ...input.metadata,
-            };
-
-            updates.push(`metadata = $${paramIndex++}`);
-            values.push(JSON.stringify(mergedMetadata));
-        }
-
-        if (input.messageCount !== undefined) {
-            updates.push(`message_count = $${paramIndex++}`);
-            values.push(input.messageCount);
-        }
-
-        if (input.tokenCount !== undefined) {
-            updates.push(`token_count = $${paramIndex++}`);
-            values.push(input.tokenCount);
-        }
-
-        if (input.lastMessageAt) {
-            updates.push(`last_message_at = $${paramIndex++}`);
-            values.push(input.lastMessageAt);
-        }
-
-        if (updates.length === 0) {
-            throw new Error('No updates provided');
-        }
-
-        values.push(sessionId);
-
-        const result = await pool.query<Session>(
-            `UPDATE sessions SET ${updates.join(', ')}, updated_at = NOW()
-       WHERE id = $${paramIndex}
-       RETURNING *`,
-            values
+    async deleteSession(id: string): Promise<void> {
+        await pool.query(
+            'UPDATE sessions SET status = $1, updated_at = NOW() WHERE id = $2',
+            ['ended', id]
         );
-
-        if (!result[0]) {
-            throw new Error('Session not found');
-        }
-
-        return this.mapRow(result[0]);
     }
 
-    /**
-     * List sessions for agent
-     */
-    async listSessionsForAgent(
-        agentId: string,
-        limit = 50,
-        offset = 0
-    ): Promise<Session[]> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            `SELECT * FROM sessions 
-       WHERE agent_id = $1 
-       ORDER BY last_message_at DESC NULLS LAST, updated_at DESC
-       LIMIT $2 OFFSET $3`,
-            [agentId, limit, offset]
-        );
-
-        return result.map(row => this.mapRow(row));
-    }
-
-    /**
-     * List sessions for tenant
-     */
-    async listSessionsForTenant(
-        tenantId: string,
-        limit = 50,
-        offset = 0
-    ): Promise<Session[]> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            `SELECT * FROM sessions 
-       WHERE tenant_id = $1 
-       ORDER BY last_message_at DESC NULLS LAST, updated_at DESC
-       LIMIT $2 OFFSET $3`,
-            [tenantId, limit, offset]
-        );
-
-        return result.map(row => this.mapRow(row));
-    }
-
-    /**
-     * List sessions for user
-     */
-    async listSessionsForUser(
-        userId: string,
-        limit = 50,
-        offset = 0
-    ): Promise<Session[]> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<Session>(
-            `SELECT * FROM sessions 
-       WHERE user_id = $1 
-       ORDER BY last_message_at DESC NULLS LAST, updated_at DESC
-       LIMIT $2 OFFSET $3`,
-            [userId, limit, offset]
-        );
-
-        return result.map(row => this.mapRow(row));
-    }
-
-    /**
-     * Delete session
-     */
-    async deleteSession(sessionId: string): Promise<void> {
-        const pool = getDatabasePool();
-
-        await pool.query('DELETE FROM sessions WHERE id = $1', [sessionId]);
-    }
-
-    /**
-     * Delete old sessions (cleanup)
-     */
-    async deleteOldSessions(daysOld = 90): Promise<number> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<{ count: string }>(
-            `DELETE FROM sessions 
-       WHERE updated_at < NOW() - INTERVAL '${daysOld} days'
-       RETURNING id`
-        );
-
-        return result.length;
-    }
-
-    /**
-     * Get session statistics
-     */
-    async getSessionStats(tenantId: string): Promise<{
-        totalSessions: number;
-        activeSessions: number;
-        totalMessages: number;
-        totalTokens: number;
-    }> {
-        const pool = getDatabasePool();
-
-        const result = await pool.query<any>(
-            `SELECT 
-         COUNT(*) as total_sessions,
-         COUNT(CASE WHEN last_message_at > NOW() - INTERVAL '24 hours' THEN 1 END) as active_sessions,
-         SUM(message_count) as total_messages,
-         SUM(token_count) as total_tokens
-       FROM sessions
-       WHERE tenant_id = $1`,
-            [tenantId]
-        );
-
-        const row = result[0];
-        return {
-            totalSessions: parseInt(row.total_sessions, 10),
-            activeSessions: parseInt(row.active_sessions, 10),
-            totalMessages: parseInt(row.total_messages || '0', 10),
-            totalTokens: parseInt(row.total_tokens || '0', 10),
-        };
-    }
-
-    /**
-     * Map database row to Session model
-     */
     private mapRow(row: any): Session {
         return {
             id: row.id,
             tenantId: row.tenant_id,
-            agentId: row.agent_id,
             userId: row.user_id,
-            sessionKey: row.session_key,
-            messages: typeof row.messages === 'string' ? JSON.parse(row.messages) : row.messages,
-            metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata) : row.metadata,
-            messageCount: row.message_count,
-            tokenCount: row.token_count,
-            createdAt: new Date(row.created_at),
-            updatedAt: new Date(row.updated_at),
-            lastMessageAt: row.last_message_at ? new Date(row.last_message_at) : undefined,
+            agentId: row.agent_id,
+            status: row.status,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
         };
     }
 }
+
+export default new PostgresSessionManager();

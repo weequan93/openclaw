@@ -1,152 +1,134 @@
 /**
  * Tenant Context Middleware
- * 
- * Sets tenant context for Row-Level Security (RLS) enforcement.
- * Ensures all database queries are scoped to the current tenant.
+ * Injects tenant context into requests based on subdomain or header
  */
 
-import { PoolClient } from 'pg';
 import { Request, Response, NextFunction } from 'express';
+import { pool } from './pool.js';
 
 export interface TenantContext {
     tenantId: string;
-    userId?: string;
-    isAdmin?: boolean;
+    tenantSlug: string;
+    tenantName: string;
 }
 
-/**
- * Set tenant context for RLS
- */
-export async function setTenantContext(
-    client: PoolClient,
-    context: TenantContext
-): Promise<void> {
-    // Set tenant ID (required)
-    await client.query('SET LOCAL app.current_tenant_id = $1', [context.tenantId]);
-
-    // Set user ID (optional)
-    if (context.userId) {
-        await client.query('SET LOCAL app.current_user_id = $1', [context.userId]);
-    }
-
-    // Set admin flag (optional, for system operations)
-    if (context.isAdmin) {
-        await client.query('SET LOCAL app.is_admin = $1', [context.isAdmin]);
-    }
-}
-
-/**
- * Clear tenant context
- */
-export async function clearTenantContext(client: PoolClient): Promise<void> {
-    await client.query('RESET app.current_tenant_id');
-    await client.query('RESET app.current_user_id');
-    await client.query('RESET app.is_admin');
-}
-
-/**
- * Express middleware to set tenant context
- */
-export function tenantContextMiddleware() {
-    return async (req: Request, res: Response, next: NextFunction) => {
-        // Skip if no user (public endpoints)
-        if (!req.user) {
-            return next();
-        }
-
-        // Get database client from pool
-        const { getDatabasePool } = await import('./pool.js');
-        const pool = getDatabasePool();
-        const client = await pool.getClient();
-
-        try {
-            // Set tenant context
-            await setTenantContext(client, {
-                tenantId: req.user.tenantId,
-                userId: req.user.id,
-                isAdmin: req.user.isSystemAdmin || false,
-            });
-
-            // Attach client to request for use in handlers
-            req.dbClient = client;
-
-            // Ensure client is released after response
-            res.on('finish', () => {
-                client.release();
-            });
-
-            res.on('close', () => {
-                client.release();
-            });
-
-            next();
-        } catch (error) {
-            client.release();
-            next(error);
-        }
-    };
-}
-
-/**
- * Utility to execute query with tenant context
- */
-export async function withTenantContext<T>(
-    context: TenantContext,
-    callback: (client: PoolClient) => Promise<T>
-): Promise<T> {
-    const { getDatabasePool } = await import('./pool.js');
-    const pool = getDatabasePool();
-    const client = await pool.getClient();
-
-    try {
-        await setTenantContext(client, context);
-        return await callback(client);
-    } finally {
-        await clearTenantContext(client);
-        client.release();
-    }
-}
-
-/**
- * Utility to execute transaction with tenant context
- */
-export async function withTenantTransaction<T>(
-    context: TenantContext,
-    callback: (client: PoolClient) => Promise<T>
-): Promise<T> {
-    const { getDatabasePool } = await import('./pool.js');
-    const pool = getDatabasePool();
-    const client = await pool.getClient();
-
-    try {
-        await client.query('BEGIN');
-        await setTenantContext(client, context);
-
-        const result = await callback(client);
-
-        await client.query('COMMIT');
-        return result;
-    } catch (error) {
-        await client.query('ROLLBACK');
-        throw error;
-    } finally {
-        await clearTenantContext(client);
-        client.release();
-    }
-}
-
-// Extend Express Request type
+// Extend Express Request to include tenant context
 declare global {
     namespace Express {
         interface Request {
-            dbClient?: PoolClient;
-            user?: {
-                id: string;
-                tenantId: string;
-                email: string;
-                role: string;
-                isSystemAdmin?: boolean;
-            };
+            tenant?: TenantContext;
         }
     }
 }
+
+/**
+ * Middleware to extract and inject tenant context
+ */
+export async function tenantContextMiddleware(
+    req: Request,
+    res: Response,
+    next: NextFunction
+): Promise<void> {
+    try {
+        // Try to get tenant from header first
+        const tenantHeader = req.headers['x-tenant-id'] as string;
+
+        if (tenantHeader) {
+            const tenant = await getTenantById(tenantHeader);
+            if (tenant) {
+                req.tenant = tenant;
+                return next();
+            }
+        }
+
+        // Try to get tenant from subdomain
+        const host = req.headers.host || '';
+        const subdomain = host.split('.')[0];
+
+        if (subdomain && subdomain !== 'www' && subdomain !== 'api') {
+            const tenant = await getTenantBySlug(subdomain);
+            if (tenant) {
+                req.tenant = tenant;
+                return next();
+            }
+        }
+
+        // No tenant found - this might be okay for some routes
+        next();
+    } catch (error) {
+        console.error('Tenant context middleware error:', error);
+        next();
+    }
+}
+
+/**
+ * Middleware to require tenant context
+ */
+export function requireTenant(
+    req: Request,
+    res: Response,
+    next: NextFunction
+): void {
+    if (!req.tenant) {
+        res.status(400).json({ error: 'Tenant context required' });
+        return;
+    }
+    next();
+}
+
+/**
+ * Get tenant by ID
+ */
+async function getTenantById(id: string): Promise<TenantContext | null> {
+    try {
+        const result = await pool.query(
+            'SELECT id, slug, name FROM tenants WHERE id = $1 AND status = $2',
+            [id, 'active']
+        );
+
+        if (result.rows.length === 0) {
+            return null;
+        }
+
+        const row = result.rows[0];
+        return {
+            tenantId: row.id,
+            tenantSlug: row.slug,
+            tenantName: row.name,
+        };
+    } catch (error) {
+        console.error('Error fetching tenant by ID:', error);
+        return null;
+    }
+}
+
+/**
+ * Get tenant by slug
+ */
+async function getTenantBySlug(slug: string): Promise<TenantContext | null> {
+    try {
+        const result = await pool.query(
+            'SELECT id, slug, name FROM tenants WHERE slug = $1 AND status = $2',
+            [slug, 'active']
+        );
+
+        if (result.rows.length === 0) {
+            return null;
+        }
+
+        const row = result.rows[0];
+        return {
+            tenantId: row.id,
+            tenantSlug: row.slug,
+            tenantName: row.name,
+        };
+    } catch (error) {
+        console.error('Error fetching tenant by slug:', error);
+        return null;
+    }
+}
+
+export default {
+    tenantContextMiddleware,
+    requireTenant,
+};

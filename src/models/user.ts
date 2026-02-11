@@ -4,7 +4,14 @@
  * Represents a user with RBAC roles in a multi-tenant system.
  */
 
-export type UserRole = 'owner' | 'admin' | 'developer' | 'operator' | 'viewer';
+export type UserRole =
+  | 'platform_admin'
+  | 'tenant_admin'
+  | 'owner'
+  | 'admin'
+  | 'developer'
+  | 'operator'
+  | 'viewer';
 
 export interface User {
     id: string;

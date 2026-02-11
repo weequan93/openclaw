@@ -144,7 +144,11 @@ export class SAMLAuthProvider {
 /**
  * Express middleware for SAML authentication
  */
-export function createSAMLAuthMiddleware(config: SAMLConfig) {
+export function createSAMLAuthMiddleware(config: SAMLConfig): {
+    login: (req: Request, res: Response) => Promise<void>;
+    callback: (req: Request, res: Response) => Promise<void>;
+    metadata: (req: Request, res: Response) => Promise<void>;
+} {
     const provider = new SAMLAuthProvider(config);
 
     return {

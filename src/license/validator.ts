@@ -3,8 +3,7 @@
  * JWT-based license keys with offline validation
  */
 
-import * as crypto from 'crypto';
-import * as jwt from 'jsonwebtoken';
+import jwt from 'jsonwebtoken';
 
 export interface LicenseInfo {
     id: string;

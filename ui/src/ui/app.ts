@@ -67,6 +67,10 @@ import {
   onPopState as onPopStateInternal,
 } from "./app-settings";
 import {
+  loginTenant as loginTenantInternal,
+  logoutTenant as logoutTenantInternal,
+} from "./controllers/tenant-auth";
+import {
   resetToolStream as resetToolStreamInternal,
   type ToolStreamEntry,
 } from "./app-tool-stream";
@@ -108,6 +112,8 @@ export class OpenClawApp extends LitElement {
   @state() hello: GatewayHelloOk | null = null;
   @state() lastError: string | null = null;
   @state() eventLog: EventLogEntry[] = [];
+  @state() tenantAuthLoading = false;
+  @state() tenantAuthError: string | null = null;
   private eventLogBuffer: EventLogEntry[] = [];
   private toolStreamSyncTimer: number | null = null;
   private sidebarCloseTimer: number | null = null;
@@ -290,6 +296,14 @@ export class OpenClawApp extends LitElement {
 
   connect() {
     connectGatewayInternal(this as unknown as Parameters<typeof connectGatewayInternal>[0]);
+  }
+
+  async handleTenantLogin() {
+    await loginTenantInternal(this as unknown as Parameters<typeof loginTenantInternal>[0]);
+  }
+
+  handleTenantLogout() {
+    logoutTenantInternal(this as unknown as Parameters<typeof logoutTenantInternal>[0]);
   }
 
   handleChatScroll(event: Event) {

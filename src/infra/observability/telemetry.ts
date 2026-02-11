@@ -1,102 +1,70 @@
 /**
- * OpenTelemetry Configuration
+ * OpenTelemetry Setup
+ * Configures distributed tracing for OpenClaw Enterprise
  * 
- * Configures distributed tracing for OpenClaw multi-tenant deployment.
- * Exports traces to Jaeger for visualization and debugging.
+ * Note: Telemetry is optional and can be disabled via OTEL_ENABLED=false
  */
 
 import { NodeSDK } from '@opentelemetry/sdk-node';
-import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
-import { JaegerExporter } from '@opentelemetry/exporter-jaeger';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-otlp-http';
 import { Resource } from '@opentelemetry/resources';
 import { SemanticResourceAttributes } from '@opentelemetry/semantic-conventions';
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
 
-export interface TelemetryConfig {
-    serviceName: string;
-    serviceVersion: string;
-    jaegerEndpoint?: string;
-    enabled?: boolean;
-}
-
-let sdkInstance: NodeSDK | null = null;
+const JAEGER_ENDPOINT = process.env.JAEGER_ENDPOINT || 'http://localhost:4318/v1/traces';
+const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || 'openclaw-gateway';
+const OTEL_ENABLED = process.env.OTEL_ENABLED !== 'false';
 
 /**
  * Initialize OpenTelemetry SDK
  */
-export function initializeTelemetry(config: TelemetryConfig): NodeSDK {
-    if (sdkInstance) {
-        console.warn('Telemetry already initialized');
-        return sdkInstance;
+export function initializeTelemetry(): NodeSDK | null {
+    if (!OTEL_ENABLED) {
+        console.log('OpenTelemetry disabled');
+        return null;
     }
 
-    if (!config.enabled) {
-        console.log('Telemetry disabled');
-        return null as any;
-    }
+    try {
+        // Create resource with service metadata
+        const resource = Resource.default().merge(
+            new Resource({
+                [SemanticResourceAttributes.SERVICE_NAME]: SERVICE_NAME,
+                [SemanticResourceAttributes.SERVICE_VERSION]: process.env.npm_package_version || '1.0.0',
+            })
+        );
 
-    // Configure Jaeger exporter
-    const jaegerExporter = new JaegerExporter({
-        endpoint: config.jaegerEndpoint || 'http://localhost:14268/api/traces',
-    });
-
-    // Configure resource attributes
-    const resource = new Resource({
-        [SemanticResourceAttributes.SERVICE_NAME]: config.serviceName,
-        [SemanticResourceAttributes.SERVICE_VERSION]: config.serviceVersion,
-        [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]:
-            process.env.NODE_ENV || 'development',
-    });
-
-    // Initialize SDK
-    const sdk = new NodeSDK({
-        resource,
-        spanProcessor: new BatchSpanProcessor(jaegerExporter),
-        instrumentations: [
-            getNodeAutoInstrumentations({
-                // Disable instrumentations we don't need
-                '@opentelemetry/instrumentation-fs': {
-                    enabled: false,
-                },
+        const sdk = new NodeSDK({
+            resource: resource as any, // Type cast to avoid version mismatch
+            traceExporter: new OTLPTraceExporter({
+                url: JAEGER_ENDPOINT,
             }),
-        ],
-    });
+            instrumentations: [
+                getNodeAutoInstrumentations({
+                    // Disable problematic instrumentations
+                    '@opentelemetry/instrumentation-fs': {
+                        enabled: false,
+                    },
+                } as any),
+            ],
+        });
 
-    sdk.start();
-    console.log('OpenTelemetry initialized');
+        sdk.start();
+        console.log('OpenTelemetry initialized');
 
-    // Graceful shutdown
-    process.on('SIGTERM', async () => {
-        try {
-            await sdk.shutdown();
-            console.log('OpenTelemetry shut down successfully');
-        } catch (error) {
-            console.error('Error shutting down OpenTelemetry:', error);
-        }
-    });
+        // Graceful shutdown
+        process.on('SIGTERM', () => {
+            sdk
+                .shutdown()
+                .then(() => console.log('Tracing terminated'))
+                .catch((error: any) => console.error('Error terminating tracing', error))
+                .finally(() => process.exit(0));
+        });
 
-    sdkInstance = sdk;
-    return sdk;
-}
-
-/**
- * Get telemetry configuration from environment
- */
-export function getTelemetryConfigFromEnv(): TelemetryConfig {
-    return {
-        serviceName: process.env.OTEL_SERVICE_NAME || 'openclaw-gateway',
-        serviceVersion: process.env.npm_package_version || '1.0.0',
-        jaegerEndpoint: process.env.JAEGER_ENDPOINT,
-        enabled: process.env.OTEL_ENABLED === 'true',
-    };
-}
-
-/**
- * Shutdown telemetry
- */
-export async function shutdownTelemetry(): Promise<void> {
-    if (sdkInstance) {
-        await sdkInstance.shutdown();
-        sdkInstance = null;
+        return sdk;
+    } catch (error) {
+        console.error('Failed to initialize OpenTelemetry:', error);
+        return null;
     }
 }
+
+export default initializeTelemetry;

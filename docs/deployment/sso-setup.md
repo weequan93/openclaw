@@ -55,35 +55,23 @@ OpenClaw supports two SSO protocols:
 
 7. Download **Federation Metadata XML**
 
-### 2. Configure OpenClaw
+### 2. Configure OpenClaw (Tenant SSO)
 
-Update your Kubernetes ConfigMap:
+**New!** You can now configure SAML explicitly for each tenant using the Admin UI.
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: openclaw-config
-data:
-  sso.enabled: "true"
-  saml.entryPoint: "https://your-idp.okta.com/app/xxx/sso/saml"
-  saml.issuer: "openclaw"
-  saml.callbackUrl: "https://openclaw.yourdomain.com/auth/saml/callback"
-```
+1.  **Log in** to your OpenClaw Admin Dashboard.
+2.  Navigate to **Tenants**.
+3.  Click **Settings** on the tenant you wish to configure.
+4.  Enable **SSO** and select **SAML 2.0**.
+5.  Enter the details from your IdP:
+    *   **Entry Point**: (e.g., `https://your-idp.okta.com/app/...`)
+    *   **Issuer**: (e.g., `openclaw`)
+    *   **Certificate**: Paste the raw X.509 certificate.
+6.  Save Configuration.
 
-Update your Kubernetes Secret with the IdP certificate:
+The **Callback URL** for your IdP is displayed on this settings page.
 
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: openclaw-secrets
-stringData:
-  saml.cert: |
-    -----BEGIN CERTIFICATE-----
-    <Your IdP certificate>
-    -----END CERTIFICATE-----
-```
+*Note: The global `openclaw.json` or Kubernetes ConfigMap is no longer used for Tenant SAML settings, but can still be used for Global defaults if needed.*
 
 ### 3. Group to Role Mapping
 
@@ -101,7 +89,7 @@ Configure these groups in your IdP.
 
 ### 4. Test SAML Login
 
-1. Navigate to `https://openclaw.yourdomain.com/auth/saml/login`
+1. Navigate to `https://openclaw.yourdomain.com/auth/login/sso?tenant=YOUR_TENANT_SLUG`
 2. You should be redirected to your IdP
 3. Log in with your credentials
 4. You should be redirected back to OpenClaw
