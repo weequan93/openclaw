@@ -26,6 +26,12 @@ import {
 import { type AnnounceQueueItem, enqueueAnnounce } from "./subagent-announce-queue.js";
 import { readLatestAssistantReply } from "./tools/agent-step.js";
 
+export type SubagentOwnerIdentity = {
+  userId: string;
+  principalId: string;
+  alias?: string;
+};
+
 function formatTokenCount(value?: number) {
   if (!value || !Number.isFinite(value)) {
     return "0";
@@ -112,7 +118,7 @@ function resolveAnnounceOrigin(
   return mergeDeliveryContext(requesterOrigin, deliveryContextFromSession(entry));
 }
 
-async function sendAnnounce(item: AnnounceQueueItem) {
+async function sendAnnounce(item: AnnounceQueueItem, ownerIdentity?: SubagentOwnerIdentity) {
   const origin = item.origin;
   const threadId =
     origin?.threadId != null && origin.threadId !== "" ? String(origin.threadId) : undefined;
@@ -130,6 +136,7 @@ async function sendAnnounce(item: AnnounceQueueItem) {
     },
     expectFinal: true,
     timeoutMs: 60_000,
+    ...(ownerIdentity ? { identity: ownerIdentity } : {}),
   });
 }
 
@@ -170,6 +177,7 @@ async function maybeQueueSubagentAnnounce(params: {
   triggerMessage: string;
   summaryLine?: string;
   requesterOrigin?: DeliveryContext;
+  ownerIdentity?: SubagentOwnerIdentity;
 }): Promise<"steered" | "queued" | "none"> {
   const { cfg, entry } = loadRequesterSessionEntry(params.requesterSessionKey);
   const canonicalKey = resolveRequesterStoreKey(cfg, params.requesterSessionKey);
@@ -210,7 +218,7 @@ async function maybeQueueSubagentAnnounce(params: {
         origin,
       },
       settings: queueSettings,
-      send: sendAnnounce,
+      send: (item) => sendAnnounce(item, params.ownerIdentity),
     });
     return "queued";
   }
@@ -288,6 +296,7 @@ async function readLatestAssistantReplyWithRetry(params: {
   sessionKey: string;
   initialReply?: string;
   maxWaitMs: number;
+  ownerIdentity?: SubagentOwnerIdentity;
 }): Promise<string | undefined> {
   let reply = params.initialReply?.trim() ? params.initialReply : undefined;
   if (reply) {
@@ -297,7 +306,10 @@ async function readLatestAssistantReplyWithRetry(params: {
   const deadline = Date.now() + Math.max(0, Math.min(params.maxWaitMs, 15_000));
   while (Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const latest = await readLatestAssistantReply({ sessionKey: params.sessionKey });
+    const latest = await readLatestAssistantReply({
+      sessionKey: params.sessionKey,
+      ownerIdentity: params.ownerIdentity,
+    });
     if (latest?.trim()) {
       return latest;
     }
@@ -380,6 +392,7 @@ export async function runSubagentAnnounceFlow(params: {
   label?: string;
   outcome?: SubagentRunOutcome;
   announceType?: SubagentAnnounceType;
+  ownerIdentity?: SubagentOwnerIdentity;
 }): Promise<boolean> {
   let didAnnounce = false;
   let shouldDeleteChildSession = params.cleanup === "delete";
@@ -421,6 +434,7 @@ export async function runSubagentAnnounceFlow(params: {
           timeoutMs: waitMs,
         },
         timeoutMs: waitMs + 2000,
+        ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
       });
       const waitError = typeof wait?.error === "string" ? wait.error : undefined;
       if (wait?.status === "timeout") {
@@ -441,11 +455,17 @@ export async function runSubagentAnnounceFlow(params: {
           outcome = { status: "timeout" };
         }
       }
-      reply = await readLatestAssistantReply({ sessionKey: params.childSessionKey });
+      reply = await readLatestAssistantReply({
+        sessionKey: params.childSessionKey,
+        ownerIdentity: params.ownerIdentity,
+      });
     }
 
     if (!reply) {
-      reply = await readLatestAssistantReply({ sessionKey: params.childSessionKey });
+      reply = await readLatestAssistantReply({
+        sessionKey: params.childSessionKey,
+        ownerIdentity: params.ownerIdentity,
+      });
     }
 
     if (!reply?.trim()) {
@@ -453,6 +473,7 @@ export async function runSubagentAnnounceFlow(params: {
         sessionKey: params.childSessionKey,
         initialReply: reply,
         maxWaitMs: params.timeoutMs,
+        ownerIdentity: params.ownerIdentity,
       });
     }
 
@@ -504,6 +525,7 @@ export async function runSubagentAnnounceFlow(params: {
       triggerMessage,
       summaryLine: taskLabel,
       requesterOrigin,
+      ownerIdentity: params.ownerIdentity,
     });
     if (queued === "steered") {
       didAnnounce = true;
@@ -537,6 +559,7 @@ export async function runSubagentAnnounceFlow(params: {
       },
       expectFinal: true,
       timeoutMs: 60_000,
+      ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
     });
 
     didAnnounce = true;
@@ -551,6 +574,7 @@ export async function runSubagentAnnounceFlow(params: {
           method: "sessions.patch",
           params: { key: params.childSessionKey, label: params.label },
           timeoutMs: 10_000,
+          ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
         });
       } catch {
         // Best-effort
@@ -562,6 +586,7 @@ export async function runSubagentAnnounceFlow(params: {
           method: "sessions.delete",
           params: { key: params.childSessionKey, deleteTranscript: true },
           timeoutMs: 10_000,
+          ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
         });
       } catch {
         // ignore

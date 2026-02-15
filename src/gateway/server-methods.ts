@@ -1,7 +1,10 @@
 import type { GatewayRequestHandlers, GatewayRequestOptions } from "./server-methods/types.js";
-import { ErrorCodes, errorShape } from "./protocol/index.js";
+import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
+import { ErrorCodes, errorShape, type ErrorShape } from "./protocol/index.js";
+import { auditGatewayAuthorization, authorizeGatewayMethod } from "./server-authz.js";
 import { agentHandlers } from "./server-methods/agent.js";
 import { agentsHandlers } from "./server-methods/agents.js";
+import { authzHandlers } from "./server-methods/authz.js";
 import { browserHandlers } from "./server-methods/browser.js";
 import { channelsHandlers } from "./server-methods/channels.js";
 import { chatHandlers } from "./server-methods/chat.js";
@@ -14,6 +17,7 @@ import { healthHandlers } from "./server-methods/health.js";
 import { logsHandlers } from "./server-methods/logs.js";
 import { modelsHandlers } from "./server-methods/models.js";
 import { nodeHandlers } from "./server-methods/nodes.js";
+import { ownershipHandlers } from "./server-methods/ownership.js";
 import { sendHandlers } from "./server-methods/send.js";
 import { sessionsHandlers } from "./server-methods/sessions.js";
 import { skillsHandlers } from "./server-methods/skills.js";
@@ -25,142 +29,6 @@ import { usageHandlers } from "./server-methods/usage.js";
 import { voicewakeHandlers } from "./server-methods/voicewake.js";
 import { webHandlers } from "./server-methods/web.js";
 import { wizardHandlers } from "./server-methods/wizard.js";
-
-const ADMIN_SCOPE = "operator.admin";
-const READ_SCOPE = "operator.read";
-const WRITE_SCOPE = "operator.write";
-const APPROVALS_SCOPE = "operator.approvals";
-const PAIRING_SCOPE = "operator.pairing";
-
-const APPROVAL_METHODS = new Set(["exec.approval.request", "exec.approval.resolve"]);
-const NODE_ROLE_METHODS = new Set(["node.invoke.result", "node.event", "skills.bins"]);
-const PAIRING_METHODS = new Set([
-  "node.pair.request",
-  "node.pair.list",
-  "node.pair.approve",
-  "node.pair.reject",
-  "node.pair.verify",
-  "device.pair.list",
-  "device.pair.approve",
-  "device.pair.reject",
-  "device.token.rotate",
-  "device.token.revoke",
-  "node.rename",
-]);
-const ADMIN_METHOD_PREFIXES = ["exec.approvals."];
-const READ_METHODS = new Set([
-  "health",
-  "logs.tail",
-  "channels.status",
-  "status",
-  "usage.status",
-  "usage.cost",
-  "tts.status",
-  "tts.providers",
-  "models.list",
-  "agents.list",
-  "agent.identity.get",
-  "skills.status",
-  "voicewake.get",
-  "sessions.list",
-  "sessions.preview",
-  "cron.list",
-  "cron.status",
-  "cron.runs",
-  "system-presence",
-  "last-heartbeat",
-  "node.list",
-  "node.describe",
-  "chat.history",
-]);
-const WRITE_METHODS = new Set([
-  "send",
-  "agent",
-  "agent.wait",
-  "wake",
-  "talk.mode",
-  "tts.enable",
-  "tts.disable",
-  "tts.convert",
-  "tts.setProvider",
-  "voicewake.set",
-  "node.invoke",
-  "chat.send",
-  "chat.abort",
-  "browser.request",
-]);
-
-function authorizeGatewayMethod(method: string, client: GatewayRequestOptions["client"]) {
-  if (!client?.connect) {
-    return null;
-  }
-  const role = client.connect.role ?? "operator";
-  const scopes = client.connect.scopes ?? [];
-  if (NODE_ROLE_METHODS.has(method)) {
-    if (role === "node") {
-      return null;
-    }
-    return errorShape(ErrorCodes.INVALID_REQUEST, `unauthorized role: ${role}`);
-  }
-  if (role === "node") {
-    return errorShape(ErrorCodes.INVALID_REQUEST, `unauthorized role: ${role}`);
-  }
-  if (role !== "operator") {
-    return errorShape(ErrorCodes.INVALID_REQUEST, `unauthorized role: ${role}`);
-  }
-  if (scopes.includes(ADMIN_SCOPE)) {
-    return null;
-  }
-  if (APPROVAL_METHODS.has(method) && !scopes.includes(APPROVALS_SCOPE)) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.approvals");
-  }
-  if (PAIRING_METHODS.has(method) && !scopes.includes(PAIRING_SCOPE)) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.pairing");
-  }
-  if (READ_METHODS.has(method) && !(scopes.includes(READ_SCOPE) || scopes.includes(WRITE_SCOPE))) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.read");
-  }
-  if (WRITE_METHODS.has(method) && !scopes.includes(WRITE_SCOPE)) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.write");
-  }
-  if (APPROVAL_METHODS.has(method)) {
-    return null;
-  }
-  if (PAIRING_METHODS.has(method)) {
-    return null;
-  }
-  if (READ_METHODS.has(method)) {
-    return null;
-  }
-  if (WRITE_METHODS.has(method)) {
-    return null;
-  }
-  if (ADMIN_METHOD_PREFIXES.some((prefix) => method.startsWith(prefix))) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.admin");
-  }
-  if (
-    method.startsWith("config.") ||
-    method.startsWith("wizard.") ||
-    method.startsWith("update.") ||
-    method === "channels.logout" ||
-    method === "agents.create" ||
-    method === "agents.update" ||
-    method === "agents.delete" ||
-    method === "skills.install" ||
-    method === "skills.update" ||
-    method === "cron.add" ||
-    method === "cron.update" ||
-    method === "cron.remove" ||
-    method === "cron.run" ||
-    method === "sessions.patch" ||
-    method === "sessions.reset" ||
-    method === "sessions.delete" ||
-    method === "sessions.compact"
-  ) {
-    return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.admin");
-  }
-  return errorShape(ErrorCodes.INVALID_REQUEST, "missing scope: operator.admin");
-}
 
 export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...connectHandlers,
@@ -187,16 +55,25 @@ export const coreGatewayHandlers: GatewayRequestHandlers = {
   ...usageHandlers,
   ...agentHandlers,
   ...agentsHandlers,
+  ...authzHandlers,
   ...browserHandlers,
+  ...ownershipHandlers,
 };
 
 export async function handleGatewayRequest(
   opts: GatewayRequestOptions & { extraHandlers?: GatewayRequestHandlers },
 ): Promise<void> {
   const { req, respond, client, isWebchatConnect, context } = opts;
-  const authError = authorizeGatewayMethod(req.method, client);
-  if (authError) {
-    respond(false, undefined, authError);
+  const authDecision = authorizeGatewayMethod({ method: req.method, client });
+  auditGatewayAuthorization({
+    logger: context.logGateway,
+    method: req.method,
+    requestId: req.id,
+    decision: authDecision,
+    client,
+  });
+  if (!authDecision.allow) {
+    respond(false, undefined, authDecision.error);
     return;
   }
   const handler = opts.extraHandlers?.[req.method] ?? coreGatewayHandlers[req.method];
@@ -208,12 +85,72 @@ export async function handleGatewayRequest(
     );
     return;
   }
+  const auditRespond = (
+    ok: boolean,
+    payload?: unknown,
+    error?: ErrorShape,
+    meta?: Record<string, unknown>,
+  ) => {
+    respond(ok, payload, error, meta);
+    if (ok || !error) {
+      return;
+    }
+    const rawReasonCode =
+      error.details && typeof error.details === "object"
+        ? (error.details as { reasonCode?: unknown }).reasonCode
+        : undefined;
+    const reasonCode =
+      typeof rawReasonCode === "string" && rawReasonCode.trim().length > 0
+        ? rawReasonCode.trim()
+        : "POLICY_DENY";
+    const owner = authDecision.owner;
+    context.logGateway.warn("gateway handler deny", {
+      requestId: req.id,
+      method: req.method,
+      reasonCode,
+      errorCode: error.code,
+      errorMessage: error.message,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+    });
+    recordGatewayAuthzDenyEvent({
+      ts: Date.now(),
+      requestId: req.id,
+      method: req.method,
+      reasonCode,
+      errorCode: error.code,
+      errorMessage: error.message,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+    });
+  };
   await handler({
     req,
     params: (req.params ?? {}) as Record<string, unknown>,
     client,
+    owner: authDecision.owner,
     isWebchatConnect,
-    respond,
+    respond: auditRespond,
     context,
   });
 }

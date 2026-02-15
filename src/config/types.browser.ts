@@ -7,6 +7,10 @@ export type BrowserProfileConfig = {
   driver?: "openclaw" | "extension";
   /** Profile color (hex). Auto-assigned at creation. */
   color: string;
+  /** When true, all users can use this profile. */
+  shared?: boolean;
+  /** Owning user UUID for private profiles. */
+  ownerUserId?: string;
 };
 export type BrowserSnapshotDefaults = {
   /** Default snapshot mode (applies when mode is not provided). */

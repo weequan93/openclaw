@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
+import { resolveConfigSnapshotHash } from "../config/config.js";
 import {
   connectOk,
   getFreePort,
@@ -40,10 +41,34 @@ const openClient = async () => {
   return ws;
 };
 
+async function resolveBaseHash(ws: WebSocket): Promise<string | undefined> {
+  const getId = `req-base-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  ws.send(
+    JSON.stringify({
+      type: "req",
+      id: getId,
+      method: "config.get",
+      params: {},
+    }),
+  );
+  const getRes = await onceMessage<{
+    ok: boolean;
+    payload?: { hash?: string; raw?: string };
+  }>(ws, (o) => o.type === "res" && o.id === getId);
+  expect(getRes.ok).toBe(true);
+  return (
+    resolveConfigSnapshotHash({
+      hash: getRes.payload?.hash,
+      raw: getRes.payload?.raw,
+    }) ?? undefined
+  );
+}
+
 describe("gateway config.apply", () => {
   it("writes config, stores sentinel, and schedules restart", async () => {
     const ws = await openClient();
     try {
+      const baseHash = await resolveBaseHash(ws);
       const id = "req-1";
       ws.send(
         JSON.stringify({
@@ -51,16 +76,23 @@ describe("gateway config.apply", () => {
           id,
           method: "config.apply",
           params: {
-            raw: '{ "agents": { "list": [{ "id": "main", "workspace": "~/openclaw" }] } }',
+            raw: JSON.stringify({
+              agents: { list: [{ id: "main", workspace: "~/openclaw" }] },
+              plugins: { slots: { memory: "none" } },
+            }),
             sessionKey: "agent:main:whatsapp:dm:+15555550123",
             restartDelayMs: 0,
+            ...(baseHash ? { baseHash } : {}),
           },
         }),
       );
-      const res = await onceMessage<{ ok: boolean; payload?: unknown }>(
+      const res = await onceMessage<{ ok: boolean; payload?: unknown; error?: unknown }>(
         ws,
         (o) => o.type === "res" && o.id === id,
       );
+      if (!res.ok) {
+        throw new Error(`config.apply failed: ${JSON.stringify(res)}`);
+      }
       expect(res.ok).toBe(true);
 
       // Verify sentinel file was created (restart was scheduled)

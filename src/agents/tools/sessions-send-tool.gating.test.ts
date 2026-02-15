@@ -39,4 +39,40 @@ describe("sessions_send gating", () => {
     expect(callGatewayMock).not.toHaveBeenCalled();
     expect(result.details).toMatchObject({ status: "forbidden" });
   });
+
+  it("forwards owner identity to gateway calls", async () => {
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "agent") {
+        return { runId: "run-1" };
+      }
+      return {};
+    });
+
+    const tool = createSessionsSendTool({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "whatsapp",
+      ownerUserId: "user-1",
+      ownerPrincipalId: "principal:user-1",
+      ownerAlias: "alice",
+    });
+
+    const result = await tool.execute("call2", {
+      sessionKey: "agent:main:main",
+      message: "hi",
+      timeoutSeconds: 0,
+    });
+
+    expect(result.details).toMatchObject({ status: "accepted", runId: "run-1" });
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "agent",
+        identity: {
+          userId: "user-1",
+          principalId: "principal:user-1",
+          alias: "alice",
+        },
+      }),
+    );
+  });
 });

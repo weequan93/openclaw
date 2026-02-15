@@ -5,6 +5,7 @@ import type { MemorySearchResult } from "../../memory/types.js";
 import type { AnyAgentTool } from "./common.js";
 import { resolveMemoryBackendConfig } from "../../memory/backend-config.js";
 import { getMemorySearchManager } from "../../memory/index.js";
+import { resolveSessionOwnerUserId } from "../../memory/owner-partition.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveMemorySearchConfig } from "../memory-search.js";
@@ -34,7 +35,12 @@ export function createMemorySearchTool(options: {
     sessionKey: options.agentSessionKey,
     config: cfg,
   });
-  if (!resolveMemorySearchConfig(cfg, agentId)) {
+  const ownerUserId = resolveSessionOwnerUserId({
+    cfg,
+    agentId,
+    sessionKey: options.agentSessionKey,
+  });
+  if (!resolveMemorySearchConfig(cfg, agentId, { ownerUserId })) {
     return null;
   }
   return {
@@ -50,6 +56,7 @@ export function createMemorySearchTool(options: {
       const { manager, error } = await getMemorySearchManager({
         cfg,
         agentId,
+        ownerUserId,
       });
       if (!manager) {
         return jsonResult({ results: [], disabled: true, error });
@@ -67,7 +74,7 @@ export function createMemorySearchTool(options: {
         });
         const status = manager.status();
         const decorated = decorateCitations(rawResults, includeCitations);
-        const resolved = resolveMemoryBackendConfig({ cfg, agentId });
+        const resolved = resolveMemoryBackendConfig({ cfg, agentId, ownerUserId });
         const results =
           status.backend === "qmd"
             ? clampResultsByInjectedChars(decorated, resolved.qmd?.limits.maxInjectedChars)
@@ -99,7 +106,12 @@ export function createMemoryGetTool(options: {
     sessionKey: options.agentSessionKey,
     config: cfg,
   });
-  if (!resolveMemorySearchConfig(cfg, agentId)) {
+  const ownerUserId = resolveSessionOwnerUserId({
+    cfg,
+    agentId,
+    sessionKey: options.agentSessionKey,
+  });
+  if (!resolveMemorySearchConfig(cfg, agentId, { ownerUserId })) {
     return null;
   }
   return {
@@ -115,6 +127,7 @@ export function createMemoryGetTool(options: {
       const { manager, error } = await getMemorySearchManager({
         cfg,
         agentId,
+        ownerUserId,
       });
       if (!manager) {
         return jsonResult({ path: relPath, text: "", disabled: true, error });

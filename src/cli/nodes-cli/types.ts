@@ -41,6 +41,7 @@ export type NodesRpcOpts = {
   screen?: string;
   fps?: string;
   audio?: boolean;
+  ownerUser?: string;
 };
 
 export type NodeListNode = {

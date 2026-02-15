@@ -93,4 +93,25 @@ describe("resolveMemoryBackendConfig", () => {
     expect(resolved.qmd?.update.updateTimeoutMs).toBe(480_000);
     expect(resolved.qmd?.update.embedTimeoutMs).toBe(360_000);
   });
+
+  it("partitions qmd session export by ownerUserId", () => {
+    const cfg = {
+      agents: { defaults: { workspace: "/tmp/memory-test" } },
+      memory: {
+        backend: "qmd",
+        qmd: {
+          sessions: {
+            enabled: true,
+            exportDir: "/tmp/qmd-sessions",
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const ownerA = resolveMemoryBackendConfig({ cfg, agentId: "main", ownerUserId: "user-a" });
+    const ownerB = resolveMemoryBackendConfig({ cfg, agentId: "main", ownerUserId: "user-b" });
+    expect(ownerA.qmd?.ownerUserId).toBe("user-a");
+    expect(ownerB.qmd?.ownerUserId).toBe("user-b");
+    expect(ownerA.qmd?.sessions.exportDir).toBe(path.join("/tmp/qmd-sessions", "user-a"));
+    expect(ownerB.qmd?.sessions.exportDir).toBe(path.join("/tmp/qmd-sessions", "user-b"));
+  });
 });

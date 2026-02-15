@@ -8,6 +8,7 @@ import {
 } from "../status.js";
 import { buildContextReply } from "./commands-context-report.js";
 import { buildStatusReply } from "./commands-status.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 export const handleHelpCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
@@ -20,6 +21,13 @@ export const handleHelpCommand: CommandHandler = async (params, allowTextCommand
     logVerbose(
       `Ignoring /help from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.help",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/help denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   return {
@@ -39,6 +47,13 @@ export const handleCommandsListCommand: CommandHandler = async (params, allowTex
     logVerbose(
       `Ignoring /commands from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.commands",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/commands denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   const skillCommands =
@@ -128,6 +143,13 @@ export const handleStatusCommand: CommandHandler = async (params, allowTextComma
     logVerbose(
       `Ignoring /status from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.status",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/status denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   const reply = await buildStatusReply({
@@ -163,6 +185,13 @@ export const handleContextCommand: CommandHandler = async (params, allowTextComm
     logVerbose(
       `Ignoring /context from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.context",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/context denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   return { shouldContinue: false, reply: await buildContextReply(params) };
@@ -179,6 +208,13 @@ export const handleWhoamiCommand: CommandHandler = async (params, allowTextComma
     logVerbose(
       `Ignoring /whoami from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.whoami",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/whoami denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   const senderId = params.ctx.SenderId ?? "";

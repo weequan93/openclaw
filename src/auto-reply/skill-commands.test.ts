@@ -2,7 +2,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { listSkillCommandsForAgents, resolveSkillCommandInvocation } from "./skill-commands.js";
+import {
+  listSkillCommandsForAgents,
+  listSkillCommandsForWorkspace,
+  resolveSkillCommandInvocation,
+} from "./skill-commands.js";
 
 async function writeSkill(params: {
   workspaceDir: string;
@@ -95,5 +99,51 @@ describe("listSkillCommandsForAgents", () => {
     expect(names).toContain("demo_skill");
     expect(names).toContain("demo_skill_2");
     expect(names).toContain("extra_skill");
+  });
+});
+
+describe("listSkillCommandsForWorkspace", () => {
+  it("filters user_private skills by owner in strict mode", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-skills-owner-"));
+    await writeSkill({
+      workspaceDir,
+      dirName: "shared",
+      name: "shared-skill",
+      description: "Shared skill",
+    });
+    await writeSkill({
+      workspaceDir,
+      dirName: "private",
+      name: "private-skill",
+      description: "Private skill",
+    });
+    const cfg = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "shared-skill": { visibility: "shared" as const },
+          "private-skill": {
+            visibility: "user_private" as const,
+            ownerUserId: "user-a",
+          },
+        },
+      },
+    };
+
+    const otherUserCommands = listSkillCommandsForWorkspace({
+      workspaceDir,
+      cfg,
+      ownerUserId: "user-b",
+    });
+    const ownerCommands = listSkillCommandsForWorkspace({
+      workspaceDir,
+      cfg,
+      ownerUserId: "user-a",
+    });
+
+    expect(otherUserCommands.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(otherUserCommands.some((entry) => entry.skillName === "private-skill")).toBe(false);
+    expect(ownerCommands.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(ownerCommands.some((entry) => entry.skillName === "private-skill")).toBe(true);
   });
 });

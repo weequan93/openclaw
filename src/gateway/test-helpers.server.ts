@@ -380,6 +380,11 @@ export async function connectReq(
     };
     role?: string;
     scopes?: string[];
+    identity?: {
+      userId: string;
+      principalId: string;
+      alias?: string;
+    };
     caps?: string[];
     commands?: string[];
     permissions?: Record<string, boolean>;
@@ -415,7 +420,11 @@ export async function connectReq(
         : process.env.OPENCLAW_GATEWAY_PASSWORD;
   const token = opts?.token ?? defaultToken;
   const password = opts?.password ?? defaultPassword;
-  const requestedScopes = Array.isArray(opts?.scopes) ? opts?.scopes : [];
+  const requestedScopes = Array.isArray(opts?.scopes)
+    ? opts.scopes
+    : role === "operator"
+      ? ["operator.admin", "operator.approvals", "operator.pairing"]
+      : [];
   const device = (() => {
     if (opts?.device === null) {
       return undefined;
@@ -455,7 +464,8 @@ export async function connectReq(
         commands: opts?.commands ?? [],
         permissions: opts?.permissions ?? undefined,
         role,
-        scopes: opts?.scopes,
+        scopes: requestedScopes,
+        identity: opts?.identity,
         auth:
           token || password
             ? {

@@ -69,6 +69,8 @@ describe("gateway agent handler", () => {
   it("preserves cliSessionIds from existing session entry", async () => {
     const existingCliSessionIds = { "claude-cli": "abc-123-def" };
     const existingClaudeCliSessionId = "abc-123-def";
+    const existingOwnerUserId = "user-a";
+    const existingOwnerPrincipalId = "principal:user-a";
 
     mocks.loadSessionEntry.mockReturnValue({
       cfg: {},
@@ -76,6 +78,8 @@ describe("gateway agent handler", () => {
       entry: {
         sessionId: "existing-session-id",
         updatedAt: Date.now(),
+        ownerUserId: existingOwnerUserId,
+        ownerPrincipalId: existingOwnerPrincipalId,
         cliSessionIds: existingCliSessionIds,
         claudeCliSessionId: existingClaudeCliSessionId,
       },
@@ -113,6 +117,8 @@ describe("gateway agent handler", () => {
     expect(capturedEntry).toBeDefined();
     expect(capturedEntry?.cliSessionIds).toEqual(existingCliSessionIds);
     expect(capturedEntry?.claudeCliSessionId).toBe(existingClaudeCliSessionId);
+    expect(capturedEntry?.ownerUserId).toBe(existingOwnerUserId);
+    expect(capturedEntry?.ownerPrincipalId).toBe(existingOwnerPrincipalId);
   });
 
   it("injects a timestamp into the message passed to agentCommand", async () => {
@@ -212,5 +218,92 @@ describe("gateway agent handler", () => {
     // Should be undefined, not cause an error
     expect(capturedEntry?.cliSessionIds).toBeUndefined();
     expect(capturedEntry?.claudeCliSessionId).toBeUndefined();
+  });
+
+  it("denies non-admin callers when agent owner mismatches", async () => {
+    mocks.agentCommand.mockReset();
+    mocks.loadConfigReturn = {
+      agents: {
+        list: [{ id: "main", ownerUserId: "other-user" }],
+      },
+    };
+    const respond = vi.fn();
+    await agentHandlers.agent({
+      params: {
+        message: "test",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "test-owner-deny",
+      },
+      respond,
+      context: makeContext(),
+      req: { type: "req", id: "3", method: "agent" },
+      client: null,
+      owner: {
+        userId: "user-a",
+        principalId: "user:a",
+        role: "user",
+        sourceRole: "operator",
+        scopes: ["operator.write"],
+      },
+      isWebchatConnect: () => false,
+    });
+
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "agent owner mismatch" }),
+    );
+    mocks.loadConfigReturn = {};
+  });
+
+  it("denies non-admin callers when session owner mismatches", async () => {
+    mocks.agentCommand.mockReset();
+    mocks.loadConfigReturn = {
+      gateway: { multiUser: { mode: "strict" } },
+      agents: {
+        list: [{ id: "main", ownerUserId: "user-a" }],
+      },
+    };
+    mocks.loadSessionEntry.mockReturnValue({
+      cfg: mocks.loadConfigReturn,
+      storePath: "/tmp/sessions.json",
+      entry: {
+        sessionId: "existing-session-id",
+        updatedAt: Date.now(),
+        ownerUserId: "other-user",
+      },
+      canonicalKey: "agent:main:main",
+    });
+    const respond = vi.fn();
+    await agentHandlers.agent({
+      params: {
+        message: "test",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        idempotencyKey: "test-session-owner-deny",
+      },
+      respond,
+      context: makeContext(),
+      req: { type: "req", id: "4", method: "agent" },
+      client: null,
+      owner: {
+        userId: "user-a",
+        principalId: "principal:user-a",
+        role: "user",
+        sourceRole: "operator",
+        scopes: ["operator.write"],
+      },
+      isWebchatConnect: () => false,
+    });
+
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "session owner mismatch for key: agent:main:main" }),
+    );
+    mocks.loadConfigReturn = {};
   });
 });

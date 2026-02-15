@@ -104,6 +104,32 @@ openclaw gateway call config.patch --params '{
 }'
 ```
 
+## Policy bundles (RPC + CLI)
+
+For common gateway security postures, use policy bundles:
+
+- `single_user`
+- `multi_user_isolated`
+- `strict_admin_control`
+
+Gateway RPC methods:
+
+- `config.policyBundles.list` (list available bundles)
+- `config.policyBundle.resolve` (preview one bundle patch)
+- `config.policyBundle.apply` (apply one bundle with config hash protection + restart)
+
+CLI helpers:
+
+```bash
+openclaw gateway policy-bundles
+openclaw gateway policy-bundle-resolve --bundle strict_admin_control
+openclaw gateway policy-bundle-apply --bundle strict_admin_control
+openclaw gateway config-changes --policy-bundles
+```
+
+`policy-bundle-apply` first calls `config.policyBundle.apply`. If the gateway is older and does not
+support it yet, the CLI falls back to `config.policyBundle.resolve` + `config.patch`.
+
 ## Minimal config (recommended starting point)
 
 ```json5

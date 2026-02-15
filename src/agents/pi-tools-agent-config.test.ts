@@ -519,4 +519,32 @@ describe("Agent-specific tool filtering", () => {
 
     expect(result?.details.status).toBe("completed");
   });
+
+  it("should hide cron and gateway tools for non-admin owner-bound runs in strict mode", () => {
+    const tools = createOpenClawCodingTools({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "user-1",
+      ownerRole: "user",
+      sessionKey: "agent:main:main",
+      workspaceDir: "/tmp/test-main",
+      agentDir: "/tmp/agent-main",
+    });
+    const names = tools.map((tool) => tool.name);
+    expect(names).not.toContain("cron");
+    expect(names).not.toContain("gateway");
+  });
+
+  it("should keep cron and gateway tools for admin owner-bound runs in strict mode", () => {
+    const tools = createOpenClawCodingTools({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "admin-1",
+      ownerRole: "admin",
+      sessionKey: "agent:main:main",
+      workspaceDir: "/tmp/test-main",
+      agentDir: "/tmp/agent-main",
+    });
+    const names = tools.map((tool) => tool.name);
+    expect(names).toContain("cron");
+    expect(names).toContain("gateway");
+  });
 });

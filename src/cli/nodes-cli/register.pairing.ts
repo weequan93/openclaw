@@ -59,10 +59,16 @@ export function registerNodesPairingCommands(nodes: Command) {
       .command("approve")
       .description("Approve a pending pairing request")
       .argument("<requestId>", "Pending request id")
+      .option("--owner-user <userId>", "Assign node ownership to a user UUID")
       .action(async (requestId: string, opts: NodesRpcOpts) => {
         await runNodesCommand("approve", async () => {
+          const ownerUserId =
+            typeof opts.ownerUser === "string" && opts.ownerUser.trim()
+              ? opts.ownerUser.trim()
+              : undefined;
           const result = await callGatewayCli("node.pair.approve", opts, {
             requestId,
+            ...(ownerUserId ? { ownerUserId } : {}),
           });
           defaultRuntime.log(JSON.stringify(result, null, 2));
         });

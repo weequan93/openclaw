@@ -220,6 +220,8 @@ export const OpenClawSchema = z
                 cdpUrl: z.string().optional(),
                 driver: z.union([z.literal("clawd"), z.literal("extension")]).optional(),
                 color: HexColorSchema,
+                shared: z.boolean().optional(),
+                ownerUserId: z.string().min(1).optional(),
               })
               .strict()
               .refine((value) => value.cdpPort || value.cdpUrl, {
@@ -510,6 +512,60 @@ export const OpenClawSchema = z
           })
           .strict()
           .optional(),
+        multiUser: z
+          .object({
+            mode: z.union([z.literal("off"), z.literal("compat"), z.literal("strict")]).optional(),
+            identities: z
+              .record(
+                z.string().min(1),
+                z
+                  .object({
+                    userId: z.string().min(1),
+                    principalId: z.string().min(1).optional(),
+                    alias: z.string().min(1).optional(),
+                    role: z
+                      .union([
+                        z.literal("admin"),
+                        z.literal("user"),
+                        z.literal("node"),
+                        z.literal("service"),
+                      ])
+                      .optional(),
+                    groupIds: z.array(z.string().min(1)).optional(),
+                  })
+                  .strict(),
+              )
+              .optional(),
+            delegation: z
+              .object({
+                enabled: z.boolean().optional(),
+                rules: z
+                  .array(
+                    z
+                      .object({
+                        fromUserId: z.string().min(1),
+                        toUserId: z.string().min(1),
+                        resources: z
+                          .array(
+                            z.union([
+                              z.literal("agents"),
+                              z.literal("nodes"),
+                              z.literal("sessions"),
+                              z.literal("browser"),
+                              z.literal("memory"),
+                            ]),
+                          )
+                          .optional(),
+                      })
+                      .strict(),
+                  )
+                  .optional(),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
       })
       .strict()
       .optional(),
@@ -543,6 +599,15 @@ export const OpenClawSchema = z
                 apiKey: z.string().optional(),
                 env: z.record(z.string(), z.string()).optional(),
                 config: z.record(z.string(), z.unknown()).optional(),
+                visibility: z
+                  .union([
+                    z.literal("shared"),
+                    z.literal("group_shared"),
+                    z.literal("user_private"),
+                  ])
+                  .optional(),
+                ownerUserId: z.string().min(1).optional(),
+                groupIds: z.array(z.string().min(1)).optional(),
               })
               .strict(),
           )

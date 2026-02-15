@@ -1,8 +1,25 @@
+export type SkillVisibility = "shared" | "group_shared" | "user_private";
+
 export type SkillConfig = {
   enabled?: boolean;
   apiKey?: string;
   env?: Record<string, string>;
   config?: Record<string, unknown>;
+  /**
+   * Skill visibility policy.
+   * - shared: visible to all users.
+   * - group_shared: visible to users whose identity includes one of groupIds.
+   * - user_private: visible only to ownerUserId (and admins).
+   */
+  visibility?: SkillVisibility;
+  /**
+   * Group IDs allowed for group_shared skills.
+   */
+  groupIds?: string[];
+  /**
+   * Owner user UUID for user_private skills.
+   */
+  ownerUserId?: string;
 };
 
 export type SkillsLoadConfig = {

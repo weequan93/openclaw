@@ -2,7 +2,10 @@ import type { ChannelId } from "../../channels/plugins/types.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { CommandHandler } from "./commands-types.js";
 import { getChannelDock } from "../../channels/dock.js";
-import { resolveChannelConfigWrites } from "../../channels/plugins/config-writes.js";
+import {
+  resolveChannelConfigWrites,
+  resolveGatewayConfigAdminAccess,
+} from "../../channels/plugins/config-writes.js";
 import { listPairingChannels } from "../../channels/plugins/pairing.js";
 import { normalizeChannelId } from "../../channels/registry.js";
 import {
@@ -25,6 +28,7 @@ import { resolveSlackAccount } from "../../slack/accounts.js";
 import { resolveSlackUserAllowlist } from "../../slack/resolve-users.js";
 import { resolveTelegramAccount } from "../../telegram/accounts.js";
 import { resolveWhatsAppAccount } from "../../web/accounts.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 type AllowlistScope = "dm" | "group" | "all";
 type AllowlistAction = "list" | "add" | "remove";
@@ -51,6 +55,21 @@ type AllowlistCommand =
 
 const ACTIONS = new Set(["list", "add", "remove"]);
 const SCOPES = new Set<AllowlistScope>(["dm", "group", "all"]);
+
+function hasGatewayIdentity(ctx: {
+  GatewayOwnerUserId?: string;
+  GatewayOwnerPrincipalId?: string;
+  GatewayOwnerRole?: string;
+  GatewayClientScopes?: string[];
+}): boolean {
+  return (
+    (typeof ctx.GatewayOwnerUserId === "string" && ctx.GatewayOwnerUserId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerPrincipalId === "string" &&
+      ctx.GatewayOwnerPrincipalId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerRole === "string" && ctx.GatewayOwnerRole.trim().length > 0) ||
+    (Array.isArray(ctx.GatewayClientScopes) && ctx.GatewayClientScopes.length > 0)
+  );
+}
 
 function parseAllowlistCommand(raw: string): AllowlistCommand | null {
   const trimmed = raw.trim();
@@ -335,7 +354,30 @@ export const handleAllowlistCommand: CommandHandler = async (params, allowTextCo
     logVerbose(
       `Ignoring /allowlist from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.allowlist",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/allowlist denied for unauthorized sender",
+    });
     return { shouldContinue: false };
+  }
+  if (!resolveGatewayConfigAdminAccess({ ctx: params.ctx, cfg: params.cfg })) {
+    logVerbose(
+      `Denied /allowlist from non-admin gateway principal: ${params.ctx.GatewayOwnerPrincipalId ?? "<unknown>"}`,
+    );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.allowlist",
+      reasonCode: hasGatewayIdentity(params.ctx) ? "ROLE_FORBIDDEN" : "UNKNOWN_SENDER",
+      message: "/allowlist is admin-only in gateway user mode",
+    });
+    return {
+      shouldContinue: false,
+      reply: { text: "⚠️ /allowlist is admin-only in gateway user mode." },
+    };
   }
 
   const channelId =

@@ -1,7 +1,9 @@
 import { Type } from "@sinclair/typebox";
+import type { OpenClawConfig } from "../../config/config.js";
 import type { CronDelivery, CronMessageChannel } from "../../cron/types.js";
 import { loadConfig } from "../../config/config.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
+import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { isRecord, truncateUtf16Safe } from "../../utils.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -46,6 +48,11 @@ const CronToolSchema = Type.Object({
 
 type CronToolOptions = {
   agentSessionKey?: string;
+  config?: OpenClawConfig;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
+  ownerRole?: string;
 };
 
 type ChatMessage = {
@@ -221,6 +228,24 @@ function inferDeliveryFromSessionKey(agentSessionKey?: string): CronDelivery | n
 }
 
 export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
+  const ownerUserId =
+    typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+      ? opts.ownerUserId.trim()
+      : undefined;
+  const ownerRole =
+    typeof opts?.ownerRole === "string" && opts.ownerRole.trim()
+      ? opts.ownerRole.trim().toLowerCase()
+      : undefined;
+  const ownerPrincipalId =
+    typeof opts?.ownerPrincipalId === "string" && opts.ownerPrincipalId.trim()
+      ? opts.ownerPrincipalId.trim()
+      : undefined;
+  const ownerAlias =
+    typeof opts?.ownerAlias === "string" && opts.ownerAlias.trim() ? opts.ownerAlias.trim() : undefined;
+  const multiUserMode = resolveGatewayMultiUserMode(opts?.config);
+  const ownerBoundRun = Boolean(ownerUserId);
+  const enforceAdminControlPlane = multiUserMode !== "off" && ownerBoundRun;
+
   return {
     label: "Cron",
     name: "cron",
@@ -279,12 +304,18 @@ WAKE MODES (for wake action):
 Use jobId as the canonical identifier; id is accepted for compatibility. Use contextMessages (0-10) to add previous messages as context to the job text.`,
     parameters: CronToolSchema,
     execute: async (_toolCallId, args) => {
+      if (enforceAdminControlPlane && ownerRole !== "admin") {
+        throw new Error("Cron tool is admin-only in multi-user mode for owner-bound sessions.");
+      }
       const params = args as Record<string, unknown>;
       const action = readStringParam(params, "action", { required: true });
       const gatewayOpts: GatewayCallOptions = {
         gatewayUrl: readStringParam(params, "gatewayUrl", { trim: false }),
         gatewayToken: readStringParam(params, "gatewayToken", { trim: false }),
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : 60_000,
+        ownerUserId,
+        ownerPrincipalId,
+        ownerAlias,
       };
 
       switch (action) {
@@ -412,7 +443,9 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
               }
             }
           }
-          return jsonResult(await callGatewayTool("cron.add", gatewayOpts, job));
+          return jsonResult(
+            await callGatewayTool("cron.add", gatewayOpts, job, { allowAdmin: true }),
+          );
         }
         case "update": {
           const id = readStringParam(params, "jobId") ?? readStringParam(params, "id");
@@ -424,10 +457,15 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
           }
           const patch = normalizeCronJobPatch(params.patch) ?? params.patch;
           return jsonResult(
-            await callGatewayTool("cron.update", gatewayOpts, {
-              id,
-              patch,
-            }),
+            await callGatewayTool(
+              "cron.update",
+              gatewayOpts,
+              {
+                id,
+                patch,
+              },
+              { allowAdmin: true },
+            ),
           );
         }
         case "remove": {
@@ -435,7 +473,9 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
           if (!id) {
             throw new Error("jobId required (id accepted for backward compatibility)");
           }
-          return jsonResult(await callGatewayTool("cron.remove", gatewayOpts, { id }));
+          return jsonResult(
+            await callGatewayTool("cron.remove", gatewayOpts, { id }, { allowAdmin: true }),
+          );
         }
         case "run": {
           const id = readStringParam(params, "jobId") ?? readStringParam(params, "id");
@@ -444,7 +484,14 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
           }
           const runMode =
             params.runMode === "due" || params.runMode === "force" ? params.runMode : "force";
-          return jsonResult(await callGatewayTool("cron.run", gatewayOpts, { id, mode: runMode }));
+          return jsonResult(
+            await callGatewayTool(
+              "cron.run",
+              gatewayOpts,
+              { id, mode: runMode },
+              { allowAdmin: true },
+            ),
+          );
         }
         case "runs": {
           const id = readStringParam(params, "jobId") ?? readStringParam(params, "id");
@@ -460,7 +507,10 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
               ? params.mode
               : "next-heartbeat";
           return jsonResult(
-            await callGatewayTool("wake", gatewayOpts, { mode, text }, { expectFinal: false }),
+            await callGatewayTool("wake", gatewayOpts, { mode, text }, {
+              expectFinal: false,
+              allowAdmin: true,
+            }),
           );
         }
         default:

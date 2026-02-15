@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
 import { callGateway } from "../../gateway/call.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "../../gateway/authz-denied-events.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
 
@@ -25,7 +29,7 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
     cfg,
     isGroup: false,
     triggerBodyNormalized: commandBody.trim().toLowerCase(),
-    commandAuthorized: true,
+    commandAuthorized: ctx.CommandAuthorized !== false,
   });
 
   return {
@@ -50,6 +54,7 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
 describe("/approve command", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    authzDeniedEventsTest.clear();
   });
 
   it("rejects invalid usage", async () => {
@@ -68,7 +73,12 @@ describe("/approve command", () => {
       commands: { text: true },
       channels: { whatsapp: { allowFrom: ["*"] } },
     } as OpenClawConfig;
-    const params = buildParams("/approve abc allow-once", cfg, { SenderId: "123" });
+    const params = buildParams("/approve abc allow-once", cfg, {
+      SenderId: "123",
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerAlias: "Alice",
+      GatewayOwnerPrincipalId: "principal:user-1",
+    });
 
     const mockCallGateway = vi.mocked(callGateway);
     mockCallGateway.mockResolvedValueOnce({ ok: true });
@@ -80,6 +90,7 @@ describe("/approve command", () => {
       expect.objectContaining({
         method: "exec.approval.resolve",
         params: { id: "abc", decision: "allow-once" },
+        identity: { userId: "user-1", principalId: "principal:user-1", alias: "Alice" },
       }),
     );
   });
@@ -125,15 +136,19 @@ describe("/approve command", () => {
         params: { id: "abc", decision: "allow-once" },
       }),
     );
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(0);
   });
 
   it("allows gateway clients with admin scope", async () => {
     const cfg = {
       commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
     } as OpenClawConfig;
     const params = buildParams("/approve abc allow-once", cfg, {
       Provider: "webchat",
       Surface: "webchat",
+      GatewayOwnerRole: "admin",
       GatewayClientScopes: ["operator.admin"],
     });
 
@@ -149,5 +164,97 @@ describe("/approve command", () => {
         params: { id: "abc", decision: "allow-once" },
       }),
     );
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(0);
+  });
+
+  it("blocks gateway clients with admin scope when role is missing in strict mode", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+    } as OpenClawConfig;
+    const params = buildParams("/approve abc allow-once", cfg, {
+      Provider: "webchat",
+      Surface: "webchat",
+      GatewayClientScopes: ["operator.admin"],
+    });
+
+    const mockCallGateway = vi.mocked(callGateway);
+    mockCallGateway.mockResolvedValueOnce({ ok: true });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("admin scope requires admin principal role");
+    expect(mockCallGateway).not.toHaveBeenCalled();
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBeNull();
+  });
+
+  it("blocks gateway clients with admin scope when role is non-admin", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+    } as OpenClawConfig;
+    const params = buildParams("/approve abc allow-once", cfg, {
+      Provider: "webchat",
+      Surface: "webchat",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin"],
+    });
+
+    const mockCallGateway = vi.mocked(callGateway);
+    mockCallGateway.mockResolvedValueOnce({ ok: true });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("admin scope requires admin principal role");
+    expect(mockCallGateway).not.toHaveBeenCalled();
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
+  });
+
+  it("records authz deny event for unauthorized sender", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["owner-only"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/approve abc allow-once", cfg, {
+      CommandAuthorized: false,
+    });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for missing approvals scope", async () => {
+    const cfg = {
+      commands: { text: true },
+    } as OpenClawConfig;
+    const params = buildParams("/approve abc allow-once", cfg, {
+      Provider: "webchat",
+      Surface: "webchat",
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerAlias: "Alice",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("requires operator.approvals");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.approve" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("SCOPE_MISSING");
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.userAlias).toBe("Alice");
+    expect(events[0]?.principalId).toBe("principal:user-1");
   });
 });

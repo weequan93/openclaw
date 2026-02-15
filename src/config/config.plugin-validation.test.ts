@@ -97,6 +97,70 @@ describe("config plugin validation", () => {
     });
   });
 
+  it("warns when mapped multi-user identities omit explicit role", async () => {
+    await withTempHome(async (home) => {
+      process.env.OPENCLAW_STATE_DIR = path.join(home, ".openclaw");
+      vi.resetModules();
+      const { validateConfigObjectWithPlugins } = await import("./config.js");
+      const res = validateConfigObjectWithPlugins({
+        agents: { list: [{ id: "pi" }] },
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities: {
+              "msg:discord:default:user-a": {
+                userId: "11111111-1111-1111-1111-111111111111",
+                principalId: "msg:discord:default:user-a",
+                alias: "UserA",
+              },
+            },
+          },
+        },
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) {
+        return;
+      }
+      expect(res.warnings).toContainEqual({
+        path: "gateway.multiUser.identities.msg:discord:default:user-a.role",
+        message:
+          "missing explicit role for mapped principal 'msg:discord:default:user-a' (set one of: admin,user,node,service)",
+      });
+    });
+  });
+
+  it("does not warn for missing mapped identity role when multi-user mode is off", async () => {
+    await withTempHome(async (home) => {
+      process.env.OPENCLAW_STATE_DIR = path.join(home, ".openclaw");
+      vi.resetModules();
+      const { validateConfigObjectWithPlugins } = await import("./config.js");
+      const res = validateConfigObjectWithPlugins({
+        agents: { list: [{ id: "pi" }] },
+        gateway: {
+          multiUser: {
+            mode: "off",
+            identities: {
+              "msg:discord:default:user-a": {
+                userId: "11111111-1111-1111-1111-111111111111",
+                principalId: "msg:discord:default:user-a",
+                alias: "UserA",
+              },
+            },
+          },
+        },
+      });
+      expect(res.ok).toBe(true);
+      if (!res.ok) {
+        return;
+      }
+      expect(
+        res.warnings.some((warning) =>
+          warning.path.startsWith("gateway.multiUser.identities.msg:discord:default:user-a.role"),
+        ),
+      ).toBe(false);
+    });
+  });
+
   it("surfaces plugin config diagnostics", async () => {
     await withTempHome(async (home) => {
       process.env.OPENCLAW_STATE_DIR = path.join(home, ".openclaw");

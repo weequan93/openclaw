@@ -42,6 +42,7 @@ export function serveAcpGateway(opts: AcpServerOptions = {}): void {
     clientDisplayName: "ACP",
     clientVersion: "acp",
     mode: GATEWAY_CLIENT_MODES.CLI,
+    scopes: ["operator.write"],
     onEvent: (evt) => {
       void agent?.handleGatewayEvent(evt);
     },

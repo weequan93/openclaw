@@ -4,6 +4,7 @@ import type { OpenClawConfig, MemorySearchConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { clampInt, clampNumber, resolveUserPath } from "../utils.js";
 import { resolveAgentConfig } from "./agent-scope.js";
+import { resolveOwnerPartitionedFile } from "../memory/owner-partition.js";
 
 export type ResolvedMemorySearchConfig = {
   enabled: boolean;
@@ -107,20 +108,30 @@ function normalizeSources(
   return Array.from(normalized);
 }
 
-function resolveStorePath(agentId: string, raw?: string): string {
+function resolveStorePath(params: { agentId: string; ownerUserId?: string; raw?: string }): string {
+  const { agentId, ownerUserId, raw } = params;
+  const ownerToken = ownerUserId?.trim();
   const stateDir = resolveStateDir(process.env, os.homedir);
   const fallback = path.join(stateDir, "memory", `${agentId}.sqlite`);
   if (!raw) {
-    return fallback;
+    return resolveOwnerPartitionedFile(fallback, ownerToken);
   }
-  const withToken = raw.includes("{agentId}") ? raw.replaceAll("{agentId}", agentId) : raw;
-  return resolveUserPath(withToken);
+  const withAgentToken = raw.includes("{agentId}") ? raw.replaceAll("{agentId}", agentId) : raw;
+  const withOwnerToken = withAgentToken.includes("{ownerUserId}")
+    ? withAgentToken.replaceAll("{ownerUserId}", ownerToken ?? "shared")
+    : withAgentToken;
+  const resolved = resolveUserPath(withOwnerToken);
+  if (ownerToken && !withAgentToken.includes("{ownerUserId}")) {
+    return resolveOwnerPartitionedFile(resolved, ownerToken);
+  }
+  return resolved;
 }
 
 function mergeConfig(
   defaults: MemorySearchConfig | undefined,
   overrides: MemorySearchConfig | undefined,
   agentId: string,
+  ownerUserId?: string,
 ): ResolvedMemorySearchConfig {
   const enabled = overrides?.enabled ?? defaults?.enabled ?? true;
   const sessionMemory =
@@ -188,7 +199,11 @@ function mergeConfig(
   };
   const store = {
     driver: overrides?.store?.driver ?? defaults?.store?.driver ?? "sqlite",
-    path: resolveStorePath(agentId, overrides?.store?.path ?? defaults?.store?.path),
+    path: resolveStorePath({
+      agentId,
+      ownerUserId,
+      raw: overrides?.store?.path ?? defaults?.store?.path,
+    }),
     vector,
   };
   const chunking = {
@@ -296,10 +311,11 @@ function mergeConfig(
 export function resolveMemorySearchConfig(
   cfg: OpenClawConfig,
   agentId: string,
+  opts?: { ownerUserId?: string },
 ): ResolvedMemorySearchConfig | null {
   const defaults = cfg.agents?.defaults?.memorySearch;
   const overrides = resolveAgentConfig(cfg, agentId)?.memorySearch;
-  const resolved = mergeConfig(defaults, overrides, agentId);
+  const resolved = mergeConfig(defaults, overrides, agentId, opts?.ownerUserId);
   if (!resolved.enabled) {
     return null;
   }

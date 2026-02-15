@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
+import { __test as authzDeniedEventsTest, listGatewayAuthzDenyEvents } from "../../gateway/authz-denied-events.js";
 import { extractMessageText } from "./commands-subagents.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseConfigCommand } from "./config-commands.js";
@@ -111,14 +112,77 @@ describe("extractMessageText", () => {
 });
 
 describe("handleCommands /config configWrites gating", () => {
+  beforeEach(() => {
+    authzDeniedEventsTest.clear();
+  });
+
   it("blocks /config set when channel config writes are disabled", async () => {
     const cfg = {
       commands: { config: true, text: true },
+      gateway: { multiUser: { mode: "off" } },
       channels: { whatsapp: { allowFrom: ["*"], configWrites: false } },
     } as OpenClawConfig;
     const params = buildParams('/config set messages.ackReaction=":)"', cfg);
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("Config writes are disabled");
+  });
+
+  it("blocks /config for non-gateway senders in multi-user mode", async () => {
+    const cfg = {
+      commands: { config: true, text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"], configWrites: true } },
+    } as OpenClawConfig;
+    const params = buildParams("/config show", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/config is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.config" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("blocks /config for non-admin gateway principals", async () => {
+    const cfg = {
+      commands: { config: true, text: true },
+      channels: { whatsapp: { allowFrom: ["*"], configWrites: true } },
+    } as OpenClawConfig;
+    const params = buildParams("/config show", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.read", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/config is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.config" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.principalId).toBe("principal:user-1");
+  });
+
+  it("blocks /config when gateway principal has admin scope but non-admin role", async () => {
+    const cfg = {
+      commands: { config: true, text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"], configWrites: true } },
+    } as OpenClawConfig;
+    const params = buildParams("/config show", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/config is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.config" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.principalId).toBe("principal:user-1");
   });
 });

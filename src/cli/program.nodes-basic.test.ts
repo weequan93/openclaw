@@ -284,6 +284,25 @@ describe("cli program (nodes basics)", () => {
     expect(runtime.log).toHaveBeenCalled();
   });
 
+  it("passes owner override when approving node pairing", async () => {
+    callGateway.mockResolvedValue({
+      requestId: "r2",
+      node: { nodeId: "n2", token: "t2", ownerUserId: "user-123" },
+    });
+    const program = buildProgram();
+    runtime.log.mockClear();
+    await program.parseAsync(
+      ["nodes", "approve", "r2", "--owner-user", " user-123 "],
+      { from: "user" },
+    );
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "node.pair.approve",
+        params: { requestId: "r2", ownerUserId: "user-123" },
+      }),
+    );
+  });
+
   it("runs nodes invoke and calls node.invoke", async () => {
     callGateway.mockImplementation(async (opts: { method?: string }) => {
       if (opts.method === "node.list") {

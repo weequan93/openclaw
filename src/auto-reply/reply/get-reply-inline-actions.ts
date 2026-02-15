@@ -15,6 +15,7 @@ import { listSkillCommandsForWorkspace, resolveSkillCommandInvocation } from "..
 import { getAbortMemory } from "./abort.js";
 import { buildStatusReply, handleCommands } from "./commands.js";
 import { isDirectiveOnly } from "./directive-handling.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 import { extractInlineSimpleCommand } from "./reply-inline.js";
 
 export type InlineActionResult =
@@ -136,6 +137,19 @@ export async function handleInlineActions(params: {
   let cleanedBody = initialCleanedBody;
 
   const shouldLoadSkillCommands = command.commandBodyNormalized.startsWith("/");
+  const ownerRole = resolveGatewayOwnerRoleFromContext(ctx);
+  const ownerUserIdRaw =
+    typeof sessionEntry?.ownerUserId === "string" && sessionEntry.ownerUserId.trim()
+      ? sessionEntry.ownerUserId.trim()
+      : typeof ctx.GatewayOwnerUserId === "string" && ctx.GatewayOwnerUserId.trim()
+        ? ctx.GatewayOwnerUserId.trim()
+        : undefined;
+  const ownerPrincipalIdRaw =
+    typeof sessionEntry?.ownerPrincipalId === "string" && sessionEntry.ownerPrincipalId.trim()
+      ? sessionEntry.ownerPrincipalId.trim()
+      : typeof ctx.GatewayOwnerPrincipalId === "string" && ctx.GatewayOwnerPrincipalId.trim()
+        ? ctx.GatewayOwnerPrincipalId.trim()
+        : undefined;
   const skillCommands =
     shouldLoadSkillCommands && params.skillCommands
       ? params.skillCommands
@@ -144,6 +158,8 @@ export async function handleInlineActions(params: {
             workspaceDir,
             cfg,
             skillFilter,
+            ownerUserId: ownerUserIdRaw,
+            ownerRole,
           })
         : [];
 
@@ -177,6 +193,9 @@ export async function handleInlineActions(params: {
         agentAccountId: (ctx as { AccountId?: string }).AccountId,
         agentTo: ctx.OriginatingTo ?? ctx.To,
         agentThreadId: ctx.MessageThreadId ?? undefined,
+        ownerUserId: ownerUserIdRaw,
+        ownerPrincipalId: ownerPrincipalIdRaw,
+        ownerRole,
         agentDir,
         workspaceDir,
         config: cfg,

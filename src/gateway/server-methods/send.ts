@@ -4,6 +4,7 @@ import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/ind
 import { DEFAULT_CHAT_CHANNEL } from "../../channels/registry.js";
 import { createOutboundSendDeps } from "../../cli/deps.js";
 import { loadConfig } from "../../config/config.js";
+import { updateSessionStore } from "../../config/sessions.js";
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import {
   ensureOutboundSessionEntry,
@@ -19,6 +20,8 @@ import {
   validatePollParams,
   validateSendParams,
 } from "../protocol/index.js";
+import { assertSessionAccess, isOwnerRestrictedPrincipal, stampSessionOwner } from "../session-owner.js";
+import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 
 type InflightResult = {
@@ -43,7 +46,7 @@ const getInflightMap = (context: GatewayRequestContext) => {
 };
 
 export const sendHandlers: GatewayRequestHandlers = {
-  send: async ({ params, respond, context }) => {
+  send: async ({ params, respond, context, owner }) => {
     const p = params;
     if (!validateSendParams(p)) {
       respond(
@@ -130,6 +133,24 @@ export const sendHandlers: GatewayRequestHandlers = {
             meta: { channel },
           };
         }
+        const stampOwnedSessionEntry = async (storePath: string, sessionKey: string) => {
+          if (!isOwnerRestrictedPrincipal(owner, cfg)) {
+            return;
+          }
+          await updateSessionStore(storePath, (store) => {
+            const existingEntry = store[sessionKey];
+            if (!existingEntry) {
+              return;
+            }
+            const stampedEntry = stampSessionOwner({
+              entry: existingEntry,
+              owner,
+            });
+            if (stampedEntry !== existingEntry) {
+              store[sessionKey] = stampedEntry;
+            }
+          });
+        };
         const outboundDeps = context.deps ? createOutboundSendDeps(context.deps) : undefined;
         const mirrorPayloads = normalizeReplyPayloadsForDelivery([
           { text: message, mediaUrl: request.mediaUrl, mediaUrls },
@@ -141,10 +162,28 @@ export const sendHandlers: GatewayRequestHandlers = {
         const mirrorMediaUrls = mirrorPayloads.flatMap(
           (payload) => payload.mediaUrls ?? (payload.mediaUrl ? [payload.mediaUrl] : []),
         );
-        const providedSessionKey =
+        let providedSessionKey =
           typeof request.sessionKey === "string" && request.sessionKey.trim()
             ? request.sessionKey.trim().toLowerCase()
             : undefined;
+        if (providedSessionKey) {
+          const { entry, canonicalKey, storePath } = loadSessionEntry(providedSessionKey);
+          const access = assertSessionAccess({
+            owner,
+            entry,
+            sessionKey: canonicalKey,
+            cfg,
+          });
+          if (!access.ok) {
+            return {
+              ok: false,
+              error: access.error,
+              meta: { channel },
+            };
+          }
+          providedSessionKey = canonicalKey;
+          await stampOwnedSessionEntry(storePath, canonicalKey);
+        }
         const derivedAgentId = resolveSessionAgentId({ config: cfg });
         // If callers omit sessionKey, derive a target session key from the outbound route.
         const derivedRoute = !providedSessionKey
@@ -157,6 +196,20 @@ export const sendHandlers: GatewayRequestHandlers = {
             })
           : null;
         if (derivedRoute) {
+          const { entry, canonicalKey, storePath } = loadSessionEntry(derivedRoute.sessionKey);
+          const access = assertSessionAccess({
+            owner,
+            entry,
+            sessionKey: canonicalKey,
+            cfg,
+          });
+          if (!access.ok) {
+            return {
+              ok: false,
+              error: access.error,
+              meta: { channel },
+            };
+          }
           await ensureOutboundSessionEntry({
             cfg,
             agentId: derivedAgentId,
@@ -164,6 +217,7 @@ export const sendHandlers: GatewayRequestHandlers = {
             accountId,
             route: derivedRoute,
           });
+          await stampOwnedSessionEntry(storePath, canonicalKey);
         }
         const results = await deliverOutboundPayloads({
           cfg,

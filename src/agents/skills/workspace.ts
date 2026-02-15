@@ -16,7 +16,7 @@ import type {
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { CONFIG_DIR, resolveUserPath } from "../../utils.js";
 import { resolveBundledSkillsDir } from "./bundled-dir.js";
-import { shouldIncludeSkill } from "./config.js";
+import { shouldIncludeSkill, type SkillVisibilityViewer } from "./config.js";
 import {
   parseFrontmatter,
   resolveOpenClawMetadata,
@@ -46,8 +46,11 @@ function filterSkillEntries(
   config?: OpenClawConfig,
   skillFilter?: string[],
   eligibility?: SkillEligibilityContext,
+  viewer?: SkillVisibilityViewer,
 ): SkillEntry[] {
-  let filtered = entries.filter((entry) => shouldIncludeSkill({ entry, config, eligibility }));
+  let filtered = entries.filter((entry) =>
+    shouldIncludeSkill({ entry, config, eligibility, viewer }),
+  );
   // If skillFilter is provided, only include skills in the filter list.
   if (skillFilter !== undefined) {
     const normalized = skillFilter.map((entry) => String(entry).trim()).filter(Boolean);
@@ -199,6 +202,7 @@ export function buildWorkspaceSkillSnapshot(
     skillFilter?: string[];
     eligibility?: SkillEligibilityContext;
     snapshotVersion?: number;
+    viewer?: SkillVisibilityViewer;
   },
 ): SkillSnapshot {
   const skillEntries = opts?.entries ?? loadSkillEntries(workspaceDir, opts);
@@ -207,6 +211,7 @@ export function buildWorkspaceSkillSnapshot(
     opts?.config,
     opts?.skillFilter,
     opts?.eligibility,
+    opts?.viewer,
   );
   const promptEntries = eligible.filter(
     (entry) => entry.invocation?.disableModelInvocation !== true,
@@ -235,6 +240,7 @@ export function buildWorkspaceSkillsPrompt(
     /** If provided, only include skills with these names */
     skillFilter?: string[];
     eligibility?: SkillEligibilityContext;
+    viewer?: SkillVisibilityViewer;
   },
 ): string {
   const skillEntries = opts?.entries ?? loadSkillEntries(workspaceDir, opts);
@@ -243,6 +249,7 @@ export function buildWorkspaceSkillsPrompt(
     opts?.config,
     opts?.skillFilter,
     opts?.eligibility,
+    opts?.viewer,
   );
   const promptEntries = eligible.filter(
     (entry) => entry.invocation?.disableModelInvocation !== true,
@@ -258,6 +265,7 @@ export function resolveSkillsPromptForRun(params: {
   entries?: SkillEntry[];
   config?: OpenClawConfig;
   workspaceDir: string;
+  viewer?: SkillVisibilityViewer;
 }): string {
   const snapshotPrompt = params.skillsSnapshot?.prompt?.trim();
   if (snapshotPrompt) {
@@ -267,6 +275,7 @@ export function resolveSkillsPromptForRun(params: {
     const prompt = buildWorkspaceSkillsPrompt(params.workspaceDir, {
       entries: params.entries,
       config: params.config,
+      viewer: params.viewer,
     });
     return prompt.trim() ? prompt : "";
   }
@@ -327,8 +336,9 @@ export async function syncSkillsToWorkspace(params: {
 export function filterWorkspaceSkillEntries(
   entries: SkillEntry[],
   config?: OpenClawConfig,
+  viewer?: SkillVisibilityViewer,
 ): SkillEntry[] {
-  return filterSkillEntries(entries, config);
+  return filterSkillEntries(entries, config, undefined, undefined, viewer);
 }
 
 export function buildWorkspaceSkillCommandSpecs(
@@ -341,6 +351,7 @@ export function buildWorkspaceSkillCommandSpecs(
     skillFilter?: string[];
     eligibility?: SkillEligibilityContext;
     reservedNames?: Set<string>;
+    viewer?: SkillVisibilityViewer;
   },
 ): SkillCommandSpec[] {
   const skillEntries = opts?.entries ?? loadSkillEntries(workspaceDir, opts);
@@ -349,6 +360,7 @@ export function buildWorkspaceSkillCommandSpecs(
     opts?.config,
     opts?.skillFilter,
     opts?.eligibility,
+    opts?.viewer,
   );
   const userInvocable = eligible.filter((entry) => entry.invocation?.userInvocable !== false);
   const used = new Set<string>();

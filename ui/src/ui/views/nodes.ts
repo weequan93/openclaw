@@ -13,6 +13,7 @@ import type {
 import { clampText, formatRelativeTimestamp, formatList } from "../format.ts";
 
 export type NodesProps = {
+  canManage: boolean;
   loading: boolean;
   nodes: Array<Record<string, unknown>>;
   devicesLoading: boolean;
@@ -53,8 +54,18 @@ export function renderNodes(props: NodesProps) {
   const bindingState = resolveBindingsState(props);
   const approvalsState = resolveExecApprovalsState(props);
   return html`
-    ${renderExecApprovals(approvalsState)}
-    ${renderBindings(bindingState)}
+    ${
+      props.canManage
+        ? html`${renderExecApprovals(approvalsState)} ${renderBindings(bindingState)}`
+        : html`
+            <section class="card">
+              <div class="card-title">Controls Restricted</div>
+              <div class="card-sub">
+                Device pairing, exec approvals, and exec node bindings require an admin principal role.
+              </div>
+            </section>
+          `
+    }
     ${renderDevices(props)}
     <section class="card">
       <div class="row" style="justify-content: space-between;">
@@ -145,10 +156,18 @@ function renderPendingDevice(req: PendingDevice, props: NodesProps) {
       </div>
       <div class="list-meta">
         <div class="row" style="justify-content: flex-end; gap: 8px; flex-wrap: wrap;">
-          <button class="btn btn--sm primary" @click=${() => props.onDeviceApprove(req.requestId)}>
+          <button
+            class="btn btn--sm primary"
+            ?disabled=${!props.canManage}
+            @click=${() => props.onDeviceApprove(req.requestId)}
+          >
             Approve
           </button>
-          <button class="btn btn--sm" @click=${() => props.onDeviceReject(req.requestId)}>
+          <button
+            class="btn btn--sm"
+            ?disabled=${!props.canManage}
+            @click=${() => props.onDeviceReject(req.requestId)}
+          >
             Reject
           </button>
         </div>
@@ -198,6 +217,7 @@ function renderTokenRow(deviceId: string, token: DeviceTokenSummary, props: Node
       <div class="row" style="justify-content: flex-end; gap: 6px; flex-wrap: wrap;">
         <button
           class="btn btn--sm"
+          ?disabled=${!props.canManage}
           @click=${() => props.onDeviceRotate(deviceId, token.role, token.scopes)}
         >
           Rotate
@@ -208,6 +228,7 @@ function renderTokenRow(deviceId: string, token: DeviceTokenSummary, props: Node
             : html`
               <button
                 class="btn btn--sm danger"
+                ?disabled=${!props.canManage}
                 @click=${() => props.onDeviceRevoke(deviceId, token.role)}
               >
                 Revoke

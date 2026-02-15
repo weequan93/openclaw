@@ -39,10 +39,17 @@ describe("GatewayClient", () => {
   test("closes on missing ticks", async () => {
     const port = await getFreePort();
     wss = new WebSocketServer({ port, host: "127.0.0.1" });
+    let observedScopes: string[] | undefined;
 
     wss.on("connection", (socket) => {
       socket.once("message", (data) => {
-        const first = JSON.parse(rawDataToString(data)) as { id?: string };
+        const first = JSON.parse(rawDataToString(data)) as {
+          id?: string;
+          params?: { scopes?: unknown };
+        };
+        observedScopes = Array.isArray(first.params?.scopes)
+          ? first.params?.scopes.map((scope) => String(scope))
+          : undefined;
         const id = first.id ?? "connect";
         // Respond with tiny tick interval to trigger watchdog quickly.
         const helloOk = {
@@ -77,7 +84,78 @@ describe("GatewayClient", () => {
     const res = await closed;
     expect(res.code).toBe(4000);
     expect(res.reason).toContain("tick timeout");
+    expect(observedScopes).toEqual([]);
   }, 4000);
+
+  test("sends connect identity when provided", async () => {
+    const port = await getFreePort();
+    wss = new WebSocketServer({ port, host: "127.0.0.1" });
+    let observedIdentity:
+      | {
+          userId?: string;
+          principalId?: string;
+          alias?: string;
+        }
+      | undefined;
+
+    wss.on("connection", (socket) => {
+      socket.once("message", (data) => {
+        const first = JSON.parse(rawDataToString(data)) as {
+          id?: string;
+          params?: {
+            identity?: { userId?: string; principalId?: string; alias?: string };
+          };
+        };
+        observedIdentity = first.params?.identity;
+        const id = first.id ?? "connect";
+        const helloOk = {
+          type: "hello-ok",
+          protocol: 2,
+          server: { version: "dev", connId: "c1" },
+          features: { methods: [], events: [] },
+          snapshot: {
+            presence: [],
+            health: {},
+            stateVersion: { presence: 1, health: 1 },
+            uptimeMs: 1,
+          },
+          policy: {
+            maxPayload: 512 * 1024,
+            maxBufferedBytes: 1024 * 1024,
+            tickIntervalMs: 30_000,
+          },
+        };
+        socket.send(JSON.stringify({ type: "res", id, ok: true, payload: helloOk }));
+      });
+    });
+
+    const connected = new Promise<void>((resolve, reject) => {
+      const client = new GatewayClient({
+        url: `ws://127.0.0.1:${port}`,
+        identity: {
+          userId: "user-1",
+          principalId: "principal:user-1",
+          alias: "alice",
+        },
+        onHelloOk: () => {
+          client.stop();
+          resolve();
+        },
+        onConnectError: (err) => {
+          client.stop();
+          reject(err);
+        },
+      });
+      client.start();
+    });
+
+    await connected;
+    expect(observedIdentity).toEqual({
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    });
+  });
 
   test("rejects mismatched tls fingerprint", async () => {
     const key = `-----BEGIN PRIVATE KEY-----

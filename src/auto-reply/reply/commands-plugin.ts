@@ -6,7 +6,9 @@
  */
 
 import type { CommandHandler, CommandHandlerResult } from "./commands-types.js";
+import { logVerbose } from "../../globals.js";
 import { matchPluginCommand, executePluginCommand } from "../../plugins/commands.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 /**
  * Handle plugin-registered commands.
@@ -27,6 +29,24 @@ export const handlePluginCommand: CommandHandler = async (
   const match = matchPluginCommand(command.commandBodyNormalized);
   if (!match) {
     return null;
+  }
+
+  const requireAuth = match.command.requireAuth !== false;
+  if (requireAuth && !command.isAuthorizedSender) {
+    logVerbose(
+      `Ignoring plugin command /${match.command.name} from unauthorized sender: ${command.senderId || "<unknown>"}`,
+    );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command,
+      method: "command.plugin",
+      reasonCode: "UNKNOWN_SENDER",
+      message: `/${match.command.name} denied for unauthorized sender`,
+    });
+    return {
+      shouldContinue: false,
+      reply: { text: "⚠️ This command requires authorization." },
+    };
   }
 
   // Execute the plugin command (always returns a result)

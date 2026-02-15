@@ -23,16 +23,43 @@ export async function runSessionsSendA2AFlow(params: {
   maxPingPongTurns: number;
   requesterSessionKey?: string;
   requesterChannel?: GatewayMessageChannel;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
   roundOneReply?: string;
   waitRunId?: string;
 }) {
   const runContextId = params.waitRunId ?? "unknown";
   try {
+    const ownerIdentity =
+      typeof params.ownerUserId === "string" && params.ownerUserId.trim()
+        ? {
+            userId: params.ownerUserId.trim(),
+            principalId:
+              typeof params.ownerPrincipalId === "string" && params.ownerPrincipalId.trim()
+                ? params.ownerPrincipalId.trim()
+                : `user:${params.ownerUserId.trim()}`,
+            ...(typeof params.ownerAlias === "string" && params.ownerAlias.trim()
+              ? { alias: params.ownerAlias.trim() }
+              : {}),
+          }
+        : undefined;
+    const callGatewayOwned = async <T = Record<string, unknown>>(gatewayParams: {
+      method: string;
+      params?: unknown;
+      timeoutMs?: number;
+    }) =>
+      await callGateway<T>({
+        method: gatewayParams.method,
+        params: gatewayParams.params,
+        timeoutMs: gatewayParams.timeoutMs,
+        ...(ownerIdentity ? { identity: ownerIdentity } : {}),
+      });
     let primaryReply = params.roundOneReply;
     let latestReply = params.roundOneReply;
     if (!primaryReply && params.waitRunId) {
       const waitMs = Math.min(params.announceTimeoutMs, 60_000);
-      const wait = await callGateway<{ status: string }>({
+      const wait = await callGatewayOwned<{ status: string }>({
         method: "agent.wait",
         params: {
           runId: params.waitRunId,
@@ -43,6 +70,7 @@ export async function runSessionsSendA2AFlow(params: {
       if (wait?.status === "ok") {
         primaryReply = await readLatestAssistantReply({
           sessionKey: params.targetSessionKey,
+          ownerIdentity,
         });
         latestReply = primaryReply;
       }
@@ -54,6 +82,7 @@ export async function runSessionsSendA2AFlow(params: {
     const announceTarget = await resolveAnnounceTarget({
       sessionKey: params.targetSessionKey,
       displayKey: params.displayKey,
+      ownerIdentity,
     });
     const targetChannel = announceTarget?.channel ?? "unknown";
 
@@ -83,6 +112,7 @@ export async function runSessionsSendA2AFlow(params: {
           extraSystemPrompt: replyPrompt,
           timeoutMs: params.announceTimeoutMs,
           lane: AGENT_LANE_NESTED,
+          ownerIdentity,
         });
         if (!replyText || isReplySkip(replyText)) {
           break;
@@ -110,10 +140,11 @@ export async function runSessionsSendA2AFlow(params: {
       extraSystemPrompt: announcePrompt,
       timeoutMs: params.announceTimeoutMs,
       lane: AGENT_LANE_NESTED,
+      ownerIdentity,
     });
     if (announceTarget && announceReply && announceReply.trim() && !isAnnounceSkip(announceReply)) {
       try {
-        await callGateway({
+        await callGatewayOwned({
           method: "send",
           params: {
             to: announceTarget.to,

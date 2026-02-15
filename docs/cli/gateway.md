@@ -149,6 +149,98 @@ openclaw gateway call status
 openclaw gateway call logs.tail --params '{"sinceMs": 60000}'
 ```
 
+### `gateway authz-denied`
+
+List denied gateway authorization events (admin scope required):
+
+```bash
+openclaw gateway authz-denied
+openclaw gateway authz-denied --method sessions.list --reason OWNER_MISMATCH --json
+```
+
+Common options:
+
+- `--limit <n>`: max events to return (default `100`)
+- `--cursor <cursor>`: pagination cursor
+- `--order <order>`: `desc|asc` (default `desc`)
+- `--method <method>`: filter by method
+- `--reason <reasonCode>`: filter by deny reason
+- `--user-id <userId>` / `--principal-id <principalId>`: actor filters
+- `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
+### `gateway authz-denied-summary`
+
+Show aggregate deny patterns and high-frequency principals (admin scope required):
+
+```bash
+openclaw gateway authz-denied-summary
+openclaw gateway authz-denied-summary --top-n 10 --alert-threshold 3 --json
+```
+
+Common options:
+
+- `--top-n <n>`: max buckets per summary group (default `5`)
+- `--alert-threshold <n>`: high-frequency principal threshold (default `5`)
+- `--method <method>`: filter by method
+- `--reason <reasonCode>`: filter by deny reason
+- `--error-code <errorCode>`: filter by error code
+- `--user-id <userId>` / `--principal-id <principalId>`: actor filters
+- `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
+### `gateway config-changes`
+
+List gateway config change events (admin scope required):
+
+```bash
+openclaw gateway config-changes
+openclaw gateway config-changes --policy-bundles --json
+openclaw gateway config-changes --method config.patch --limit 50
+```
+
+Common options:
+
+- `--limit <n>`: max events to return (default `100`)
+- `--cursor <cursor>`: pagination cursor
+- `--order <order>`: `desc|asc` (default `desc`)
+- `--method <method>`: filter by config method (`config.patch`, `config.apply`, `config.policyBundle.apply`, etc.)
+- `--policy-bundles`: shortcut filter for `config.policyBundle.apply`
+- `--user-id <userId>` / `--principal-id <principalId>`: actor filters
+- `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
+### `gateway policy-bundles`
+
+List available gateway policy bundles (admin scope required):
+
+```bash
+openclaw gateway policy-bundles
+openclaw gateway policy-bundles --json
+```
+
+### `gateway policy-bundle-resolve`
+
+Resolve a bundle and inspect the patch payload before apply:
+
+```bash
+openclaw gateway policy-bundle-resolve --bundle strict_admin_control
+openclaw gateway policy-bundle-resolve --bundle strict_admin_control --json
+```
+
+### `gateway policy-bundle-apply`
+
+Apply a bundle with config hash protection and restart scheduling:
+
+```bash
+openclaw gateway policy-bundle-apply --bundle strict_admin_control
+openclaw gateway policy-bundle-apply --bundle strict_admin_control --session-key agent:main:whatsapp:dm:+15555550123 --restart-delay 1000
+```
+
+Options:
+
+- `--bundle <id>`: `single_user|multi_user_isolated|strict_admin_control` (required)
+- `--session-key <key>`: optional wake target after restart
+- `--note <text>`: optional audit note (defaults to `policy-bundle:<id>`)
+- `--restart-delay <ms>`: optional restart delay in milliseconds
+
 ## Manage the Gateway service
 
 ```bash

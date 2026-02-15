@@ -7,7 +7,11 @@ import {
 } from "../../browser/control-service.js";
 import { createBrowserRouteDispatcher } from "../../browser/routes/dispatcher.js";
 import { loadConfig } from "../../config/config.js";
+import { getPairedNode } from "../../infra/node-pairing.js";
 import { saveMediaBuffer } from "../../media/store.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
+import { enforceBrowserOwnerPolicy } from "../browser-owner-policy.js";
+import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import { ErrorCodes, errorShape } from "../protocol/index.js";
 import { safeParseJson } from "./nodes.helpers.js";
@@ -30,6 +34,14 @@ type BrowserProxyResult = {
   result: unknown;
   files?: BrowserProxyFile[];
 };
+
+function normalizeToken(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 function isBrowserNode(node: NodeSession) {
   const caps = Array.isArray(node.caps) ? node.caps : [];
@@ -146,12 +158,12 @@ function applyProxyPaths(result: unknown, mapping: Map<string, string>) {
 }
 
 export const browserHandlers: GatewayRequestHandlers = {
-  "browser.request": async ({ params, respond, context }) => {
+  "browser.request": async ({ params, respond, context, owner }) => {
     const typed = params as BrowserRequestParams;
     const methodRaw = typeof typed.method === "string" ? typed.method.trim().toUpperCase() : "";
     const path = typeof typed.path === "string" ? typed.path.trim() : "";
-    const query = typed.query && typeof typed.query === "object" ? typed.query : undefined;
-    const body = typed.body;
+    let query = typed.query && typeof typed.query === "object" ? typed.query : undefined;
+    let body = typed.body;
     const timeoutMs =
       typeof typed.timeoutMs === "number" && Number.isFinite(typed.timeoutMs)
         ? Math.max(1, Math.floor(typed.timeoutMs))
@@ -175,6 +187,21 @@ export const browserHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
+    const policy = enforceBrowserOwnerPolicy({
+      cfg,
+      owner,
+      method: methodRaw,
+      path,
+      query,
+      body,
+    });
+    if (!policy.ok) {
+      respond(false, undefined, policy.error);
+      return;
+    }
+    query = policy.query;
+    body = policy.body;
+
     let nodeTarget: NodeSession | null = null;
     try {
       nodeTarget = resolveBrowserNodeTarget({
@@ -187,6 +214,59 @@ export const browserHandlers: GatewayRequestHandlers = {
     }
 
     if (nodeTarget) {
+      if (owner && owner.role !== "admin") {
+        const strictOwner = isGatewayStrictOwnerMode(cfg);
+        const pairedNode = await getPairedNode(nodeTarget.nodeId);
+        const nodeOwner = normalizeToken(pairedNode?.ownerUserId) ?? "";
+        const profileName = normalizeToken(query?.profile);
+        const profileOwner = profileName
+          ? normalizeToken(cfg.browser?.profiles?.[profileName]?.ownerUserId)
+          : undefined;
+        const profileNodeOwnerMismatch =
+          Boolean(profileOwner) && Boolean(nodeOwner) && profileOwner !== nodeOwner;
+        if (profileNodeOwnerMismatch) {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.INVALID_REQUEST, "browser profile/node owner mismatch", {
+              details: {
+                reasonCode: "OWNER_MISMATCH",
+                ownerUserId: owner.userId,
+                profileOwnerUserId: profileOwner,
+                nodeOwnerUserId: nodeOwner,
+                profile: profileName ?? null,
+                nodeId: nodeTarget.nodeId,
+              },
+            }),
+          );
+          return;
+        }
+        const ownerMismatch = Boolean(nodeOwner) && nodeOwner !== owner.userId;
+        const ownerMissing = !nodeOwner;
+        const delegated =
+          ownerMismatch &&
+          hasGatewayDelegatedAccess({
+            cfg,
+            fromUserId: owner.userId,
+            ownerUserId: nodeOwner,
+            resource: "browser",
+          });
+        if ((!delegated && ownerMismatch) || (strictOwner && ownerMissing)) {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.INVALID_REQUEST, "browser node owner mismatch", {
+              details: {
+                reasonCode: "OWNER_MISMATCH",
+                ownerUserId: owner.userId,
+                nodeOwnerUserId: nodeOwner,
+                nodeId: nodeTarget.nodeId,
+              },
+            }),
+          );
+          return;
+        }
+      }
       const allowlist = resolveNodeCommandAllowlist(cfg, nodeTarget);
       const allowed = isNodeCommandAllowed({
         command: "browser.proxy",

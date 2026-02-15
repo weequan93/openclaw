@@ -55,6 +55,11 @@ describe("subagent registry persistence", () => {
       requesterDisplayKey: "main",
       task: "do the thing",
       cleanup: "keep",
+      ownerIdentity: {
+        userId: "user-1",
+        principalId: "principal:user-1",
+        alias: "alice",
+      },
     });
 
     const registryPath = path.join(tempStateDir, "subagents", "runs.json");
@@ -93,11 +98,17 @@ describe("subagent registry persistence", () => {
       task: string;
       cleanup: string;
       label?: string;
+      ownerIdentity?: { userId?: string; principalId?: string; alias?: string };
     };
     const first = announceSpy.mock.calls[0]?.[0] as unknown as AnnounceParams;
     expect(first.childSessionKey).toBe("agent:main:subagent:test");
     expect(first.requesterOrigin?.channel).toBe("whatsapp");
     expect(first.requesterOrigin?.accountId).toBe("acct-main");
+    expect(first.ownerIdentity).toMatchObject({
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    });
   });
 
   it("skips cleanup when cleanupHandled was persisted", async () => {

@@ -1,5 +1,6 @@
 import type { ReplyPayload } from "../types.js";
 import type { CommandHandler } from "./commands-types.js";
+import { resolveGatewayConfigAdminAccess } from "../../channels/plugins/config-writes.js";
 import { logVerbose } from "../../globals.js";
 import {
   getLastTtsAttempt,
@@ -18,11 +19,33 @@ import {
   setTtsProvider,
   textToSpeech,
 } from "../../tts/tts.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 type ParsedTtsCommand = {
   action: string;
   args: string;
 };
+
+function hasGatewayIdentity(params: Parameters<CommandHandler>[0]): boolean {
+  return (
+    (typeof params.ctx.GatewayOwnerUserId === "string" &&
+      params.ctx.GatewayOwnerUserId.trim().length > 0) ||
+    (typeof params.ctx.GatewayOwnerPrincipalId === "string" &&
+      params.ctx.GatewayOwnerPrincipalId.trim().length > 0) ||
+    (typeof params.ctx.GatewayOwnerRole === "string" && params.ctx.GatewayOwnerRole.trim().length > 0) ||
+    (Array.isArray(params.ctx.GatewayClientScopes) && params.ctx.GatewayClientScopes.length > 0)
+  );
+}
+
+function isTtsConfigMutationCommand(parsed: ParsedTtsCommand): boolean {
+  if (parsed.action === "on" || parsed.action === "off") {
+    return true;
+  }
+  if (parsed.action === "provider" || parsed.action === "limit" || parsed.action === "summary") {
+    return parsed.args.trim().length > 0;
+  }
+  return false;
+}
 
 function parseTtsCommand(normalized: string): ParsedTtsCommand | null {
   // Accept `/tts` and `/tts <action> [args]` as a single control surface.
@@ -81,6 +104,13 @@ export const handleTtsCommands: CommandHandler = async (params, allowTextCommand
     logVerbose(
       `Ignoring TTS command from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.tts",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/tts denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
 
@@ -88,6 +118,25 @@ export const handleTtsCommands: CommandHandler = async (params, allowTextCommand
   const prefsPath = resolveTtsPrefsPath(config);
   const action = parsed.action;
   const args = parsed.args;
+
+  if (
+    isTtsConfigMutationCommand(parsed) &&
+    !resolveGatewayConfigAdminAccess({ ctx: params.ctx, cfg: params.cfg })
+  ) {
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.tts",
+      reasonCode: hasGatewayIdentity(params) ? "ROLE_FORBIDDEN" : "UNKNOWN_SENDER",
+      message: "/tts settings are admin-only in gateway user mode",
+    });
+    return {
+      shouldContinue: false,
+      reply: {
+        text: "⚠️ /tts settings are admin-only in gateway user mode. Use /tts status or /tts audio.",
+      },
+    };
+  }
 
   if (action === "help") {
     return { shouldContinue: false, reply: ttsUsage() };

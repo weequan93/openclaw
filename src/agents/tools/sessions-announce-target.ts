@@ -1,12 +1,13 @@
 import type { AnnounceTarget } from "./sessions-send-helpers.js";
 import { getChannelPlugin, normalizeChannelId } from "../../channels/plugins/index.js";
 import { callGateway } from "../../gateway/call.js";
-import { SessionListRow } from "./sessions-helpers.js";
+import { type GatewayOwnerIdentity, SessionListRow } from "./sessions-helpers.js";
 import { resolveAnnounceTargetFromKey } from "./sessions-send-helpers.js";
 
 export async function resolveAnnounceTarget(params: {
   sessionKey: string;
   displayKey: string;
+  ownerIdentity?: GatewayOwnerIdentity;
 }): Promise<AnnounceTarget | null> {
   const parsed = resolveAnnounceTargetFromKey(params.sessionKey);
   const parsedDisplay = resolveAnnounceTargetFromKey(params.displayKey);
@@ -28,6 +29,7 @@ export async function resolveAnnounceTarget(params: {
         includeUnknown: true,
         limit: 200,
       },
+      ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
     });
     const sessions = Array.isArray(list?.sessions) ? list.sessions : [];
     const match =

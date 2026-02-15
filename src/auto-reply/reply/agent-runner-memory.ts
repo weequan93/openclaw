@@ -22,6 +22,7 @@ import {
   resolveMemoryFlushSettings,
   shouldRunMemoryFlush,
 } from "./memory-flush.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
 export async function runMemoryFlushIfNeeded(params: {
@@ -133,6 +134,9 @@ export async function runMemoryFlushIfNeeded(params: {
           agentDir: params.followupRun.run.agentDir,
           config: params.followupRun.run.config,
           skillsSnapshot: params.followupRun.run.skillsSnapshot,
+          ownerUserId: activeSessionEntry?.ownerUserId,
+          ownerPrincipalId: activeSessionEntry?.ownerPrincipalId,
+          ownerRole: resolveGatewayOwnerRoleFromContext(params.sessionCtx),
           prompt: memoryFlushSettings.prompt,
           extraSystemPrompt: flushSystemPrompt,
           ownerNumbers: params.followupRun.run.ownerNumbers,

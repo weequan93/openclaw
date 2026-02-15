@@ -1,16 +1,27 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SkillEntry, SkillSnapshot } from "./types.js";
-import { resolveSkillConfig } from "./config.js";
+import {
+  isSkillConfigVisibleToViewer,
+  resolveSkillConfig,
+  type SkillVisibilityViewer,
+} from "./config.js";
 import { resolveSkillKey } from "./frontmatter.js";
 
-export function applySkillEnvOverrides(params: { skills: SkillEntry[]; config?: OpenClawConfig }) {
-  const { skills, config } = params;
+export function applySkillEnvOverrides(params: {
+  skills: SkillEntry[];
+  config?: OpenClawConfig;
+  viewer?: SkillVisibilityViewer;
+}) {
+  const { skills, config, viewer } = params;
   const updates: Array<{ key: string; prev: string | undefined }> = [];
 
   for (const entry of skills) {
     const skillKey = resolveSkillKey(entry.skill, entry);
     const skillConfig = resolveSkillConfig(config, skillKey);
     if (!skillConfig) {
+      continue;
+    }
+    if (!isSkillConfigVisibleToViewer({ config, skillConfig, viewer })) {
       continue;
     }
 
@@ -45,8 +56,9 @@ export function applySkillEnvOverrides(params: { skills: SkillEntry[]; config?: 
 export function applySkillEnvOverridesFromSnapshot(params: {
   snapshot?: SkillSnapshot;
   config?: OpenClawConfig;
+  viewer?: SkillVisibilityViewer;
 }) {
-  const { snapshot, config } = params;
+  const { snapshot, config, viewer } = params;
   if (!snapshot) {
     return () => {};
   }
@@ -55,6 +67,9 @@ export function applySkillEnvOverridesFromSnapshot(params: {
   for (const skill of snapshot.skills) {
     const skillConfig = resolveSkillConfig(config, skill.name);
     if (!skillConfig) {
+      continue;
+    }
+    if (!isSkillConfigVisibleToViewer({ config, skillConfig, viewer })) {
       continue;
     }
 

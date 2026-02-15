@@ -126,6 +126,22 @@ describe("getMemorySearchManager caching", () => {
     expect(QmdMemoryManager.create).toHaveBeenCalledTimes(2);
   });
 
+  it("does not share qmd manager cache across owner partitions", async () => {
+    const cfg = {
+      memory: { backend: "qmd", qmd: {} },
+      agents: { list: [{ id: "main", default: true, workspace: "/tmp/workspace" }] },
+    } as const;
+
+    const ownerA = await getMemorySearchManager({ cfg, agentId: "main", ownerUserId: "user-a" });
+    const ownerB = await getMemorySearchManager({ cfg, agentId: "main", ownerUserId: "user-b" });
+
+    expect(ownerA.manager).toBeTruthy();
+    expect(ownerB.manager).toBeTruthy();
+    expect(ownerA.manager).not.toBe(ownerB.manager);
+    // eslint-disable-next-line @typescript-eslint/unbound-method
+    expect(QmdMemoryManager.create).toHaveBeenCalledTimes(2);
+  });
+
   it("does not evict a newer cached wrapper when closing an older failed wrapper", async () => {
     const retryAgentId = "retry-agent-close";
     const cfg = {

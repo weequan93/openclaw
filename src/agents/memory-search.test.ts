@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import path from "node:path";
 import { resolveMemorySearchConfig } from "./memory-search.js";
 
 describe("memory search config", () => {
@@ -254,5 +255,45 @@ describe("memory search config", () => {
     };
     const resolved = resolveMemorySearchConfig(cfg, "main");
     expect(resolved?.sources).toContain("sessions");
+  });
+
+  it("partitions fallback store path by ownerUserId", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+          },
+        },
+      },
+    };
+    const ownerA = resolveMemorySearchConfig(cfg, "main", { ownerUserId: "user-a" });
+    const ownerB = resolveMemorySearchConfig(cfg, "main", { ownerUserId: "user-b" });
+    expect(ownerA?.store.path).toBeTruthy();
+    expect(ownerB?.store.path).toBeTruthy();
+    expect(ownerA?.store.path).not.toBe(ownerB?.store.path);
+    expect(path.normalize(ownerA?.store.path ?? "")).toContain(
+      `${path.sep}user-a${path.sep}main.sqlite`,
+    );
+    expect(path.normalize(ownerB?.store.path ?? "")).toContain(
+      `${path.sep}user-b${path.sep}main.sqlite`,
+    );
+  });
+
+  it("supports owner token in explicit store path", () => {
+    const cfg = {
+      agents: {
+        defaults: {
+          memorySearch: {
+            provider: "openai",
+            store: {
+              path: "/tmp/memory-{ownerUserId}.sqlite",
+            },
+          },
+        },
+      },
+    };
+    const resolved = resolveMemorySearchConfig(cfg, "main", { ownerUserId: "user-a" });
+    expect(resolved?.store.path).toBe("/tmp/memory-user-a.sqlite");
   });
 });

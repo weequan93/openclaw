@@ -7,6 +7,7 @@ import { logVerbose } from "../../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { shouldHandleTextCommands } from "../commands-registry.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { handleAllowlistCommand } from "./commands-allowlist.js";
 import { handleApproveCommand } from "./commands-approve.js";
 import { handleBashCommand } from "./commands-bash.js";
@@ -68,6 +69,13 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
     logVerbose(
       `Ignoring /reset from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.reset",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/reset denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
 

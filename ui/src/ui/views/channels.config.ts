@@ -138,6 +138,15 @@ export function renderChannelConfigForm(props: ChannelConfigFormProps) {
 
 export function renderChannelConfigSection(params: { channelId: string; props: ChannelsProps }) {
   const { channelId, props } = params;
+  if (!props.canManage) {
+    return html`
+      <div style="margin-top: 16px;">
+        <div class="callout">
+          Channel configuration requires an admin principal role.
+        </div>
+      </div>
+    `;
+  }
   const disabled = props.configSaving || props.configSchemaLoading;
   return html`
     <div style="margin-top: 16px;">

@@ -20,6 +20,8 @@ export type AgentModelConfig =
 
 export type AgentConfig = {
   id: string;
+  /** Immutable user ownership key for multi-user isolation. */
+  ownerUserId?: string;
   default?: boolean;
   name?: string;
   workspace?: string;

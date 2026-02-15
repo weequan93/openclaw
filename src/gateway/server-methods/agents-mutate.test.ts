@@ -95,7 +95,17 @@ const { agentsHandlers } = await import("./agents.js");
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-function makeCall(method: keyof typeof agentsHandlers, params: Record<string, unknown>) {
+function makeCall(
+  method: keyof typeof agentsHandlers,
+  params: Record<string, unknown>,
+  owner?: {
+    userId: string;
+    principalId: string;
+    role: "admin" | "user" | "node" | "service";
+    sourceRole: "operator" | "node";
+    scopes: string[];
+  },
+) {
   const respond = vi.fn();
   const handler = agentsHandlers[method];
   const promise = handler({
@@ -104,6 +114,7 @@ function makeCall(method: keyof typeof agentsHandlers, params: Record<string, un
     context: {} as never,
     req: { type: "req" as const, id: "1", method },
     client: null,
+    owner,
     isWebchatConnect: () => false,
   });
   return { respond, promise };
@@ -205,6 +216,27 @@ describe("agents.create", () => {
     );
   });
 
+  it("requires ownerUserId in strict multi-user mode", async () => {
+    mocks.loadConfigReturn = {
+      gateway: { multiUser: { mode: "strict" } },
+    };
+
+    const { respond, promise } = makeCall("agents.create", {
+      name: "Strict Agent",
+      workspace: "/tmp/ws",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("ownerUserId required"),
+      }),
+    );
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+  });
+
   it("always writes Name to IDENTITY.md even without emoji/avatar", async () => {
     const { promise } = makeCall("agents.create", {
       name: "Plain Agent",
@@ -232,6 +264,22 @@ describe("agents.create", () => {
       expect.stringContaining("IDENTITY.md"),
       expect.stringMatching(/- Name: Fancy Agent[\s\S]*- Emoji: 🤖[\s\S]*- Avatar:/),
       "utf-8",
+    );
+  });
+
+  it("passes ownerUserId to applyAgentConfig when provided", async () => {
+    const { promise } = makeCall("agents.create", {
+      name: "Owned Agent",
+      workspace: "/tmp/ws-owned",
+      ownerUserId: "user-1",
+    });
+    await promise;
+
+    expect(mocks.applyAgentConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        ownerUserId: "user-1",
+      }),
     );
   });
 });
@@ -289,6 +337,100 @@ describe("agents.update", () => {
     await promise;
 
     expect(mocks.ensureAgentWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("passes ownerUserId to applyAgentConfig when provided", async () => {
+    const { promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      ownerUserId: "user-2",
+    });
+    await promise;
+
+    expect(mocks.applyAgentConfig).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        ownerUserId: "user-2",
+      }),
+    );
+  });
+
+  it("requires ownerUserId for ownerless agents in strict multi-user mode", async () => {
+    mocks.loadConfigReturn = {
+      gateway: { multiUser: { mode: "strict" } },
+    };
+    mocks.listAgentEntries.mockReturnValue([
+      {
+        id: "test-agent",
+      },
+    ]);
+
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "still ownerless",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        message: expect.stringContaining("ownerUserId required"),
+      }),
+    );
+    expect(mocks.writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("allows strict multi-user update when agent already has an owner", async () => {
+    mocks.loadConfigReturn = {
+      gateway: { multiUser: { mode: "strict" } },
+    };
+    mocks.listAgentEntries.mockReturnValue([
+      {
+        id: "test-agent",
+        ownerUserId: "user-1",
+      },
+    ]);
+
+    const { respond, promise } = makeCall("agents.update", {
+      agentId: "test-agent",
+      name: "owned",
+    });
+    await promise;
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ ok: true, agentId: "test-agent" }),
+      undefined,
+    );
+    expect(mocks.writeConfigFile).toHaveBeenCalled();
+  });
+});
+
+describe("agents.list ownership", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes ownerUserId filter for non-admin callers", async () => {
+    const { promise } = makeCall(
+      "agents.list",
+      {},
+      {
+        userId: "user-a",
+        principalId: "user:a",
+        role: "user",
+        sourceRole: "operator",
+        scopes: ["operator.read"],
+      },
+    );
+    await promise;
+
+    expect(mocks.listAgentsForGateway).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        ownerUserId: "user-a",
+      }),
+    );
   });
 });
 

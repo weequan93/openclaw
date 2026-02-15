@@ -22,12 +22,15 @@ import {
   type DiscoveredSession,
 } from "../../infra/session-cost-usage.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
+import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
   validateSessionsUsageParams,
 } from "../protocol/index.js";
+import { isOwnerRestrictedPrincipal } from "../session-owner.js";
 import {
   listAgentsForGateway,
   loadCombinedSessionStoreForGateway,
@@ -45,6 +48,55 @@ type CostUsageCacheEntry = {
 };
 
 const costUsageCache = new Map<string, CostUsageCacheEntry>();
+
+function ownerMismatchError(params: {
+  key: string;
+  ownerUserId: string;
+  sessionOwnerUserId?: string;
+}) {
+  return errorShape(ErrorCodes.INVALID_REQUEST, `session owner mismatch for key: ${params.key}`, {
+    details: {
+      reasonCode: "OWNER_MISMATCH",
+      key: params.key,
+      ownerUserId: params.ownerUserId,
+      sessionOwnerUserId: params.sessionOwnerUserId ?? null,
+    },
+  });
+}
+
+function shouldDenyOwnerAccess(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  ownerRestricted: boolean;
+  strictOwner: boolean;
+  ownerUserId?: string;
+  sessionOwnerUserId?: string;
+}): boolean {
+  if (!params.ownerRestricted || !params.ownerUserId) {
+    return false;
+  }
+  const resourceOwner = params.sessionOwnerUserId?.trim();
+  if (!resourceOwner) {
+    return params.strictOwner;
+  }
+  if (resourceOwner === params.ownerUserId) {
+    return false;
+  }
+  return !hasGatewayDelegatedAccess({
+    cfg: params.cfg,
+    fromUserId: params.ownerUserId,
+    ownerUserId: resourceOwner,
+    resource: "sessions",
+  });
+}
+
+function adminOnlyUsageError(method: string) {
+  return errorShape(ErrorCodes.INVALID_REQUEST, `${method} is admin-only in gateway user mode`, {
+    details: {
+      reasonCode: "POLICY_DENY",
+      method,
+    },
+  });
+}
 
 /**
  * Parse a date string (YYYY-MM-DD) to start of day timestamp in UTC.
@@ -120,8 +172,11 @@ async function discoverAllSessionsForUsage(params: {
   config: ReturnType<typeof loadConfig>;
   startMs: number;
   endMs: number;
+  ownerUserId?: string;
 }): Promise<DiscoveredSessionWithAgent[]> {
-  const agents = listAgentsForGateway(params.config).agents;
+  const agents = listAgentsForGateway(params.config, {
+    ownerUserId: params.ownerUserId,
+  }).agents;
   const results = await Promise.all(
     agents.map(async (agent) => {
       const sessions = await discoverAllSessions({
@@ -253,12 +308,21 @@ export type SessionsUsageResult = {
 };
 
 export const usageHandlers: GatewayRequestHandlers = {
-  "usage.status": async ({ respond }) => {
+  "usage.status": async ({ respond, owner }) => {
+    const config = loadConfig();
+    if (isOwnerRestrictedPrincipal(owner, config)) {
+      respond(false, undefined, adminOnlyUsageError("usage.status"));
+      return;
+    }
     const summary = await loadProviderUsageSummary();
     respond(true, summary, undefined);
   },
-  "usage.cost": async ({ respond, params }) => {
+  "usage.cost": async ({ respond, params, owner }) => {
     const config = loadConfig();
+    if (isOwnerRestrictedPrincipal(owner, config)) {
+      respond(false, undefined, adminOnlyUsageError("usage.cost"));
+      return;
+    }
     const { startMs, endMs } = parseDateRange({
       startDate: params?.startDate,
       endDate: params?.endDate,
@@ -267,7 +331,7 @@ export const usageHandlers: GatewayRequestHandlers = {
     const summary = await loadCostUsageSummaryCached({ startMs, endMs, config });
     respond(true, summary, undefined);
   },
-  "sessions.usage": async ({ respond, params }) => {
+  "sessions.usage": async ({ respond, params, owner }) => {
     if (!validateSessionsUsageParams(params)) {
       respond(
         false,
@@ -282,6 +346,9 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     const p = params;
     const config = loadConfig();
+    const strictOwner = isGatewayStrictOwnerMode(config);
+    const ownerRestricted = isOwnerRestrictedPrincipal(owner, config);
+    const ownerUserId = ownerRestricted ? owner?.userId : undefined;
     const { startMs, endMs } = parseDateRange({
       startDate: p.startDate,
       endDate: p.endDate,
@@ -329,6 +396,28 @@ export const usageHandlers: GatewayRequestHandlers = {
       const resolvedStoreKey = storeMatch?.key ?? storeByIdMatch?.key ?? specificKey;
       const storeEntry = storeMatch?.entry ?? storeByIdMatch?.entry;
       const sessionId = storeEntry?.sessionId ?? keyRest;
+      const sessionOwnerUserId =
+        typeof storeEntry?.ownerUserId === "string" ? storeEntry.ownerUserId.trim() : undefined;
+      if (
+        shouldDenyOwnerAccess({
+          cfg: config,
+          ownerRestricted,
+          strictOwner,
+          ownerUserId,
+          sessionOwnerUserId,
+        })
+      ) {
+        respond(
+          false,
+          undefined,
+          ownerMismatchError({
+            key: resolvedStoreKey,
+            ownerUserId: ownerUserId ?? "unknown",
+            sessionOwnerUserId,
+          }),
+        );
+        return;
+      }
 
       // Resolve the session file path
       const sessionFile = resolveSessionFilePath(sessionId, storeEntry, {
@@ -356,6 +445,7 @@ export const usageHandlers: GatewayRequestHandlers = {
         config,
         startMs,
         endMs,
+        ownerUserId,
       });
 
       // Build a map of sessionId -> store entry for quick lookup
@@ -369,6 +459,21 @@ export const usageHandlers: GatewayRequestHandlers = {
       for (const discovered of discoveredSessions) {
         const storeMatch = storeBySessionId.get(discovered.sessionId);
         if (storeMatch) {
+          const storeOwnerUserId =
+            typeof storeMatch.entry.ownerUserId === "string"
+              ? storeMatch.entry.ownerUserId.trim()
+              : undefined;
+          if (
+            shouldDenyOwnerAccess({
+              cfg: config,
+              ownerRestricted,
+              strictOwner,
+              ownerUserId,
+              sessionOwnerUserId: storeOwnerUserId,
+            })
+          ) {
+            continue;
+          }
           // Named session from store
           mergedEntries.push({
             key: storeMatch.key,
@@ -379,6 +484,10 @@ export const usageHandlers: GatewayRequestHandlers = {
             storeEntry: storeMatch.entry,
           });
         } else {
+          if (ownerRestricted && strictOwner) {
+            // Unknown ownership for discovered-only sessions: deny-by-default for user plane.
+            continue;
+          }
           // Unnamed session - use session ID as key, no label
           mergedEntries.push({
             // Keep agentId in the key so the dashboard can attribute sessions and later fetch logs.
@@ -744,7 +853,7 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     respond(true, result, undefined);
   },
-  "sessions.usage.timeseries": async ({ respond, params }) => {
+  "sessions.usage.timeseries": async ({ respond, params, owner }) => {
     const key = typeof params?.key === "string" ? params.key.trim() : null;
     if (!key) {
       respond(
@@ -757,6 +866,31 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     const config = loadConfig();
     const { entry } = loadSessionEntry(key);
+    const strictOwner = isGatewayStrictOwnerMode(config);
+    const ownerRestricted = isOwnerRestrictedPrincipal(owner, config);
+    const ownerUserId = ownerRestricted ? owner?.userId : undefined;
+    const sessionOwnerUserId =
+      typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : undefined;
+    if (
+      shouldDenyOwnerAccess({
+        cfg: config,
+        ownerRestricted,
+        strictOwner,
+        ownerUserId,
+        sessionOwnerUserId,
+      })
+    ) {
+      respond(
+        false,
+        undefined,
+        ownerMismatchError({
+          key,
+          ownerUserId: ownerUserId ?? "unknown",
+          sessionOwnerUserId,
+        }),
+      );
+      return;
+    }
 
     // For discovered sessions (not in store), try using key as sessionId directly
     const parsed = parseAgentSessionKey(key);
@@ -785,7 +919,7 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     respond(true, timeseries, undefined);
   },
-  "sessions.usage.logs": async ({ respond, params }) => {
+  "sessions.usage.logs": async ({ respond, params, owner }) => {
     const key = typeof params?.key === "string" ? params.key.trim() : null;
     if (!key) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "key is required for logs"));
@@ -799,6 +933,31 @@ export const usageHandlers: GatewayRequestHandlers = {
 
     const config = loadConfig();
     const { entry } = loadSessionEntry(key);
+    const strictOwner = isGatewayStrictOwnerMode(config);
+    const ownerRestricted = isOwnerRestrictedPrincipal(owner, config);
+    const ownerUserId = ownerRestricted ? owner?.userId : undefined;
+    const sessionOwnerUserId =
+      typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : undefined;
+    if (
+      shouldDenyOwnerAccess({
+        cfg: config,
+        ownerRestricted,
+        strictOwner,
+        ownerUserId,
+        sessionOwnerUserId,
+      })
+    ) {
+      respond(
+        false,
+        undefined,
+        ownerMismatchError({
+          key,
+          ownerUserId: ownerUserId ?? "unknown",
+          sessionOwnerUserId,
+        }),
+      );
+      return;
+    }
 
     // For discovered sessions (not in store), try using key as sessionId directly
     const parsed = parseAgentSessionKey(key);

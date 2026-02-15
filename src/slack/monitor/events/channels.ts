@@ -5,7 +5,10 @@ import type {
   SlackChannelIdChangedEvent,
   SlackChannelRenamedEvent,
 } from "../types.js";
-import { resolveChannelConfigWrites } from "../../../channels/plugins/config-writes.js";
+import {
+  resolveChannelConfigWrites,
+  resolveGatewayConfigAdminAccess,
+} from "../../../channels/plugins/config-writes.js";
 import { loadConfig, writeConfigFile } from "../../../config/config.js";
 import { danger, warn } from "../../../globals.js";
 import { enqueueSystemEvent } from "../../../infra/system-events.js";
@@ -119,6 +122,12 @@ export function registerSlackChannelEvents(params: { ctx: SlackMonitorContext })
         ) {
           ctx.runtime.log?.(
             warn("[slack] Config writes disabled; skipping channel config migration."),
+          );
+          return;
+        }
+        if (!resolveGatewayConfigAdminAccess({ cfg: ctx.cfg })) {
+          ctx.runtime.log?.(
+            warn("[slack] Multi-user mode blocks automatic config migration outside admin plane."),
           );
           return;
         }

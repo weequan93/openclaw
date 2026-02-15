@@ -146,4 +146,73 @@ describe("openclaw-tools: subagents", () => {
     // Session should be deleted
     expect(deletedKey?.startsWith("agent:main:subagent:")).toBe(true);
   });
+
+  it("sessions_spawn forwards owner identity through wait announce and cleanup", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    const calls: Array<{ method?: string; params?: unknown; identity?: unknown }> = [];
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; params?: unknown; identity?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        return { runId: "run-owned", status: "accepted", acceptedAt: 2001 };
+      }
+      if (request.method === "agent.wait") {
+        return { runId: "run-owned", status: "ok", startedAt: 3000, endedAt: 4000 };
+      }
+      if (request.method === "chat.history") {
+        return {
+          messages: [
+            {
+              role: "assistant",
+              content: [{ type: "text", text: "done" }],
+            },
+          ],
+        };
+      }
+      if (request.method === "sessions.delete") {
+        return { ok: true };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "discord:group:req",
+      agentChannel: "discord",
+      ownerUserId: "user-1",
+      ownerPrincipalId: "principal:user-1",
+      ownerAlias: "alice",
+    }).find((candidate) => candidate.name === "sessions_spawn");
+    if (!tool) {
+      throw new Error("missing sessions_spawn tool");
+    }
+
+    const result = await tool.execute("call-owner", {
+      task: "do thing",
+      runTimeoutSeconds: 1,
+      cleanup: "delete",
+    });
+    expect(result.details).toMatchObject({ status: "accepted" });
+
+    await sleep(0);
+    await sleep(0);
+    await sleep(0);
+
+    const expectedIdentity = {
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    };
+    const waitCall = calls.find((call) => call.method === "agent.wait");
+    const announceCall = calls.find(
+      (call) =>
+        call.method === "agent" &&
+        (call.params as { lane?: string } | undefined)?.lane !== "subagent",
+    );
+    const cleanupCall = calls.find((call) => call.method === "sessions.delete");
+    expect(waitCall?.identity).toEqual(expectedIdentity);
+    expect(announceCall?.identity).toEqual(expectedIdentity);
+    expect(cleanupCall?.identity).toEqual(expectedIdentity);
+  });
 });

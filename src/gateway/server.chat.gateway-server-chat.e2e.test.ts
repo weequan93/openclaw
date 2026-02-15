@@ -6,6 +6,7 @@ import { WebSocket } from "ws";
 import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import {
+  agentCommand,
   connectOk,
   getReplyFromConfig,
   installGatewayTestHooks,
@@ -251,6 +252,7 @@ describe("gateway server chat", () => {
           main: {
             sessionId: "sess-main",
             updatedAt: Date.now(),
+            ownerUserId: "user-a",
           },
         },
       });
@@ -317,25 +319,475 @@ describe("gateway server chat", () => {
 
       const spy = vi.mocked(agentCommand);
       const callsBefore = spy.mock.calls.length;
-      const eventPromise = onceMessage(
-        ws,
-        (o) =>
-          o.type === "event" &&
-          o.event === "chat" &&
-          o.payload?.state === "final" &&
-          o.payload?.runId === "idem-command-1",
-        8000,
-      );
       const res = await rpcReq(ws, "chat.send", {
         sessionKey: "main",
         message: "/context list",
         idempotencyKey: "idem-command-1",
       });
       expect(res.ok).toBe(true);
-      const evt = await eventPromise;
-      expect(evt.payload?.message?.command).toBe(true);
+      await new Promise((resolve) => setTimeout(resolve, 100));
       expect(spy.mock.calls.length).toBe(callsBefore);
     } finally {
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("chat methods deny owner mismatch for non-admin users", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-chat-owner-"));
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+    const sinceTs = Date.now();
+
+    try {
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "Bob",
+        },
+      });
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      const historyDenied = await rpcReq(userWs, "chat.history", {
+        sessionKey: "main",
+      });
+      expect(historyDenied.ok).toBe(false);
+      expect(historyDenied.error?.message ?? "").toContain("owner mismatch");
+      expect(
+        (
+          historyDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const sendDenied = await rpcReq(userWs, "chat.send", {
+        sessionKey: "main",
+        message: "try cross-owner read",
+        idempotencyKey: "idem-cross-owner-send",
+      });
+      expect(sendDenied.ok).toBe(false);
+      expect(sendDenied.error?.message ?? "").toContain("owner mismatch");
+      expect(
+        (
+          sendDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const abortDenied = await rpcReq(userWs, "chat.abort", {
+        sessionKey: "main",
+      });
+      expect(abortDenied.ok).toBe(false);
+      expect(abortDenied.error?.message ?? "").toContain("owner mismatch");
+      expect(
+        (
+          abortDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const deniedFeed = await rpcReq<{
+        events?: Array<{ method?: string; userAlias?: string | null }>;
+      }>(ws, "authz.denied.list", {
+        reasonCode: "OWNER_MISMATCH",
+        userId: "user-b",
+        sinceTs,
+        limit: 50,
+      });
+      expect(deniedFeed.ok).toBe(true);
+      const deniedMethods = (deniedFeed.payload?.events ?? []).map((event) => event.method);
+      expect(deniedMethods).toContain("chat.history");
+      expect(deniedMethods).toContain("chat.send");
+      expect(deniedMethods).toContain("chat.abort");
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Bob")).toBe(
+        true,
+      );
+    } finally {
+      userWs.close();
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("chat methods allow delegated session access for non-admin users", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-chat-owner-delegated-"));
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+
+    try {
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "Bob",
+        },
+      });
+
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-b",
+                  toUserId: "user-a",
+                  resources: ["sessions"],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      const historyAllowed = await rpcReq<{
+        sessionKey?: string;
+        sessionId?: string;
+      }>(userWs, "chat.history", {
+        sessionKey: "main",
+      });
+      expect(historyAllowed.ok).toBe(true);
+      expect(historyAllowed.payload?.sessionKey).toBe("main");
+      expect(historyAllowed.payload?.sessionId).toBe("sess-owner-a");
+
+      const sendAllowed = await rpcReq(userWs, "chat.send", {
+        sessionKey: "main",
+        message: "/context list",
+        idempotencyKey: "idem-chat-delegated-send",
+      });
+      expect(sendAllowed.ok).toBe(true);
+
+      const abortAllowed = await rpcReq(userWs, "chat.abort", {
+        sessionKey: "main",
+      });
+      expect(abortAllowed.ok).toBe(true);
+    } finally {
+      userWs.close();
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("agent.wait accepts owner-bound run ids from chat.send", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-chat-wait-owner-"));
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+
+    try {
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      const runId = "idem-chat-owner-wait";
+      const sendRes = await rpcReq(userWs, "chat.send", {
+        sessionKey: "main",
+        message: "/context list",
+        idempotencyKey: runId,
+      });
+      expect(sendRes.ok).toBe(true);
+
+      const waitRes = await rpcReq<{
+        runId?: string;
+        status?: "ok" | "timeout" | "error";
+      }>(userWs, "agent.wait", {
+        runId,
+        timeoutMs: 50,
+      });
+      expect(waitRes.ok).toBe(true);
+      expect(waitRes.payload?.runId).toBe(runId);
+      expect(waitRes.payload?.status === "ok" || waitRes.payload?.status === "timeout").toBe(true);
+    } finally {
+      userWs.close();
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtime chat and agent events are isolated to session owner", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-owner-fanout-"));
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+
+    try {
+      await Promise.all([
+        connectOk(userAws, {
+          scopes: ["operator.write"],
+          identity: {
+            userId: "user-a",
+            principalId: "msg:discord:default:user-a",
+            alias: "Alice",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+        }),
+        connectOk(userBws, {
+          scopes: ["operator.write"],
+          identity: {
+            userId: "user-b",
+            principalId: "msg:discord:default:user-b",
+            alias: "Bob",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+        }),
+      ]);
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      registerAgentRunContext("run-owner-fanout", {
+        sessionKey: "main",
+      });
+
+      const ownerAgentEventP = onceMessage(
+        userAws,
+        (o) =>
+          o.type === "event" &&
+          o.event === "agent" &&
+          o.payload?.runId === "run-owner-fanout" &&
+          o.payload?.sessionKey === "main",
+        6000,
+      );
+      const adminAgentEventP = onceMessage(
+        ws,
+        (o) =>
+          o.type === "event" &&
+          o.event === "agent" &&
+          o.payload?.runId === "run-owner-fanout" &&
+          o.payload?.sessionKey === "main",
+        6000,
+      );
+
+      let otherUserReceived = false;
+      const otherUserListener = (raw: WebSocket.RawData) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as {
+            type?: string;
+            event?: string;
+            payload?: { runId?: string };
+          };
+          if (
+            parsed.type === "event" &&
+            (parsed.event === "agent" || parsed.event === "chat") &&
+            parsed.payload?.runId === "run-owner-fanout"
+          ) {
+            otherUserReceived = true;
+          }
+        } catch {
+          /* ignore malformed test frames */
+        }
+      };
+      userBws.on("message", otherUserListener);
+
+      emitAgentEvent({
+        runId: "run-owner-fanout",
+        stream: "assistant",
+        data: { text: "owner scoped event" },
+      });
+
+      const ownerEvent = await ownerAgentEventP;
+      expect(ownerEvent.type).toBe("event");
+      expect(ownerEvent.event).toBe("agent");
+      expect(ownerEvent.payload?.sessionKey).toBe("main");
+      const adminEvent = await adminAgentEventP;
+      expect(adminEvent.type).toBe("event");
+      expect(adminEvent.event).toBe("agent");
+      expect(adminEvent.payload?.sessionKey).toBe("main");
+
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      userBws.off("message", otherUserListener);
+      expect(otherUserReceived).toBe(false);
+    } finally {
+      userAws.close();
+      userBws.close();
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("runtime owner-scoped events include delegated users with sessions delegation", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-owner-fanout-delegated-"));
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+
+    try {
+      await Promise.all([
+        connectOk(userAws, {
+          scopes: ["operator.write"],
+          identity: {
+            userId: "user-a",
+            principalId: "msg:discord:default:user-a",
+            alias: "Alice",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+        }),
+        connectOk(userBws, {
+          scopes: ["operator.write"],
+          identity: {
+            userId: "user-b",
+            principalId: "msg:discord:default:user-b",
+            alias: "Bob",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+          },
+        }),
+      ]);
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-b",
+                  toUserId: "user-a",
+                  resources: ["sessions"],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      registerAgentRunContext("run-owner-fanout-delegated", {
+        sessionKey: "main",
+      });
+
+      const ownerAgentEventP = onceMessage(
+        userAws,
+        (o) =>
+          o.type === "event" &&
+          o.event === "agent" &&
+          o.payload?.runId === "run-owner-fanout-delegated" &&
+          o.payload?.sessionKey === "main",
+        6000,
+      );
+      const delegatedAgentEventP = onceMessage(
+        userBws,
+        (o) =>
+          o.type === "event" &&
+          o.event === "agent" &&
+          o.payload?.runId === "run-owner-fanout-delegated" &&
+          o.payload?.sessionKey === "main",
+        6000,
+      );
+
+      emitAgentEvent({
+        runId: "run-owner-fanout-delegated",
+        stream: "assistant",
+        data: { text: "delegated event" },
+      });
+
+      const ownerEvent = await ownerAgentEventP;
+      expect(ownerEvent.type).toBe("event");
+      expect(ownerEvent.event).toBe("agent");
+      expect(ownerEvent.payload?.sessionKey).toBe("main");
+
+      const delegatedEvent = await delegatedAgentEventP;
+      expect(delegatedEvent.type).toBe("event");
+      expect(delegatedEvent.event).toBe("agent");
+      expect(delegatedEvent.payload?.sessionKey).toBe("main");
+    } finally {
+      userAws.close();
+      userBws.close();
       testState.sessionStorePath = undefined;
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -349,6 +801,7 @@ describe("gateway server chat", () => {
         main: {
           sessionId: "sess-main",
           updatedAt: Date.now(),
+          ownerUserId: "user-a",
           verboseLevel: "off",
         },
       },

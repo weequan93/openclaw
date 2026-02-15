@@ -343,6 +343,51 @@ describe("sessions tools", () => {
     });
   });
 
+  it("sessions_history forwards owner identity to resolve and history lookups", async () => {
+    callGatewayMock.mockReset();
+    const sessionId = "sess-owned-history";
+    const targetKey = "agent:main:discord:channel:owned";
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.resolve") {
+        return { key: targetKey };
+      }
+      if (request.method === "chat.history") {
+        return {
+          messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      ownerUserId: "user-1",
+      ownerPrincipalId: "principal:user-1",
+      ownerAlias: "alice",
+    }).find((candidate) => candidate.name === "sessions_history");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_history tool");
+    }
+
+    const result = await tool.execute("call5b", { sessionKey: sessionId });
+    const details = result.details as { messages?: unknown[] };
+    expect(details.messages).toHaveLength(1);
+    const expectedIdentity = {
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    };
+    const resolveCall = callGatewayMock.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "sessions.resolve",
+    )?.[0] as { identity?: unknown } | undefined;
+    const historyCall = callGatewayMock.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "chat.history",
+    )?.[0] as { identity?: unknown } | undefined;
+    expect(resolveCall?.identity).toEqual(expectedIdentity);
+    expect(historyCall?.identity).toEqual(expectedIdentity);
+  });
+
   it("sessions_history errors on missing sessionId", async () => {
     callGatewayMock.mockReset();
     const sessionId = "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa";
@@ -555,6 +600,53 @@ describe("sessions tools", () => {
     expect(agentCall?.[0]).toMatchObject({
       method: "agent",
       params: { sessionKey: targetKey },
+    });
+  });
+
+  it("sessions_send forwards owner identity to session resolution", async () => {
+    callGatewayMock.mockReset();
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string };
+      if (request.method === "sessions.resolve") {
+        return { key: "agent:main:discord:channel:456" };
+      }
+      if (request.method === "agent") {
+        return { runId: "run-owned-send", acceptedAt: 123 };
+      }
+      if (request.method === "agent.wait") {
+        return { status: "ok" };
+      }
+      if (request.method === "chat.history") {
+        return { messages: [] };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "main",
+      agentChannel: "discord",
+      ownerUserId: "user-1",
+      ownerPrincipalId: "principal:user-1",
+      ownerAlias: "alice",
+    }).find((candidate) => candidate.name === "sessions_send");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing sessions_send tool");
+    }
+
+    const result = await tool.execute("call7b", {
+      sessionKey: "owned-send-session-id",
+      message: "ping",
+      timeoutSeconds: 0,
+    });
+    expect((result.details as { status?: string }).status).toBe("accepted");
+    const resolveCall = callGatewayMock.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "sessions.resolve",
+    )?.[0] as { identity?: unknown } | undefined;
+    expect(resolveCall?.identity).toEqual({
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
     });
   });
 

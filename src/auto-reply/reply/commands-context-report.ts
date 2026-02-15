@@ -15,6 +15,7 @@ import { buildAgentSystemPrompt } from "../../agents/system-prompt.js";
 import { buildToolSummaryMap } from "../../agents/tool-summaries.js";
 import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { buildTtsSystemPromptHint } from "../../tts/tts.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 
 function estimateTokensFromChars(chars: number): number {
   return Math.ceil(Math.max(0, chars) / 4);
@@ -65,12 +66,31 @@ async function resolveContextReport(
     sessionKey: params.sessionKey,
     sessionId: params.sessionEntry?.sessionId,
   });
+  const viewerRole = resolveGatewayOwnerRoleFromContext(params.ctx);
+  const viewerUserId =
+    typeof params.sessionEntry?.ownerUserId === "string" && params.sessionEntry.ownerUserId.trim()
+      ? params.sessionEntry.ownerUserId.trim()
+      : typeof params.ctx.GatewayOwnerUserId === "string" && params.ctx.GatewayOwnerUserId.trim()
+        ? params.ctx.GatewayOwnerUserId.trim()
+        : undefined;
+  const viewerPrincipalId =
+    typeof params.sessionEntry?.ownerPrincipalId === "string" &&
+    params.sessionEntry.ownerPrincipalId.trim()
+      ? params.sessionEntry.ownerPrincipalId.trim()
+      : typeof params.ctx.GatewayOwnerPrincipalId === "string" &&
+          params.ctx.GatewayOwnerPrincipalId.trim()
+        ? params.ctx.GatewayOwnerPrincipalId.trim()
+        : undefined;
   const skillsSnapshot = (() => {
     try {
       return buildWorkspaceSkillSnapshot(workspaceDir, {
         config: params.cfg,
         eligibility: { remote: getRemoteSkillEligibility() },
         snapshotVersion: getSkillsSnapshotVersion(workspaceDir),
+        viewer: {
+          userId: viewerUserId,
+          role: viewerRole,
+        },
       });
     } catch {
       return { prompt: "", skills: [], resolvedSkills: [] };
@@ -93,6 +113,9 @@ async function resolveContextReport(
         groupSpace: params.sessionEntry?.space ?? undefined,
         spawnedBy: params.sessionEntry?.spawnedBy ?? undefined,
         senderIsOwner: params.command.senderIsOwner,
+        ownerUserId: viewerUserId,
+        ownerPrincipalId: viewerPrincipalId,
+        ownerRole: viewerRole,
         modelProvider: params.provider,
         modelId: params.model,
       });

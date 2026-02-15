@@ -26,12 +26,18 @@ export function listSkillCommandsForWorkspace(params: {
   workspaceDir: string;
   cfg: OpenClawConfig;
   skillFilter?: string[];
+  ownerUserId?: string;
+  ownerRole?: string;
 }): SkillCommandSpec[] {
   return buildWorkspaceSkillCommandSpecs(params.workspaceDir, {
     config: params.cfg,
     skillFilter: params.skillFilter,
     eligibility: { remote: getRemoteSkillEligibility() },
     reservedNames: resolveReservedCommandNames(),
+    viewer: {
+      userId: params.ownerUserId,
+      role: params.ownerRole,
+    },
   });
 }
 

@@ -440,6 +440,7 @@ export const AgentModelSchema = z.union([
 export const AgentEntrySchema = z
   .object({
     id: z.string(),
+    ownerUserId: z.string().min(1).optional(),
     default: z.boolean().optional(),
     name: z.string().optional(),
     workspace: z.string().optional(),

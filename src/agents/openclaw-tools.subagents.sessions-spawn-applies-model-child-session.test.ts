@@ -203,4 +203,50 @@ describe("openclaw-tools: subagents", () => {
       model: "minimax/MiniMax-M2.1",
     });
   });
+
+  it("sessions_spawn forwards owner identity to gateway calls", async () => {
+    resetSubagentRegistryForTests();
+    callGatewayMock.mockReset();
+    const calls: Array<{ method?: string; identity?: unknown }> = [];
+
+    callGatewayMock.mockImplementation(async (opts: unknown) => {
+      const request = opts as { method?: string; identity?: unknown };
+      calls.push(request);
+      if (request.method === "agent") {
+        return { runId: "run-owner", status: "accepted" };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "agent:main:main",
+      agentChannel: "discord",
+      ownerUserId: "user-1",
+      ownerPrincipalId: "principal:user-1",
+      ownerAlias: "alice",
+    }).find((candidate) => candidate.name === "sessions_spawn");
+    if (!tool) {
+      throw new Error("missing sessions_spawn tool");
+    }
+
+    const result = await tool.execute("call-owner", {
+      task: "do thing",
+      model: "claude-haiku-4-5",
+    });
+    expect(result.details).toMatchObject({
+      status: "accepted",
+      runId: "run-owner",
+    });
+
+    const modelPatchCall = calls.find((call) => call.method === "sessions.patch");
+    const agentCall = calls.find((call) => call.method === "agent");
+    const expectedIdentity = {
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    };
+
+    expect(modelPatchCall?.identity).toEqual(expectedIdentity);
+    expect(agentCall?.identity).toEqual(expectedIdentity);
+  });
 });

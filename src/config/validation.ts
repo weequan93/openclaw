@@ -19,6 +19,7 @@ const AVATAR_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const AVATAR_DATA_RE = /^data:/i;
 const AVATAR_HTTP_RE = /^https?:\/\//i;
 const WINDOWS_ABS_RE = /^[a-zA-Z]:[\\/]/;
+const DEFAULT_GATEWAY_MULTI_USER_MODE = "strict" as const;
 
 function isWorkspaceAvatarPath(value: string, workspaceDir: string): boolean {
   const workspaceRoot = path.resolve(workspaceDir);
@@ -81,6 +82,41 @@ function validateIdentityAvatar(config: OpenClawConfig): ConfigValidationIssue[]
     }
   }
   return issues;
+}
+
+function resolveMultiUserModeForValidation(config: OpenClawConfig): "off" | "compat" | "strict" {
+  const mode = config.gateway?.multiUser?.mode;
+  if (mode === "off" || mode === "compat" || mode === "strict") {
+    return mode;
+  }
+  return DEFAULT_GATEWAY_MULTI_USER_MODE;
+}
+
+function validateGatewayIdentityMappingRoles(config: OpenClawConfig): ConfigValidationIssue[] {
+  const mode = resolveMultiUserModeForValidation(config);
+  if (mode === "off") {
+    return [];
+  }
+  const identities = config.gateway?.multiUser?.identities;
+  if (!identities || !isRecord(identities)) {
+    return [];
+  }
+  const warnings: ConfigValidationIssue[] = [];
+  for (const [principal, mapping] of Object.entries(identities)) {
+    if (!mapping || !isRecord(mapping)) {
+      continue;
+    }
+    const roleRaw = mapping.role;
+    const role = typeof roleRaw === "string" ? roleRaw.trim() : "";
+    if (role.length > 0) {
+      continue;
+    }
+    warnings.push({
+      path: `gateway.multiUser.identities.${principal}.role`,
+      message: `missing explicit role for mapped principal '${principal}' (set one of: admin,user,node,service)`,
+    });
+  }
+  return warnings;
 }
 
 export function validateConfigObject(
@@ -149,6 +185,7 @@ export function validateConfigObjectWithPlugins(raw: unknown):
   const config = base.config;
   const issues: ConfigValidationIssue[] = [];
   const warnings: ConfigValidationIssue[] = [];
+  warnings.push(...validateGatewayIdentityMappingRoles(config));
   const pluginsConfig = config.plugins;
   const normalizedPlugins = normalizePluginsConfig(pluginsConfig);
 

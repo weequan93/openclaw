@@ -25,7 +25,7 @@ import { loadConfig } from "../../config/config.js";
 import { saveMediaBuffer } from "../../media/store.js";
 import { BrowserToolSchema } from "./browser-tool.schema.js";
 import { type AnyAgentTool, imageResultFromFile, jsonResult, readStringParam } from "./common.js";
-import { callGatewayTool } from "./gateway.js";
+import { callGatewayTool, type GatewayCallOptions } from "./gateway.js";
 import { listNodes, resolveNodeIdFromList, type NodeListNode } from "./nodes-utils.js";
 
 type BrowserProxyFile = {
@@ -56,6 +56,7 @@ async function resolveBrowserNodeTarget(params: {
   requestedNode?: string;
   target?: "sandbox" | "host" | "node";
   sandboxBridgeUrl?: string;
+  gatewayOpts?: GatewayCallOptions;
 }): Promise<BrowserNodeTarget | null> {
   const cfg = loadConfig();
   const policy = cfg.gateway?.nodes?.browser;
@@ -76,7 +77,7 @@ async function resolveBrowserNodeTarget(params: {
     return null;
   }
 
-  const nodes = await listNodes({});
+  const nodes = await listNodes(params.gatewayOpts ?? {});
   const browserNodes = nodes.filter((node) => node.connected && isBrowserNode(node));
   if (browserNodes.length === 0) {
     if (params.target === "node" || params.requestedNode) {
@@ -121,6 +122,7 @@ async function callBrowserProxy(params: {
   body?: unknown;
   timeoutMs?: number;
   profile?: string;
+  gatewayOpts?: GatewayCallOptions;
 }): Promise<BrowserProxyResult> {
   const gatewayTimeoutMs =
     typeof params.timeoutMs === "number" && Number.isFinite(params.timeoutMs)
@@ -128,7 +130,7 @@ async function callBrowserProxy(params: {
       : DEFAULT_BROWSER_PROXY_TIMEOUT_MS;
   const payload = await callGatewayTool<{ payloadJSON?: string; payload?: string }>(
     "node.invoke",
-    { timeoutMs: gatewayTimeoutMs },
+    { ...(params.gatewayOpts ?? {}), timeoutMs: gatewayTimeoutMs },
     {
       nodeId: params.nodeId,
       command: "browser.proxy",
@@ -220,6 +222,9 @@ function resolveBrowserBaseUrl(params: {
 export function createBrowserTool(opts?: {
   sandboxBridgeUrl?: string;
   allowHostControl?: boolean;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
 }): AnyAgentTool {
   const targetDefault = opts?.sandboxBridgeUrl ? "sandbox" : "host";
   const hostHint =
@@ -246,6 +251,11 @@ export function createBrowserTool(opts?: {
       const profile = readStringParam(params, "profile");
       const requestedNode = readStringParam(params, "node");
       let target = readStringParam(params, "target") as "sandbox" | "host" | "node" | undefined;
+      const gatewayOpts: GatewayCallOptions = {
+        ownerUserId: opts?.ownerUserId,
+        ownerPrincipalId: opts?.ownerPrincipalId,
+        ownerAlias: opts?.ownerAlias,
+      };
 
       if (requestedNode && target && target !== "node") {
         throw new Error('node is only supported with target="node".');
@@ -260,6 +270,7 @@ export function createBrowserTool(opts?: {
         requestedNode: requestedNode ?? undefined,
         target,
         sandboxBridgeUrl: opts?.sandboxBridgeUrl,
+        gatewayOpts,
       });
 
       const resolvedTarget = target === "node" ? undefined : target;
@@ -288,6 +299,7 @@ export function createBrowserTool(opts?: {
               body: opts.body,
               timeoutMs: opts.timeoutMs,
               profile: opts.profile,
+              gatewayOpts,
             });
             const mapping = await persistProxyFiles(proxy.files);
             applyProxyPaths(proxy.result, mapping);

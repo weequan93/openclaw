@@ -11,6 +11,11 @@ import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import { resolveUserPath } from "../utils.js";
 import { splitShellArgs } from "../utils/shell-argv.js";
+import {
+  normalizeOwnerUserId,
+  resolveOwnerPartitionKey,
+  resolveOwnerPartitionedDirectory,
+} from "./owner-partition.js";
 
 export type ResolvedMemoryBackendConfig = {
   backend: MemoryBackend;
@@ -57,6 +62,8 @@ export type ResolvedQmdConfig = {
   limits: ResolvedQmdLimitsConfig;
   includeDefaultMemory: boolean;
   scope?: SessionSendPolicyConfig;
+  ownerUserId?: string;
+  ownerPartitionKey?: string;
 };
 
 const DEFAULT_BACKEND: MemoryBackend = "builtin";
@@ -174,10 +181,20 @@ function resolveLimits(raw?: MemoryQmdConfig["limits"]): ResolvedQmdLimitsConfig
 function resolveSessionConfig(
   cfg: MemoryQmdConfig["sessions"],
   workspaceDir: string,
+  opts?: { ownerUserId?: string },
 ): ResolvedQmdSessionConfig {
   const enabled = Boolean(cfg?.enabled);
+  const ownerToken = normalizeOwnerUserId(opts?.ownerUserId);
   const exportDirRaw = cfg?.exportDir?.trim();
-  const exportDir = exportDirRaw ? resolvePath(exportDirRaw, workspaceDir) : undefined;
+  const exportDirTemplate =
+    exportDirRaw && exportDirRaw.includes("{ownerUserId}")
+      ? exportDirRaw.replaceAll("{ownerUserId}", ownerToken ?? "shared")
+      : exportDirRaw;
+  const exportDirBase = exportDirTemplate ? resolvePath(exportDirTemplate, workspaceDir) : undefined;
+  const exportDir =
+    exportDirBase && ownerToken && exportDirTemplate === exportDirRaw
+      ? resolveOwnerPartitionedDirectory(exportDirBase, ownerToken)
+      : exportDirBase;
   const retentionDays =
     cfg?.retentionDays && cfg.retentionDays > 0 ? Math.floor(cfg.retentionDays) : undefined;
   return {
@@ -244,6 +261,7 @@ function resolveDefaultCollections(
 export function resolveMemoryBackendConfig(params: {
   cfg: OpenClawConfig;
   agentId: string;
+  ownerUserId?: string;
 }): ResolvedMemoryBackendConfig {
   const backend = params.cfg.memory?.backend ?? DEFAULT_BACKEND;
   const citations = params.cfg.memory?.citations ?? DEFAULT_CITATIONS;
@@ -253,6 +271,8 @@ export function resolveMemoryBackendConfig(params: {
 
   const workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
   const qmdCfg = params.cfg.memory?.qmd;
+  const ownerUserId = normalizeOwnerUserId(params.ownerUserId);
+  const ownerPartitionKey = resolveOwnerPartitionKey(ownerUserId);
   const includeDefaultMemory = qmdCfg?.includeDefaultMemory !== false;
   const nameSet = new Set<string>();
   const collections = [
@@ -267,7 +287,7 @@ export function resolveMemoryBackendConfig(params: {
     command,
     collections,
     includeDefaultMemory,
-    sessions: resolveSessionConfig(qmdCfg?.sessions, workspaceDir),
+    sessions: resolveSessionConfig(qmdCfg?.sessions, workspaceDir, { ownerUserId }),
     update: {
       intervalMs: resolveIntervalMs(qmdCfg?.update?.interval),
       debounceMs: resolveDebounceMs(qmdCfg?.update?.debounceMs),
@@ -289,6 +309,8 @@ export function resolveMemoryBackendConfig(params: {
     },
     limits: resolveLimits(qmdCfg?.limits),
     scope: qmdCfg?.scope ?? DEFAULT_QMD_SCOPE,
+    ownerUserId,
+    ownerPartitionKey,
   };
 
   return {

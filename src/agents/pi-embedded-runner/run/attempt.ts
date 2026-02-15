@@ -53,6 +53,7 @@ import { detectRuntimeShell } from "../../shell-utils.js";
 import {
   applySkillEnvOverrides,
   applySkillEnvOverridesFromSnapshot,
+  filterWorkspaceSkillEntries,
   loadWorkspaceSkillEntries,
   resolveSkillsPromptForRun,
 } from "../../skills.js";
@@ -168,16 +169,33 @@ export async function runEmbeddedAttempt(
   try {
     const shouldLoadSkillEntries = !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
     const skillEntries = shouldLoadSkillEntries
-      ? loadWorkspaceSkillEntries(effectiveWorkspace)
+      ? filterWorkspaceSkillEntries(
+          loadWorkspaceSkillEntries(effectiveWorkspace, {
+            config: params.config,
+          }),
+          params.config,
+          {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
+        )
       : [];
     restoreSkillEnv = params.skillsSnapshot
       ? applySkillEnvOverridesFromSnapshot({
           snapshot: params.skillsSnapshot,
           config: params.config,
+          viewer: {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
         })
       : applySkillEnvOverrides({
           skills: skillEntries ?? [],
           config: params.config,
+          viewer: {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
         });
 
     const skillsPrompt = resolveSkillsPromptForRun({
@@ -185,6 +203,10 @@ export async function runEmbeddedAttempt(
       entries: shouldLoadSkillEntries ? skillEntries : undefined,
       config: params.config,
       workspaceDir: effectiveWorkspace,
+      viewer: {
+        userId: params.ownerUserId,
+        role: params.ownerRole,
+      },
     });
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
@@ -226,6 +248,10 @@ export async function runEmbeddedAttempt(
           senderName: params.senderName,
           senderUsername: params.senderUsername,
           senderE164: params.senderE164,
+          ownerUserId: params.ownerUserId,
+          ownerPrincipalId: params.ownerPrincipalId,
+          ownerAlias: params.ownerAlias,
+          ownerRole: params.ownerRole,
           senderIsOwner: params.senderIsOwner,
           sessionKey: params.sessionKey ?? params.sessionId,
           agentDir,

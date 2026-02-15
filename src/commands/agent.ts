@@ -195,6 +195,9 @@ export async function agentCommand(
           eligibility: { remote: getRemoteSkillEligibility() },
           snapshotVersion: skillsSnapshotVersion,
           skillFilter,
+          viewer: {
+            userId: sessionEntry?.ownerUserId,
+          },
         })
       : sessionEntry?.skillsSnapshot;
 
@@ -433,6 +436,7 @@ export async function agentCommand(
             workspaceDir,
             config: cfg,
             skillsSnapshot,
+            ownerUserId: sessionEntry?.ownerUserId,
             prompt: body,
             images: opts.images,
             clientTools: opts.clientTools,

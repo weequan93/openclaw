@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
+import type { DeviceIdentity } from "../infra/device-identity.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 
@@ -16,7 +17,6 @@ vi.mock("../infra/update-runner.js", () => ({
   })),
 }));
 
-import { writeConfigFile } from "../config/config.js";
 import { runGatewayUpdate } from "../infra/update-runner.js";
 import { sleep } from "../utils.js";
 import {
@@ -49,10 +49,16 @@ afterAll(async () => {
 const connectNodeClient = async (params: {
   port: number;
   commands: string[];
+  caps?: string[];
   instanceId?: string;
   displayName?: string;
+  deviceIdentity?: DeviceIdentity;
   onEvent?: (evt: { event?: string; payload?: unknown }) => void;
 }) => {
+  const token =
+    typeof process.env.OPENCLAW_GATEWAY_TOKEN === "string"
+      ? process.env.OPENCLAW_GATEWAY_TOKEN
+      : undefined;
   let settled = false;
   let resolveReady: (() => void) | null = null;
   let rejectReady: ((err: Error) => void) | null = null;
@@ -68,8 +74,11 @@ const connectNodeClient = async (params: {
     clientDisplayName: params.displayName,
     platform: "ios",
     mode: GATEWAY_CLIENT_MODES.NODE,
+    token,
+    deviceIdentity: params.deviceIdentity,
     instanceId: params.instanceId,
     scopes: [],
+    caps: params.caps,
     commands: params.commands,
     onEvent: params.onEvent,
     onHelloOk: () => {
@@ -145,8 +154,14 @@ describe("gateway role enforcement", () => {
       });
 
       const binsRes = await rpcReq<{ bins?: unknown[] }>(nodeWs, "skills.bins", {});
-      expect(binsRes.ok).toBe(true);
-      expect(Array.isArray(binsRes.payload?.bins)).toBe(true);
+      if (binsRes.ok) {
+        expect(Array.isArray(binsRes.payload?.bins)).toBe(true);
+      } else {
+        expect(binsRes.error?.message ?? "").toContain("node owner mismatch");
+        expect(
+          (binsRes.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
+        ).toBe("OWNER_MISMATCH");
+      }
 
       const statusRes = await rpcReq(nodeWs, "status", {});
       expect(statusRes.ok).toBe(false);
@@ -201,6 +216,7 @@ describe("gateway update.run", () => {
     process.on("SIGUSR1", sigusr1);
 
     try {
+      const { writeConfigFile } = await import("../config/config.js");
       await writeConfigFile({ update: { channel: "beta" } });
       const updateMock = vi.mocked(runGatewayUpdate);
       updateMock.mockClear();
@@ -355,6 +371,856 @@ describe("gateway node command allowlist", () => {
       systemClient?.stop();
       emptyClient?.stop();
       allowedClient?.stop();
+    }
+  });
+});
+
+describe("gateway node and browser ownership", () => {
+  test("filters node.list and denies node.invoke/browser.request for owner mismatch", async () => {
+    let browserNodeClient: GatewayClient | undefined;
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+    const sinceTs = Date.now();
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-b",
+            },
+          },
+        },
+      });
+
+      browserNodeClient = await connectNodeClient({
+        port,
+        caps: ["browser"],
+        commands: ["browser.proxy", "canvas.snapshot"],
+        instanceId: "node-owner-mismatch",
+        displayName: "node-owner-mismatch",
+      });
+
+      const adminNodeList = await rpcReq<{
+        nodes?: Array<{ nodeId: string; connected?: boolean }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeList.ok).toBe(true);
+      const nodeId =
+        adminNodeList.payload?.nodes?.find((node) => node.connected && node.nodeId)?.nodeId ?? "";
+      expect(nodeId).toBeTruthy();
+
+      const pairRequest = await rpcReq<{
+        request?: { requestId?: string };
+      }>(ws, "node.pair.request", {
+        nodeId,
+        displayName: "node-owner-mismatch",
+        commands: ["browser.proxy", "canvas.snapshot"],
+      });
+      expect(pairRequest.ok).toBe(true);
+      const requestId = pairRequest.payload?.request?.requestId ?? "";
+      expect(requestId).toBeTruthy();
+
+      const pairApproved = await rpcReq(ws, "node.pair.approve", {
+        requestId,
+        ownerUserId: "user-b",
+      });
+      expect(pairApproved.ok).toBe(true);
+      await writeConfigFile({
+        gateway: {
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+              node: nodeId,
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-b",
+            },
+          },
+        },
+      });
+
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      const userNodeList = await rpcReq<{ nodes?: Array<{ nodeId: string }> }>(
+        userWs,
+        "node.list",
+        {},
+      );
+      expect(userNodeList.ok).toBe(true);
+      expect(userNodeList.payload?.nodes?.some((node) => node.nodeId === nodeId)).toBe(false);
+
+      const invokeDenied = await rpcReq(userWs, "node.invoke", {
+        nodeId,
+        command: "canvas.snapshot",
+        params: { format: "png" },
+        idempotencyKey: "owner-mismatch-invoke",
+      });
+      expect(invokeDenied.ok).toBe(false);
+      expect(invokeDenied.error?.message ?? "").toContain("node owner mismatch");
+      expect(
+        (
+          invokeDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const describeDenied = await rpcReq(userWs, "node.describe", { nodeId });
+      expect(describeDenied.ok).toBe(false);
+      expect(describeDenied.error?.message ?? "").toContain("node owner mismatch");
+      expect(
+        (
+          describeDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const browserDenied = await rpcReq(userWs, "browser.request", {
+        method: "GET",
+        path: "/tabs/list",
+      });
+      expect(browserDenied.ok).toBe(false);
+      expect(
+        (
+          browserDenied.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+      expect(browserDenied.error?.message ?? "").toMatch(/browser|owner mismatch|not found/i);
+
+      const deniedFeed = await rpcReq<{
+        events?: Array<{
+          method?: string;
+          reasonCode?: string;
+          userId?: string | null;
+          userAlias?: string | null;
+        }>;
+      }>(ws, "authz.denied.list", {
+        reasonCode: "OWNER_MISMATCH",
+        userId: "user-a",
+        sinceTs,
+        limit: 50,
+      });
+      expect(deniedFeed.ok).toBe(true);
+      const deniedMethods = (deniedFeed.payload?.events ?? []).map((event) => event.method);
+      expect(deniedMethods).toContain("node.invoke");
+      expect(deniedMethods).toContain("node.describe");
+      expect(deniedMethods).toContain("browser.request");
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice")).toBe(
+        true,
+      );
+    } finally {
+      userWs.close();
+      browserNodeClient?.stop();
+    }
+  });
+
+  test("denies send when provided session key is owned by another user", async () => {
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+    const sinceTs = Date.now();
+    const sessionKey = `agent:main:slack:channel:owner-b-send-${Date.now()}`;
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+      });
+
+      await connectOk(userAws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+      await connectOk(userBws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "Bob",
+        },
+      });
+
+      const patch = await rpcReq(userBws, "sessions.patch", {
+        key: sessionKey,
+        label: "Owner B send session",
+      });
+      expect(patch.ok).toBe(true);
+
+      const denied = await rpcReq(userAws, "send", {
+        to: "C123",
+        message: "hello",
+        channel: "slack",
+        idempotencyKey: `idem-send-owner-deny-${Date.now()}`,
+        sessionKey,
+      });
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.message ?? "").toContain("owner mismatch");
+      expect(
+        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const deniedFeed = await rpcReq<{
+        events?: Array<{ method?: string; userAlias?: string | null }>;
+      }>(ws, "authz.denied.list", {
+        method: "send",
+        reasonCode: "OWNER_MISMATCH",
+        userId: "user-a",
+        sinceTs,
+        limit: 20,
+      });
+      expect(deniedFeed.ok).toBe(true);
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.method === "send")).toBe(
+        true,
+      );
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice")).toBe(
+        true,
+      );
+    } finally {
+      userAws.close();
+      userBws.close();
+    }
+  });
+
+  test("denies send when derived target session key is owned by another user", async () => {
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+    const sinceTs = Date.now();
+
+    try {
+      const { writeConfigFile, loadConfig } = await import("../config/config.js");
+      const { resolveOutboundSessionRoute } = await import("../infra/outbound/outbound-session.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+      });
+
+      await connectOk(userAws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+      await connectOk(userBws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "Bob",
+        },
+      });
+
+      const route = await resolveOutboundSessionRoute({
+        cfg: loadConfig(),
+        channel: "slack",
+        agentId: "main",
+        target: "C456",
+      });
+      expect(route?.sessionKey).toBeTruthy();
+      const sessionKey = route?.sessionKey ?? "";
+
+      const patch = await rpcReq(userBws, "sessions.patch", {
+        key: sessionKey,
+        label: "Owner B derived send session",
+      });
+      expect(patch.ok).toBe(true);
+
+      const denied = await rpcReq(userAws, "send", {
+        to: "C456",
+        message: "hello",
+        channel: "slack",
+        idempotencyKey: `idem-send-derived-owner-deny-${Date.now()}`,
+      });
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.message ?? "").toContain("owner mismatch");
+      expect(
+        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const deniedFeed = await rpcReq<{
+        events?: Array<{ method?: string; userAlias?: string | null }>;
+      }>(ws, "authz.denied.list", {
+        method: "send",
+        reasonCode: "OWNER_MISMATCH",
+        userId: "user-a",
+        sinceTs,
+        limit: 20,
+      });
+      expect(deniedFeed.ok).toBe(true);
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.method === "send")).toBe(
+        true,
+      );
+      expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice")).toBe(
+        true,
+      );
+    } finally {
+      userAws.close();
+      userBws.close();
+    }
+  });
+
+  test("allows delegated send access without changing session owner", async () => {
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+    const sessionKey = `agent:main:slack:channel:delegated-send-${Date.now()}`;
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["sessions"],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      await connectOk(userAws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+      await connectOk(userBws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "Bob",
+        },
+      });
+
+      const patch = await rpcReq(userBws, "sessions.patch", {
+        key: sessionKey,
+        label: "Delegated send owner test",
+      });
+      expect(patch.ok).toBe(true);
+
+      const beforeList = await rpcReq<{ sessions?: Array<{ key?: string; ownerUserId?: string }> }>(
+        ws,
+        "sessions.list",
+        { limit: 500 },
+      );
+      expect(beforeList.ok).toBe(true);
+      const beforeOwner =
+        beforeList.payload?.sessions?.find((session) => session.key === sessionKey)?.ownerUserId ??
+        null;
+      expect(beforeOwner).toBe("user-b");
+
+      const sendRes = await rpcReq(userAws, "send", {
+        to: "C123",
+        message: "delegated hello",
+        channel: "slack",
+        idempotencyKey: `idem-send-delegated-owner-${Date.now()}`,
+        sessionKey,
+      });
+      if (!sendRes.ok) {
+        expect(
+          (sendRes.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
+        ).not.toBe("OWNER_MISMATCH");
+      }
+
+      const afterList = await rpcReq<{ sessions?: Array<{ key?: string; ownerUserId?: string }> }>(
+        ws,
+        "sessions.list",
+        { limit: 500 },
+      );
+      expect(afterList.ok).toBe(true);
+      const afterOwner =
+        afterList.payload?.sessions?.find((session) => session.key === sessionKey)?.ownerUserId ??
+        null;
+      expect(afterOwner).toBe("user-b");
+    } finally {
+      userAws.close();
+      userBws.close();
+    }
+  });
+
+  test("allows browser.request via delegated browser access with aligned profile and node owner", async () => {
+    let browserNodeClient: GatewayClient | undefined;
+    let resolveInvoke: ((payload: { id?: string; nodeId?: string }) => void) | null = null;
+    const waitForInvoke = () =>
+      new Promise<{ id?: string; nodeId?: string }>((resolve) => {
+        resolveInvoke = resolve;
+      });
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["browser"],
+                },
+              ],
+            },
+          },
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-b",
+            },
+          },
+        },
+      });
+
+      browserNodeClient = await connectNodeClient({
+        port,
+        caps: ["browser"],
+        commands: ["browser.proxy"],
+        instanceId: "node-browser-delegated",
+        displayName: "node-browser-delegated",
+        onEvent: (evt) => {
+          if (evt.event === "node.invoke.request") {
+            resolveInvoke?.(evt.payload as { id?: string; nodeId?: string });
+          }
+        },
+      });
+
+      const adminNodeList = await rpcReq<{
+        nodes?: Array<{ nodeId: string; connected?: boolean; displayName?: string }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeList.ok).toBe(true);
+      const nodeId =
+        adminNodeList.payload?.nodes?.find(
+          (node) => node.connected && node.displayName === "node-browser-delegated",
+        )?.nodeId ?? "";
+      expect(nodeId).toBeTruthy();
+
+      const pairRequest = await rpcReq<{
+        request?: { requestId?: string };
+      }>(ws, "node.pair.request", {
+        nodeId,
+        displayName: "node-browser-delegated",
+        commands: ["browser.proxy"],
+      });
+      expect(pairRequest.ok).toBe(true);
+      const requestId = pairRequest.payload?.request?.requestId ?? "";
+      expect(requestId).toBeTruthy();
+
+      const pairApproved = await rpcReq(ws, "node.pair.approve", {
+        requestId,
+        ownerUserId: "user-b",
+      });
+      expect(pairApproved.ok).toBe(true);
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["browser"],
+                },
+              ],
+            },
+          },
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+              node: nodeId,
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-b",
+            },
+          },
+        },
+      });
+
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      const browserResultP = rpcReq<{ source?: string }>(userWs, "browser.request", {
+        method: "GET",
+        path: "/tabs/list",
+      });
+      const firstCompletion = await Promise.race([
+        waitForInvoke().then(
+          (payload) =>
+            ({
+              kind: "invoke" as const,
+              payload,
+            }) as const,
+        ),
+        browserResultP.then(
+          (result) =>
+            ({
+              kind: "result" as const,
+              result,
+            }) as const,
+        ),
+        sleep(10_000).then(
+          () =>
+            ({
+              kind: "timeout" as const,
+            }) as const,
+        ),
+      ]);
+      if (firstCompletion.kind === "timeout") {
+        throw new Error("timed out waiting for browser.proxy invoke or browser.request response");
+      }
+      if (firstCompletion.kind === "result") {
+        if (!firstCompletion.result.ok) {
+          throw new Error(
+            `delegated browser.request failed before node invoke: ${JSON.stringify(firstCompletion.result.error)}`,
+          );
+        }
+        expect(firstCompletion.result.payload?.source).toBe("delegated-browser");
+        return;
+      }
+      const invokePayload = firstCompletion.payload;
+      const invokeRequestId = invokePayload.id ?? "";
+      const invokeNodeId = invokePayload.nodeId ?? nodeId;
+      await browserNodeClient.request("node.invoke.result", {
+        id: invokeRequestId,
+        nodeId: invokeNodeId,
+        ok: true,
+        payloadJSON: JSON.stringify({ result: { source: "delegated-browser" } }),
+      });
+
+      const browserResult = await browserResultP;
+      expect(browserResult.ok).toBe(true);
+      expect(browserResult.payload?.source).toBe("delegated-browser");
+    } finally {
+      userWs.close();
+      browserNodeClient?.stop();
+    }
+  });
+
+  test("denies delegated browser.request when profile owner and node owner differ", async () => {
+    let browserNodeClient: GatewayClient | undefined;
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["browser"],
+                },
+              ],
+            },
+          },
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-a",
+            },
+          },
+        },
+      });
+
+      browserNodeClient = await connectNodeClient({
+        port,
+        caps: ["browser"],
+        commands: ["browser.proxy"],
+        instanceId: "node-browser-profile-mismatch",
+        displayName: "node-browser-profile-mismatch",
+      });
+
+      const adminNodeList = await rpcReq<{
+        nodes?: Array<{ nodeId: string; connected?: boolean; displayName?: string }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeList.ok).toBe(true);
+      const nodeId =
+        adminNodeList.payload?.nodes?.find(
+          (node) => node.connected && node.displayName === "node-browser-profile-mismatch",
+        )?.nodeId ?? "";
+      expect(nodeId).toBeTruthy();
+
+      const pairRequest = await rpcReq<{
+        request?: { requestId?: string };
+      }>(ws, "node.pair.request", {
+        nodeId,
+        displayName: "node-browser-profile-mismatch",
+        commands: ["browser.proxy"],
+      });
+      expect(pairRequest.ok).toBe(true);
+      const requestId = pairRequest.payload?.request?.requestId ?? "";
+      expect(requestId).toBeTruthy();
+
+      const pairApproved = await rpcReq(ws, "node.pair.approve", {
+        requestId,
+        ownerUserId: "user-b",
+      });
+      expect(pairApproved.ok).toBe(true);
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["browser"],
+                },
+              ],
+            },
+          },
+          nodes: {
+            allowCommands: ["browser.proxy"],
+            browser: {
+              mode: "auto",
+              node: nodeId,
+            },
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-a",
+            },
+          },
+        },
+      });
+
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      const denied = await rpcReq(userWs, "browser.request", {
+        method: "GET",
+        path: "/tabs/list",
+      });
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.message ?? "").toContain("profile/node owner mismatch");
+      expect(
+        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+    } finally {
+      userWs.close();
+      browserNodeClient?.stop();
+    }
+  });
+
+  test("strict mode denies missing node owner while compat mode allows describe/list", async () => {
+    let nodeClient: GatewayClient | undefined;
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+    const identityDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-node-owner-missing-"));
+
+    try {
+      const { loadOrCreateDeviceIdentity } = await import("../infra/device-identity.js");
+      const deviceIdentity = loadOrCreateDeviceIdentity(path.join(identityDir, "device.json"));
+      nodeClient = await connectNodeClient({
+        port,
+        commands: ["canvas.snapshot"],
+        instanceId: "node-owner-missing",
+        displayName: "node-owner-missing",
+        deviceIdentity,
+      });
+
+      const adminNodeList = await rpcReq<{
+        nodes?: Array<{ nodeId: string; connected?: boolean }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeList.ok).toBe(true);
+      const nodeId =
+        adminNodeList.payload?.nodes?.find((node) => node.connected && node.nodeId)?.nodeId ?? "";
+      expect(nodeId).toBeTruthy();
+
+      const pairRequest = await rpcReq<{
+        request?: { requestId?: string };
+      }>(ws, "node.pair.request", {
+        nodeId,
+        displayName: "node-owner-missing",
+        commands: ["canvas.snapshot"],
+      });
+      expect(pairRequest.ok).toBe(true);
+      const requestId = pairRequest.payload?.request?.requestId ?? "";
+      expect(requestId).toBeTruthy();
+
+      const pairApproved = await rpcReq(ws, "node.pair.approve", { requestId });
+      expect(pairApproved.ok).toBe(true);
+
+      await connectOk(userWs, {
+        scopes: ["operator.read", "operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      const strictDescribe = await rpcReq(userWs, "node.describe", { nodeId });
+      expect(strictDescribe.ok).toBe(false);
+      expect(strictDescribe.error?.message ?? "").toContain("node owner mismatch");
+      expect(
+        (
+          strictDescribe.error as
+            | {
+                details?: { reasonCode?: string };
+              }
+            | undefined
+        )?.details?.reasonCode,
+      ).toBe("OWNER_MISMATCH");
+
+      const strictList = await rpcReq<{ nodes?: Array<{ nodeId: string }> }>(
+        userWs,
+        "node.list",
+        {},
+      );
+      expect(strictList.ok).toBe(true);
+      expect(strictList.payload?.nodes?.some((node) => node.nodeId === nodeId)).toBe(false);
+
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "compat",
+          },
+        },
+      });
+
+      const compatDescribe = await rpcReq(userWs, "node.describe", { nodeId });
+      expect(compatDescribe.ok).toBe(true);
+      expect((compatDescribe.payload as { nodeId?: string } | undefined)?.nodeId).toBe(nodeId);
+
+      const compatList = await rpcReq<{ nodes?: Array<{ nodeId: string }> }>(
+        userWs,
+        "node.list",
+        {},
+      );
+      expect(compatList.ok).toBe(true);
+      expect(compatList.payload?.nodes?.some((node) => node.nodeId === nodeId)).toBe(true);
+    } finally {
+      userWs.close();
+      nodeClient?.stop();
+      await fs.rm(identityDir, { recursive: true, force: true });
     }
   });
 });

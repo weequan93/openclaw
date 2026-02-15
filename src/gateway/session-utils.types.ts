@@ -10,6 +10,7 @@ export type GatewaySessionsDefaults = {
 
 export type GatewaySessionRow = {
   key: string;
+  ownerUserId?: string;
   kind: "direct" | "group" | "global" | "unknown";
   label?: string;
   displayName?: string;

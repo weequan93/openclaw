@@ -45,8 +45,14 @@ export function checkBrowserOrigin(params: {
   origin?: string;
   allowedOrigins?: string[];
 }): OriginCheckResult {
+  const requestHost = normalizeHostHeader(params.requestHost);
+  const requestHostname = resolveHostName(requestHost);
   const parsedOrigin = parseOrigin(params.origin);
   if (!parsedOrigin) {
+    // Local development and trusted local ws clients may not provide Origin.
+    if (isLoopbackHost(requestHostname)) {
+      return { ok: true };
+    }
     return { ok: false, reason: "origin missing or invalid" };
   }
 
@@ -57,12 +63,10 @@ export function checkBrowserOrigin(params: {
     return { ok: true };
   }
 
-  const requestHost = normalizeHostHeader(params.requestHost);
   if (requestHost && parsedOrigin.host === requestHost) {
     return { ok: true };
   }
 
-  const requestHostname = resolveHostName(requestHost);
   if (isLoopbackHost(parsedOrigin.hostname) && isLoopbackHost(requestHostname)) {
     return { ok: true };
   }

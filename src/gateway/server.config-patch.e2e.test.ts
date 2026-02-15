@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { CONFIG_PATH, resolveConfigSnapshotHash } from "../config/config.js";
+import { readConfigFileSnapshot, resolveConfigSnapshotHash } from "../config/config.js";
 import {
   connectOk,
   installGatewayTestHooks,
@@ -30,8 +30,20 @@ afterAll(async () => {
   await server.close();
 });
 
+async function resolveCurrentBaseHash(): Promise<string | undefined> {
+  const getRes = await rpcReq<{ hash?: string; raw?: string }>(ws, "config.get", {});
+  expect(getRes.ok).toBe(true);
+  return (
+    resolveConfigSnapshotHash({
+      hash: getRes.payload?.hash,
+      raw: getRes.payload?.raw,
+    }) ?? undefined
+  );
+}
+
 describe("gateway config.patch", () => {
   it("merges patches without clobbering unrelated config", async () => {
+    const initialBaseHash = await resolveCurrentBaseHash();
     const setId = "req-set";
     ws.send(
       JSON.stringify({
@@ -42,7 +54,9 @@ describe("gateway config.patch", () => {
           raw: JSON.stringify({
             gateway: { mode: "local" },
             channels: { telegram: { botToken: "token-1" } },
+            plugins: { slots: { memory: "none" } },
           }),
+          ...(initialBaseHash ? { baseHash: initialBaseHash } : {}),
         },
       }),
     );
@@ -117,14 +131,16 @@ describe("gateway config.patch", () => {
     expect(get2Res.payload?.config?.gateway?.mode).toBe("local");
     expect(get2Res.payload?.config?.channels?.telegram?.botToken).toBe("__OPENCLAW_REDACTED__");
 
-    const storedRaw = await fs.readFile(CONFIG_PATH, "utf-8");
-    const stored = JSON.parse(storedRaw) as {
+    const storedSnapshot = await readConfigFileSnapshot();
+    expect(storedSnapshot.exists).toBe(true);
+    const stored = storedSnapshot.config as {
       channels?: { telegram?: { botToken?: string } };
     };
     expect(stored.channels?.telegram?.botToken).toBe("token-1");
   });
 
   it("preserves credentials on config.set when raw contains redacted sentinels", async () => {
+    const initialBaseHash = await resolveCurrentBaseHash();
     const setId = "req-set-sentinel-1";
     ws.send(
       JSON.stringify({
@@ -135,7 +151,9 @@ describe("gateway config.patch", () => {
           raw: JSON.stringify({
             gateway: { mode: "local" },
             channels: { telegram: { botToken: "token-1" } },
+            plugins: { slots: { memory: "none" } },
           }),
+          ...(initialBaseHash ? { baseHash: initialBaseHash } : {}),
         },
       }),
     );
@@ -186,14 +204,16 @@ describe("gateway config.patch", () => {
     );
     expect(set2Res.ok).toBe(true);
 
-    const storedRaw = await fs.readFile(CONFIG_PATH, "utf-8");
-    const stored = JSON.parse(storedRaw) as {
+    const storedSnapshot = await readConfigFileSnapshot();
+    expect(storedSnapshot.exists).toBe(true);
+    const stored = storedSnapshot.config as {
       channels?: { telegram?: { botToken?: string } };
     };
     expect(stored.channels?.telegram?.botToken).toBe("token-1");
   });
 
   it("writes config, stores sentinel, and schedules restart", async () => {
+    const initialBaseHash = await resolveCurrentBaseHash();
     const setId = "req-set-restart";
     ws.send(
       JSON.stringify({
@@ -204,7 +224,9 @@ describe("gateway config.patch", () => {
           raw: JSON.stringify({
             gateway: { mode: "local" },
             channels: { telegram: { botToken: "token-1" } },
+            plugins: { slots: { memory: "none" } },
           }),
+          ...(initialBaseHash ? { baseHash: initialBaseHash } : {}),
         },
       }),
     );
@@ -278,7 +300,165 @@ describe("gateway config.patch", () => {
     }
   });
 
+  it("applies resolved policy bundle patch and records config change note", async () => {
+    const initialBaseHash = await resolveCurrentBaseHash();
+    const setId = "req-set-policy-bundle";
+    ws.send(
+      JSON.stringify({
+        type: "req",
+        id: setId,
+        method: "config.set",
+        params: {
+          raw: JSON.stringify({
+            gateway: {
+              mode: "local",
+              multiUser: {
+                mode: "off",
+              },
+            },
+            commands: {
+              config: true,
+              debug: true,
+            },
+            plugins: { slots: { memory: "none" } },
+          }),
+          ...(initialBaseHash ? { baseHash: initialBaseHash } : {}),
+        },
+      }),
+    );
+    const setRes = await onceMessage<{ ok: boolean }>(
+      ws,
+      (o) => o.type === "res" && o.id === setId,
+    );
+    expect(setRes.ok).toBe(true);
+
+    const baseHash = await resolveCurrentBaseHash();
+    expect(typeof baseHash).toBe("string");
+
+    const resolved = await rpcReq<{
+      bundle?: {
+        id?: string;
+        patch?: unknown;
+      };
+    }>(ws, "config.policyBundle.resolve", {
+      bundleId: "strict_admin_control",
+    });
+    expect(resolved.ok).toBe(true);
+    expect(resolved.payload?.bundle?.id).toBe("strict_admin_control");
+    expect(resolved.payload?.bundle?.patch).toBeTruthy();
+
+    const patchRes = await rpcReq<{ ok?: boolean }>(ws, "config.patch", {
+      raw: JSON.stringify(resolved.payload?.bundle?.patch ?? {}, null, 2),
+      ...(baseHash ? { baseHash } : {}),
+      note: "policy-bundle:strict_admin_control",
+    });
+    expect(patchRes.ok).toBe(true);
+
+    const getRes = await rpcReq<{
+      config?: {
+        gateway?: { multiUser?: { mode?: string } };
+        commands?: { config?: boolean; debug?: boolean };
+      };
+    }>(ws, "config.get", {});
+    expect(getRes.ok).toBe(true);
+    expect(getRes.payload?.config?.gateway?.multiUser?.mode).toBe("strict");
+    expect(getRes.payload?.config?.commands?.config).toBe(false);
+    expect(getRes.payload?.config?.commands?.debug).toBe(false);
+
+    const changes = await rpcReq<{
+      events?: Array<{
+        method?: string;
+        note?: string | null;
+      }>;
+    }>(ws, "config.changes.list", {
+      limit: 20,
+      method: "config.patch",
+    });
+    expect(changes.ok).toBe(true);
+    const bundleChange = (changes.payload?.events ?? []).find(
+      (event) =>
+        event.method === "config.patch" && event.note === "policy-bundle:strict_admin_control",
+    );
+    expect(bundleChange).toBeTruthy();
+  });
+
+  it("applies policy bundle directly and records policy-bundle note by default", async () => {
+    const initialBaseHash = await resolveCurrentBaseHash();
+    const setId = "req-set-policy-bundle-direct";
+    ws.send(
+      JSON.stringify({
+        type: "req",
+        id: setId,
+        method: "config.set",
+        params: {
+          raw: JSON.stringify({
+            gateway: {
+              mode: "local",
+              multiUser: {
+                mode: "off",
+              },
+            },
+            commands: {
+              config: true,
+              debug: true,
+            },
+            plugins: { slots: { memory: "none" } },
+          }),
+          ...(initialBaseHash ? { baseHash: initialBaseHash } : {}),
+        },
+      }),
+    );
+    const setRes = await onceMessage<{ ok: boolean }>(
+      ws,
+      (o) => o.type === "res" && o.id === setId,
+    );
+    expect(setRes.ok).toBe(true);
+
+    const baseHash = await resolveCurrentBaseHash();
+    expect(typeof baseHash).toBe("string");
+
+    const applyRes = await rpcReq<{ ok?: boolean; payload?: { bundleId?: string } }>(
+      ws,
+      "config.policyBundle.apply",
+      {
+        bundleId: "strict_admin_control",
+        ...(baseHash ? { baseHash } : {}),
+      },
+    );
+    expect(applyRes.ok).toBe(true);
+    expect(applyRes.payload?.bundleId).toBe("strict_admin_control");
+
+    const getRes = await rpcReq<{
+      config?: {
+        gateway?: { multiUser?: { mode?: string } };
+        commands?: { config?: boolean; debug?: boolean };
+      };
+    }>(ws, "config.get", {});
+    expect(getRes.ok).toBe(true);
+    expect(getRes.payload?.config?.gateway?.multiUser?.mode).toBe("strict");
+    expect(getRes.payload?.config?.commands?.config).toBe(false);
+    expect(getRes.payload?.config?.commands?.debug).toBe(false);
+
+    const changes = await rpcReq<{
+      events?: Array<{
+        method?: string;
+        note?: string | null;
+      }>;
+    }>(ws, "config.changes.list", {
+      limit: 20,
+      method: "config.policyBundle.apply",
+    });
+    expect(changes.ok).toBe(true);
+    const bundleChange = (changes.payload?.events ?? []).find(
+      (event) =>
+        event.method === "config.policyBundle.apply" &&
+        event.note === "policy-bundle:strict_admin_control",
+    );
+    expect(bundleChange).toBeTruthy();
+  });
+
   it("requires base hash when config exists", async () => {
+    const baseHash = await resolveCurrentBaseHash();
     const setId = "req-set-2";
     ws.send(
       JSON.stringify({
@@ -288,7 +468,9 @@ describe("gateway config.patch", () => {
         params: {
           raw: JSON.stringify({
             gateway: { mode: "local" },
+            plugins: { slots: { memory: "none" } },
           }),
+          ...(baseHash ? { baseHash } : {}),
         },
       }),
     );
@@ -318,6 +500,7 @@ describe("gateway config.patch", () => {
   });
 
   it("requires base hash for config.set when config exists", async () => {
+    const baseHash = await resolveCurrentBaseHash();
     const setId = "req-set-3";
     ws.send(
       JSON.stringify({
@@ -327,7 +510,9 @@ describe("gateway config.patch", () => {
         params: {
           raw: JSON.stringify({
             gateway: { mode: "local" },
+            plugins: { slots: { memory: "none" } },
           }),
+          ...(baseHash ? { baseHash } : {}),
         },
       }),
     );

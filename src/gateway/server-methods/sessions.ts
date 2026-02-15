@@ -14,6 +14,7 @@ import {
   updateSessionStore,
 } from "../../config/sessions.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import {
   ErrorCodes,
   errorShape,
@@ -26,6 +27,11 @@ import {
   validateSessionsResetParams,
   validateSessionsResolveParams,
 } from "../protocol/index.js";
+import {
+  assertSessionAccess,
+  isOwnerRestrictedPrincipal,
+  stampSessionOwner,
+} from "../session-owner.js";
 import {
   archiveFileOnDisk,
   listSessionsFromStore,
@@ -43,7 +49,7 @@ import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
 
 export const sessionsHandlers: GatewayRequestHandlers = {
-  "sessions.list": ({ params, respond }) => {
+  "sessions.list": ({ params, respond, owner }) => {
     if (!validateSessionsListParams(params)) {
       respond(
         false,
@@ -58,15 +64,38 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const p = params;
     const cfg = loadConfig();
     const { storePath, store } = loadCombinedSessionStoreForGateway(cfg);
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
     const result = listSessionsFromStore({
       cfg,
       storePath,
       store,
-      opts: p,
+      opts: {
+        ...p,
+      },
     });
+    if (ownerUserId) {
+      const filtered = result.sessions.filter((session) => {
+        const sessionOwnerUserId =
+          typeof session.ownerUserId === "string" ? session.ownerUserId.trim() : "";
+        if (!sessionOwnerUserId) {
+          return false;
+        }
+        if (sessionOwnerUserId === ownerUserId) {
+          return true;
+        }
+        return hasGatewayDelegatedAccess({
+          cfg,
+          fromUserId: ownerUserId,
+          ownerUserId: sessionOwnerUserId,
+          resource: "sessions",
+        });
+      });
+      respond(true, { ...result, sessions: filtered }, undefined);
+      return;
+    }
     respond(true, result, undefined);
   },
-  "sessions.preview": ({ params, respond }) => {
+  "sessions.preview": ({ params, respond, owner }) => {
     if (!validateSessionsPreviewParams(params)) {
       respond(
         false,
@@ -110,6 +139,16 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         const entry =
           target.storeKeys.map((candidate) => store[candidate]).find(Boolean) ??
           store[target.canonicalKey];
+        const access = assertSessionAccess({
+          owner,
+          entry,
+          sessionKey: target.canonicalKey,
+          cfg,
+        });
+        if (!access.ok) {
+          respond(false, undefined, access.error);
+          return;
+        }
         if (!entry?.sessionId) {
           previews.push({ key, status: "missing", items: [] });
           continue;
@@ -134,7 +173,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
 
     respond(true, { ts: Date.now(), previews } satisfies SessionsPreviewResult, undefined);
   },
-  "sessions.resolve": ({ params, respond }) => {
+  "sessions.resolve": ({ params, respond, owner }) => {
     if (!validateSessionsResolveParams(params)) {
       respond(
         false,
@@ -148,15 +187,26 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const cfg = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
 
-    const resolved = resolveSessionKeyFromResolveParams({ cfg, p });
+    const resolved = resolveSessionKeyFromResolveParams({ cfg, p, ownerUserId });
     if (!resolved.ok) {
       respond(false, undefined, resolved.error);
       return;
     }
+    const access = assertSessionAccess({
+      owner,
+      entry: loadSessionEntry(resolved.key).entry,
+      sessionKey: resolved.key,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     respond(true, { ok: true, key: resolved.key }, undefined);
   },
-  "sessions.patch": async ({ params, respond, context }) => {
+  "sessions.patch": async ({ params, respond, context, owner }) => {
     if (!validateSessionsPatchParams(params)) {
       respond(
         false,
@@ -178,12 +228,34 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const target = resolveGatewaySessionStoreTarget({ cfg, key });
     const storePath = target.storePath;
+    const ownerCheckStore = loadSessionStore(storePath);
+    const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
+    const ownerCheckEntry = ownerCheckKey ? ownerCheckStore[ownerCheckKey] : undefined;
+    const access = assertSessionAccess({
+      owner,
+      entry: ownerCheckEntry,
+      sessionKey: target.canonicalKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     const applied = await updateSessionStore(storePath, async (store) => {
       const primaryKey = target.storeKeys[0] ?? key;
       const existingKey = target.storeKeys.find((candidate) => store[candidate]);
       if (existingKey && existingKey !== primaryKey && !store[primaryKey]) {
         store[primaryKey] = store[existingKey];
         delete store[existingKey];
+      }
+      const entryAccess = assertSessionAccess({
+        owner,
+        entry: store[primaryKey],
+        sessionKey: target.canonicalKey,
+        cfg,
+      });
+      if (!entryAccess.ok) {
+        return { ok: false as const, error: entryAccess.error };
       }
       return await applySessionsPatchToStore({
         cfg,
@@ -193,9 +265,19 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
       });
     });
-    if (!applied.ok) {
+    if (!applied.ok || !("entry" in applied)) {
       respond(false, undefined, applied.error);
       return;
+    }
+    const primaryKey = target.storeKeys[0] ?? key;
+    if (isOwnerRestrictedPrincipal(owner, cfg)) {
+      const stamped = stampSessionOwner({ entry: applied.entry, owner });
+      if (stamped !== applied.entry) {
+        await updateSessionStore(storePath, (store) => {
+          store[primaryKey] = stamped;
+        });
+        applied.entry = stamped;
+      }
     }
     const parsed = parseAgentSessionKey(target.canonicalKey ?? key);
     const agentId = normalizeAgentId(parsed?.agentId ?? resolveDefaultAgentId(cfg));
@@ -212,7 +294,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     };
     respond(true, result, undefined);
   },
-  "sessions.reset": async ({ params, respond }) => {
+  "sessions.reset": async ({ params, respond, owner }) => {
     if (!validateSessionsResetParams(params)) {
       respond(
         false,
@@ -234,6 +316,19 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const target = resolveGatewaySessionStoreTarget({ cfg, key });
     const storePath = target.storePath;
+    const ownerCheckStore = loadSessionStore(storePath);
+    const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
+    const ownerCheckEntry = ownerCheckKey ? ownerCheckStore[ownerCheckKey] : undefined;
+    const access = assertSessionAccess({
+      owner,
+      entry: ownerCheckEntry,
+      sessionKey: target.canonicalKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     const next = await updateSessionStore(storePath, (store) => {
       const primaryKey = target.storeKeys[0] ?? key;
       const existingKey = target.storeKeys.find((candidate) => store[candidate]);
@@ -243,9 +338,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       }
       const entry = store[primaryKey];
       const now = Date.now();
-      const nextEntry: SessionEntry = {
+      let nextEntry: SessionEntry = {
         sessionId: randomUUID(),
         updatedAt: now,
+        ownerUserId: entry?.ownerUserId,
+        ownerPrincipalId: entry?.ownerPrincipalId,
         systemSent: false,
         abortedLastRun: false,
         thinkingLevel: entry?.thinkingLevel,
@@ -265,12 +362,13 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         outputTokens: 0,
         totalTokens: 0,
       };
+      nextEntry = stampSessionOwner({ entry: nextEntry, owner });
       store[primaryKey] = nextEntry;
       return nextEntry;
     });
     respond(true, { ok: true, key: target.canonicalKey, entry: next }, undefined);
   },
-  "sessions.delete": async ({ params, respond }) => {
+  "sessions.delete": async ({ params, respond, owner }) => {
     if (!validateSessionsDeleteParams(params)) {
       respond(
         false,
@@ -304,9 +402,21 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const deleteTranscript = typeof p.deleteTranscript === "boolean" ? p.deleteTranscript : true;
 
     const storePath = target.storePath;
-    const { entry } = loadSessionEntry(key);
-    const sessionId = entry?.sessionId;
-    const existed = Boolean(entry);
+    const ownerCheckStore = loadSessionStore(storePath);
+    const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
+    const ownerCheckEntry = ownerCheckKey ? ownerCheckStore[ownerCheckKey] : undefined;
+    const access = assertSessionAccess({
+      owner,
+      entry: ownerCheckEntry,
+      sessionKey: target.canonicalKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
+    const sessionId = ownerCheckEntry?.sessionId;
+    const existed = Boolean(ownerCheckEntry);
     const queueKeys = new Set<string>(target.storeKeys);
     queueKeys.add(target.canonicalKey);
     if (sessionId) {
@@ -346,7 +456,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       for (const candidate of resolveSessionTranscriptCandidates(
         sessionId,
         storePath,
-        entry?.sessionFile,
+        ownerCheckEntry?.sessionFile,
         target.agentId,
       )) {
         if (!fs.existsSync(candidate)) {
@@ -362,7 +472,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
 
     respond(true, { ok: true, key: target.canonicalKey, deleted: existed, archived }, undefined);
   },
-  "sessions.compact": async ({ params, respond }) => {
+  "sessions.compact": async ({ params, respond, owner }) => {
     if (!validateSessionsCompactParams(params)) {
       respond(
         false,
@@ -389,6 +499,19 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     const cfg = loadConfig();
     const target = resolveGatewaySessionStoreTarget({ cfg, key });
     const storePath = target.storePath;
+    const ownerCheckStore = loadSessionStore(storePath);
+    const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
+    const ownerCheckEntry = ownerCheckKey ? ownerCheckStore[ownerCheckKey] : undefined;
+    const access = assertSessionAccess({
+      owner,
+      entry: ownerCheckEntry,
+      sessionKey: target.canonicalKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     // Lock + read in a short critical section; transcript work happens outside.
     const compactTarget = await updateSessionStore(storePath, (store) => {
       const primaryKey = target.storeKeys[0] ?? key;

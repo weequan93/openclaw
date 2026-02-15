@@ -265,6 +265,10 @@ jobs:
             --threshold 1000 \
             --strict
 
+      - name: Require tests for sensitive gateway changes
+        if: github.event_name == 'pull_request'
+        run: python scripts/check-sensitive-gateway-tests.py --compare-to "origin/${{ github.base_ref }}"
+
   secrets:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:

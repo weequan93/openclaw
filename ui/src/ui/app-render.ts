@@ -42,6 +42,16 @@ import {
 import { loadLogs } from "./controllers/logs.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
+import {
+  applySecurityPolicyBundle,
+  applySecurityPreset,
+  applySecurityTimePreset,
+  loadOlderSecurity,
+  loadSecurity,
+  loadSecurityPolicyBundles,
+  resolveSecurityPolicyBundle,
+  runOwnershipBackfill,
+} from "./controllers/security.ts";
 import { deleteSession, loadSessions, patchSession } from "./controllers/sessions.ts";
 import {
   installSkill,
@@ -74,6 +84,11 @@ import { renderInstances } from "./views/instances.ts";
 import { renderLogs } from "./views/logs.ts";
 import { renderNodes } from "./views/nodes.ts";
 import { renderOverview } from "./views/overview.ts";
+import {
+  renderSecurity,
+  type SecurityBackfillState,
+  type SecurityFilterState,
+} from "./views/security.ts";
 import { renderSessions } from "./views/sessions.ts";
 import { renderSkills } from "./views/skills.ts";
 import { renderUsage } from "./views/usage.ts";
@@ -97,6 +112,231 @@ function resolveAssistantAvatarUrl(state: AppViewState): string | undefined {
   return identity?.avatarUrl;
 }
 
+function escapeCsvCell(value: unknown): string {
+  const text = value == null ? "" : String(value);
+  if (!/[",\n]/.test(text)) {
+    return text;
+  }
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function authzDeniedEventsToCsvLines(
+  events: ReadonlyArray<{
+    ts: number;
+    requestId: string;
+    method: string;
+    reasonCode: string;
+    errorCode: string;
+    errorMessage: string;
+    userId: string | null;
+    userAlias?: string | null;
+    principalId: string | null;
+    actorRole: string | null;
+    sourceRole: string | null;
+    clientId?: string | null;
+    clientMode?: string | null;
+    sourceIp?: string | null;
+  }>,
+): string[] {
+  const lines = [
+    "ts_iso,ts_ms,request_id,method,reason_code,error_code,error_message,user_id,user_alias,principal_id,actor_role,source_role,client_id,client_mode,source_ip",
+  ];
+  for (const event of events) {
+    const tsIso =
+      Number.isFinite(event.ts) && !Number.isNaN(new Date(event.ts).getTime())
+        ? new Date(event.ts).toISOString()
+        : "";
+    lines.push(
+      [
+        tsIso,
+        event.ts,
+        event.requestId,
+        event.method,
+        event.reasonCode,
+        event.errorCode,
+        event.errorMessage,
+        event.userId,
+        event.userAlias ?? null,
+        event.principalId,
+        event.actorRole,
+        event.sourceRole,
+        event.clientId ?? null,
+        event.clientMode ?? null,
+        event.sourceIp ?? null,
+      ]
+        .map((cell) => escapeCsvCell(cell))
+        .join(","),
+    );
+  }
+  return lines;
+}
+
+function configChangesToCsvLines(
+  events: ReadonlyArray<{
+    ts: number;
+    requestId: string;
+    method: string;
+    path: string;
+    userId: string | null;
+    userAlias?: string | null;
+    principalId: string | null;
+    actorRole: string | null;
+    sourceRole: string | null;
+    clientId?: string | null;
+    clientMode?: string | null;
+    sourceIp?: string | null;
+    sessionKey?: string | null;
+    note?: string | null;
+    restartDelayMs?: number | null;
+  }>,
+): string[] {
+  const lines = [
+    "ts_iso,ts_ms,request_id,method,path,user_id,user_alias,principal_id,actor_role,source_role,client_id,client_mode,source_ip,session_key,note,restart_delay_ms",
+  ];
+  for (const event of events) {
+    const tsIso =
+      Number.isFinite(event.ts) && !Number.isNaN(new Date(event.ts).getTime())
+        ? new Date(event.ts).toISOString()
+        : "";
+    lines.push(
+      [
+        tsIso,
+        event.ts,
+        event.requestId,
+        event.method,
+        event.path,
+        event.userId,
+        event.userAlias ?? null,
+        event.principalId,
+        event.actorRole,
+        event.sourceRole,
+        event.clientId ?? null,
+        event.clientMode ?? null,
+        event.sourceIp ?? null,
+        event.sessionKey ?? null,
+        event.note ?? null,
+        event.restartDelayMs ?? null,
+      ]
+        .map((cell) => escapeCsvCell(cell))
+        .join(","),
+    );
+  }
+  return lines;
+}
+
+function ownershipGapsToCsvLines(gaps: {
+  ts: number;
+  summary: { scanned: number; missing: number };
+  resourcesSummary: {
+    agents?: { scanned: number; missing: number; missingAgentIds: string[] };
+    browserProfiles?: { scanned: number; missing: number; missingProfiles: string[] };
+    sessions?: {
+      scanned: number;
+      missing: number;
+      storesScanned: number;
+      storesWithMissing: number;
+      missingSamples: Array<{ storePath: string; key: string }>;
+    };
+    nodes?: { scanned: number; missing: number; missingNodeIds: string[] };
+    memory?: { scanned: number; missing: number; missingPaths: string[] };
+  };
+}): string[] {
+  const lines = [
+    "kind,resource,scanned,missing,detail_key,detail_value,ts_iso",
+    [
+      "summary",
+      "all",
+      gaps.summary.scanned,
+      gaps.summary.missing,
+      "",
+      "",
+      new Date(gaps.ts).toISOString(),
+    ]
+      .map((cell) => escapeCsvCell(cell))
+      .join(","),
+  ];
+
+  const resourceRows: Array<{
+    resource: "agents" | "browserProfiles" | "sessions" | "nodes" | "memory";
+    scanned: number;
+    missing: number;
+    details: string[];
+  }> = [];
+
+  if (gaps.resourcesSummary.agents) {
+    resourceRows.push({
+      resource: "agents",
+      scanned: gaps.resourcesSummary.agents.scanned,
+      missing: gaps.resourcesSummary.agents.missing,
+      details: gaps.resourcesSummary.agents.missingAgentIds,
+    });
+  }
+  if (gaps.resourcesSummary.browserProfiles) {
+    resourceRows.push({
+      resource: "browserProfiles",
+      scanned: gaps.resourcesSummary.browserProfiles.scanned,
+      missing: gaps.resourcesSummary.browserProfiles.missing,
+      details: gaps.resourcesSummary.browserProfiles.missingProfiles,
+    });
+  }
+  if (gaps.resourcesSummary.nodes) {
+    resourceRows.push({
+      resource: "nodes",
+      scanned: gaps.resourcesSummary.nodes.scanned,
+      missing: gaps.resourcesSummary.nodes.missing,
+      details: gaps.resourcesSummary.nodes.missingNodeIds,
+    });
+  }
+  if (gaps.resourcesSummary.sessions) {
+    resourceRows.push({
+      resource: "sessions",
+      scanned: gaps.resourcesSummary.sessions.scanned,
+      missing: gaps.resourcesSummary.sessions.missing,
+      details: gaps.resourcesSummary.sessions.missingSamples.map(
+        (sample) => `${sample.storePath}#${sample.key}`,
+      ),
+    });
+    lines.push(
+      [
+        "resource-meta",
+        "sessions",
+        gaps.resourcesSummary.sessions.storesScanned,
+        gaps.resourcesSummary.sessions.storesWithMissing,
+        "stores_scanned,stores_with_missing",
+        `${gaps.resourcesSummary.sessions.storesScanned},${gaps.resourcesSummary.sessions.storesWithMissing}`,
+        "",
+      ]
+        .map((cell) => escapeCsvCell(cell))
+        .join(","),
+    );
+  }
+  if (gaps.resourcesSummary.memory) {
+    resourceRows.push({
+      resource: "memory",
+      scanned: gaps.resourcesSummary.memory.scanned,
+      missing: gaps.resourcesSummary.memory.missing,
+      details: gaps.resourcesSummary.memory.missingPaths,
+    });
+  }
+
+  for (const row of resourceRows) {
+    lines.push(
+      ["resource", row.resource, row.scanned, row.missing, "", "", ""]
+        .map((cell) => escapeCsvCell(cell))
+        .join(","),
+    );
+    for (const detail of row.details) {
+      lines.push(
+        ["sample", row.resource, "", "", "missing_sample", detail, ""]
+          .map((cell) => escapeCsvCell(cell))
+          .join(","),
+      );
+    }
+  }
+
+  return lines;
+}
+
 export function renderApp(state: AppViewState) {
   const presenceCount = state.presenceEntries.length;
   const sessionsCount = state.sessionsResult?.count ?? null;
@@ -115,6 +355,30 @@ export function renderApp(state: AppViewState) {
     state.agentsList?.defaultId ??
     state.agentsList?.agents?.[0]?.id ??
     null;
+  const authRole =
+    typeof state.hello?.auth?.role === "string" && state.hello.auth.role.trim().length > 0
+      ? state.hello.auth.role.trim()
+      : null;
+  const authPrincipalRole =
+    typeof state.hello?.auth?.principalRole === "string" &&
+    state.hello.auth.principalRole.trim().length > 0
+      ? state.hello.auth.principalRole.trim()
+      : null;
+  const authScopes = Array.isArray(state.hello?.auth?.scopes)
+    ? state.hello.auth.scopes.filter((scope): scope is string => typeof scope === "string")
+    : [];
+  const canManageBackfill = authPrincipalRole
+    ? authPrincipalRole === "admin"
+    : Boolean(authRole === "admin" || authScopes.includes("operator.admin"));
+  const canManageConfig = canManageBackfill;
+  const adminOnlyTabs = new Set(["security", "config", "debug", "logs"]);
+  const canAccessTab = (tab: string) => !adminOnlyTabs.has(tab) || canManageConfig;
+  const visibleTabGroups = TAB_GROUPS
+    .map((group) => ({
+      ...group,
+      tabs: group.tabs.filter((tab) => canAccessTab(tab)),
+    }))
+    .filter((group) => group.tabs.length > 0);
 
   return html`
     <div class="shell ${isChat ? "shell--chat" : ""} ${chatFocus ? "shell--chat-focus" : ""} ${state.settings.navCollapsed ? "shell--nav-collapsed" : ""} ${state.onboarding ? "shell--onboarding" : ""}">
@@ -152,7 +416,7 @@ export function renderApp(state: AppViewState) {
         </div>
       </header>
       <aside class="nav ${state.settings.navCollapsed ? "nav--collapsed" : ""}">
-        ${TAB_GROUPS.map((group) => {
+        ${visibleTabGroups.map((group) => {
           const isGroupCollapsed = state.settings.navGroupsCollapsed[group.label] ?? false;
           const hasActiveTab = group.tabs.some((tab) => tab === state.tab);
           return html`
@@ -243,6 +507,7 @@ export function renderApp(state: AppViewState) {
         ${
           state.tab === "channels"
             ? renderChannels({
+                canManage: canManageConfig,
                 connected: state.connected,
                 loading: state.channelsLoading,
                 snapshot: state.channelsSnapshot,
@@ -261,20 +526,70 @@ export function renderApp(state: AppViewState) {
                 nostrProfileFormState: state.nostrProfileFormState,
                 nostrProfileAccountId: state.nostrProfileAccountId,
                 onRefresh: (probe) => loadChannels(state, probe),
-                onWhatsAppStart: (force) => state.handleWhatsAppStart(force),
-                onWhatsAppWait: () => state.handleWhatsAppWait(),
-                onWhatsAppLogout: () => state.handleWhatsAppLogout(),
-                onConfigPatch: (path, value) => updateConfigFormValue(state, path, value),
-                onConfigSave: () => state.handleChannelConfigSave(),
-                onConfigReload: () => state.handleChannelConfigReload(),
+                onWhatsAppStart: (force) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleWhatsAppStart(force);
+                },
+                onWhatsAppWait: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleWhatsAppWait();
+                },
+                onWhatsAppLogout: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleWhatsAppLogout();
+                },
+                onConfigPatch: (path, value) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  updateConfigFormValue(state, path, value);
+                },
+                onConfigSave: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleChannelConfigSave();
+                },
+                onConfigReload: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleChannelConfigReload();
+                },
                 onNostrProfileEdit: (accountId, profile) =>
-                  state.handleNostrProfileEdit(accountId, profile),
-                onNostrProfileCancel: () => state.handleNostrProfileCancel(),
+                  canManageConfig ? state.handleNostrProfileEdit(accountId, profile) : undefined,
+                onNostrProfileCancel: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  state.handleNostrProfileCancel();
+                },
                 onNostrProfileFieldChange: (field, value) =>
-                  state.handleNostrProfileFieldChange(field, value),
-                onNostrProfileSave: () => state.handleNostrProfileSave(),
-                onNostrProfileImport: () => state.handleNostrProfileImport(),
-                onNostrProfileToggleAdvanced: () => state.handleNostrProfileToggleAdvanced(),
+                  canManageConfig ? state.handleNostrProfileFieldChange(field, value) : undefined,
+                onNostrProfileSave: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleNostrProfileSave();
+                },
+                onNostrProfileImport: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void state.handleNostrProfileImport();
+                },
+                onNostrProfileToggleAdvanced: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  state.handleNostrProfileToggleAdvanced();
+                },
               })
             : nothing
         }
@@ -976,6 +1291,7 @@ export function renderApp(state: AppViewState) {
         ${
           state.tab === "nodes"
             ? renderNodes({
+                canManage: canManageConfig,
                 loading: state.nodesLoading,
                 nodes: state.nodes,
                 devicesLoading: state.devicesLoading,
@@ -998,20 +1314,50 @@ export function renderApp(state: AppViewState) {
                 execApprovalsTargetNodeId: state.execApprovalsTargetNodeId,
                 onRefresh: () => loadNodes(state),
                 onDevicesRefresh: () => loadDevices(state),
-                onDeviceApprove: (requestId) => approveDevicePairing(state, requestId),
-                onDeviceReject: (requestId) => rejectDevicePairing(state, requestId),
-                onDeviceRotate: (deviceId, role, scopes) =>
-                  rotateDeviceToken(state, { deviceId, role, scopes }),
-                onDeviceRevoke: (deviceId, role) => revokeDeviceToken(state, { deviceId, role }),
-                onLoadConfig: () => loadConfig(state),
+                onDeviceApprove: (requestId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void approveDevicePairing(state, requestId);
+                },
+                onDeviceReject: (requestId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void rejectDevicePairing(state, requestId);
+                },
+                onDeviceRotate: (deviceId, role, scopes) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void rotateDeviceToken(state, { deviceId, role, scopes });
+                },
+                onDeviceRevoke: (deviceId, role) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void revokeDeviceToken(state, { deviceId, role });
+                },
+                onLoadConfig: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void loadConfig(state);
+                },
                 onLoadExecApprovals: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   const target =
                     state.execApprovalsTarget === "node" && state.execApprovalsTargetNodeId
                       ? { kind: "node" as const, nodeId: state.execApprovalsTargetNodeId }
                       : { kind: "gateway" as const };
-                  return loadExecApprovals(state, target);
+                  void loadExecApprovals(state, target);
                 },
                 onBindDefault: (nodeId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   if (nodeId) {
                     updateConfigFormValue(state, ["tools", "exec", "node"], nodeId);
                   } else {
@@ -1019,6 +1365,9 @@ export function renderApp(state: AppViewState) {
                   }
                 },
                 onBindAgent: (agentIndex, nodeId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   const basePath = ["agents", "list", agentIndex, "tools", "exec", "node"];
                   if (nodeId) {
                     updateConfigFormValue(state, basePath, nodeId);
@@ -1026,8 +1375,16 @@ export function renderApp(state: AppViewState) {
                     removeConfigFormValue(state, basePath);
                   }
                 },
-                onSaveBindings: () => saveConfig(state),
+                onSaveBindings: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
+                  void saveConfig(state);
+                },
                 onExecApprovalsTargetChange: (kind, nodeId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   state.execApprovalsTarget = kind;
                   state.execApprovalsTargetNodeId = nodeId;
                   state.execApprovalsSnapshot = null;
@@ -1036,18 +1393,215 @@ export function renderApp(state: AppViewState) {
                   state.execApprovalsSelectedAgent = null;
                 },
                 onExecApprovalsSelectAgent: (agentId) => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   state.execApprovalsSelectedAgent = agentId;
                 },
                 onExecApprovalsPatch: (path, value) =>
-                  updateExecApprovalsFormValue(state, path, value),
-                onExecApprovalsRemove: (path) => removeExecApprovalsFormValue(state, path),
+                  canManageConfig ? updateExecApprovalsFormValue(state, path, value) : undefined,
+                onExecApprovalsRemove: (path) =>
+                  canManageConfig ? removeExecApprovalsFormValue(state, path) : undefined,
                 onSaveExecApprovals: () => {
+                  if (!canManageConfig) {
+                    return;
+                  }
                   const target =
                     state.execApprovalsTarget === "node" && state.execApprovalsTargetNodeId
                       ? { kind: "node" as const, nodeId: state.execApprovalsTargetNodeId }
                       : { kind: "gateway" as const };
-                  return saveExecApprovals(state, target);
+                  void saveExecApprovals(state, target);
                 },
+              })
+            : nothing
+        }
+
+        ${
+          state.tab === "security"
+            ? renderSecurity({
+                loading: state.securityLoading,
+                canManageBackfill,
+                authRole,
+                authPrincipalRole,
+                authScopes,
+                deniedEvents: state.securityDeniedEvents,
+                deniedSummary: state.securityDeniedSummary,
+                deniedError: state.securityDeniedError,
+                deniedSummaryError: state.securityDeniedSummaryError,
+                configChanges: state.securityConfigChanges,
+                configChangesError: state.securityConfigChangesError,
+                configWarnings: state.securityConfigWarnings,
+                configWarningsError: state.securityConfigWarningsError,
+                identityRoleWarnings: state.securityIdentityRoleWarnings,
+                ownershipGaps: state.securityOwnershipGaps,
+                ownershipGapsError: state.securityOwnershipGapsError,
+                backfillBusy: state.securityBackfillBusy,
+                backfill: {
+                  ownerUserId: state.securityBackfillOwnerUserId,
+                  ownerPrincipalId: state.securityBackfillOwnerPrincipalId,
+                  resources: state.securityBackfillResources,
+                  confirmText: state.securityBackfillConfirmText,
+                },
+                backfillResult: state.securityBackfillResult,
+                backfillError: state.securityBackfillError,
+                policyBundles: state.securityPolicyBundles,
+                policyBundlesLoading: state.securityPolicyBundlesLoading,
+                policyBundlesError: state.securityPolicyBundlesError,
+                policyBundleSelectedId: state.securityPolicyBundleSelectedId,
+                policyBundleResolved: state.securityPolicyBundleResolved,
+                policyBundleResolveLoading: state.securityPolicyBundleResolveLoading,
+                policyBundleResolveError: state.securityPolicyBundleResolveError,
+                policyBundleApplyBusy: state.securityPolicyBundleApplyBusy,
+                policyBundleApplyError: state.securityPolicyBundleApplyError,
+                policyBundleApplyMessage: state.securityPolicyBundleApplyMessage,
+                hasMore: state.securityHasMore,
+                nextCursor: state.securityNextCursor,
+                activePreset: state.securityPreset,
+                activeTimePreset: state.securityTimePreset,
+                filters: {
+                  order: state.securityOrder,
+                  limit: state.securityLimit,
+                  alertThreshold: state.securityAlertThreshold,
+                  method: state.securityFilterMethod,
+                  reasonCode: state.securityFilterReasonCode,
+                  errorCode: state.securityFilterErrorCode,
+                  userId: state.securityFilterUserId,
+                  principalId: state.securityFilterPrincipalId,
+                  actorRole: state.securityFilterActorRole,
+                  sourceRole: state.securityFilterSourceRole,
+                  clientId: state.securityFilterClientId,
+                  clientMode: state.securityFilterClientMode,
+                  sourceIp: state.securityFilterSourceIp,
+                  sinceTs: state.securityFilterSinceTs,
+                  untilTs: state.securityFilterUntilTs,
+                },
+                onFiltersChange: (next: SecurityFilterState) => {
+                  state.securityPreset = null;
+                  state.securityTimePreset = null;
+                  state.securityOrder = next.order;
+                  state.securityLimit = next.limit;
+                  state.securityAlertThreshold = next.alertThreshold;
+                  state.securityFilterMethod = next.method;
+                  state.securityFilterReasonCode = next.reasonCode;
+                  state.securityFilterErrorCode = next.errorCode;
+                  state.securityFilterUserId = next.userId;
+                  state.securityFilterPrincipalId = next.principalId;
+                  state.securityFilterActorRole = next.actorRole;
+                  state.securityFilterSourceRole = next.sourceRole;
+                  state.securityFilterClientId = next.clientId;
+                  state.securityFilterClientMode = next.clientMode;
+                  state.securityFilterSourceIp = next.sourceIp;
+                  state.securityFilterSinceTs = next.sinceTs;
+                  state.securityFilterUntilTs = next.untilTs;
+                },
+                onApplyPreset: (preset) => {
+                  state.securityPreset = preset;
+                  state.securityTimePreset = "last-24h";
+                  state.securityOrder = "desc";
+                  void applySecurityPreset(state, preset);
+                },
+                onApplyTimePreset: (preset) => {
+                  state.securityPreset = null;
+                  state.securityTimePreset = preset;
+                  void applySecurityTimePreset(state, preset);
+                },
+                onResetFilters: () => {
+                  state.securityPreset = null;
+                  state.securityTimePreset = null;
+                  state.securityOrder = "desc";
+                  state.securityLimit = "200";
+                  state.securityAlertThreshold = "5";
+                  state.securityFilterMethod = "";
+                  state.securityFilterReasonCode = "";
+                  state.securityFilterErrorCode = "";
+                  state.securityFilterUserId = "";
+                  state.securityFilterPrincipalId = "";
+                  state.securityFilterActorRole = "";
+                  state.securityFilterSourceRole = "";
+                  state.securityFilterClientId = "";
+                  state.securityFilterClientMode = "";
+                  state.securityFilterSourceIp = "";
+                  state.securityFilterSinceTs = "";
+                  state.securityFilterUntilTs = "";
+                  state.securityNextCursor = null;
+                  state.securityHasMore = false;
+                  state.securityPinnedHistory = false;
+                  void loadSecurity(state);
+                },
+                onRefresh: () => loadSecurity(state),
+                onLoadOlder: () => loadOlderSecurity(state),
+                onBackfillChange: (next: SecurityBackfillState) => {
+                  state.securityBackfillOwnerUserId = next.ownerUserId;
+                  state.securityBackfillOwnerPrincipalId = next.ownerPrincipalId;
+                  state.securityBackfillResources = next.resources;
+                  state.securityBackfillConfirmText = next.confirmText;
+                  state.securityBackfillError = null;
+                },
+                onRunBackfill: (opts) => {
+                  if (!opts.dryRun) {
+                    const ownerUserId = state.securityBackfillOwnerUserId.trim();
+                    const requestedResources =
+                      typeof opts.resources === "string" && opts.resources.trim().length > 0
+                        ? opts.resources.trim()
+                        : state.securityBackfillResources.trim();
+                    const isFullApply = requestedResources.length === 0;
+                    if (isFullApply && state.securityBackfillConfirmText.trim() !== "APPLY") {
+                      state.securityBackfillError = "type APPLY to confirm full backfill apply";
+                      return;
+                    }
+                    const resourcesLabel = requestedResources || "all resources";
+                    const confirmed =
+                      typeof window === "undefined"
+                        ? true
+                        : window.confirm(
+                            `Apply ownership backfill now?\nOwner user: ${ownerUserId || "missing"}\nResources: ${resourcesLabel}`,
+                          );
+                    if (!confirmed) {
+                      return;
+                    }
+                    if (isFullApply) {
+                      state.securityBackfillConfirmText = "";
+                    }
+                  }
+                  void runOwnershipBackfill(state, opts);
+                },
+                onPolicyBundlesRefresh: () => {
+                  state.securityPolicyBundleApplyError = null;
+                  state.securityPolicyBundleApplyMessage = null;
+                  void loadSecurityPolicyBundles(state);
+                },
+                onPolicyBundleSelect: (bundleId) => {
+                  state.securityPolicyBundleSelectedId = bundleId;
+                  state.securityPolicyBundleApplyError = null;
+                  state.securityPolicyBundleApplyMessage = null;
+                  if (!bundleId) {
+                    state.securityPolicyBundleResolved = null;
+                    state.securityPolicyBundleResolveError = null;
+                    return;
+                  }
+                  void resolveSecurityPolicyBundle(state, bundleId);
+                },
+                onPolicyBundleApply: (bundleId) => {
+                  const selected =
+                    state.securityPolicyBundles.find((bundle) => bundle.id === bundleId) ?? null;
+                  const title = selected?.title ?? bundleId;
+                  const confirmed =
+                    typeof window === "undefined"
+                      ? true
+                      : window.confirm(
+                          `Apply policy bundle now?\nBundle: ${title}\nThis updates gateway config and restarts the gateway.`,
+                        );
+                  if (!confirmed) {
+                    return;
+                  }
+                  void applySecurityPolicyBundle(state, bundleId);
+                },
+                onExport: (events, label) =>
+                  state.exportLogs(authzDeniedEventsToCsvLines(events), `${label}-csv`),
+                onExportConfigChanges: (events, label) =>
+                  state.exportLogs(configChangesToCsvLines(events), `${label}-csv`),
+                onExportOwnershipGaps: (gaps, label) =>
+                  state.exportLogs(ownershipGapsToCsvLines(gaps), `${label}-csv`),
               })
             : nothing
         }
@@ -1133,41 +1687,53 @@ export function renderApp(state: AppViewState) {
 
         ${
           state.tab === "config"
-            ? renderConfig({
-                raw: state.configRaw,
-                originalRaw: state.configRawOriginal,
-                valid: state.configValid,
-                issues: state.configIssues,
-                loading: state.configLoading,
-                saving: state.configSaving,
-                applying: state.configApplying,
-                updating: state.updateRunning,
-                connected: state.connected,
-                schema: state.configSchema,
-                schemaLoading: state.configSchemaLoading,
-                uiHints: state.configUiHints,
-                formMode: state.configFormMode,
-                formValue: state.configForm,
-                originalValue: state.configFormOriginal,
-                searchQuery: state.configSearchQuery,
-                activeSection: state.configActiveSection,
-                activeSubsection: state.configActiveSubsection,
-                onRawChange: (next) => {
-                  state.configRaw = next;
-                },
-                onFormModeChange: (mode) => (state.configFormMode = mode),
-                onFormPatch: (path, value) => updateConfigFormValue(state, path, value),
-                onSearchChange: (query) => (state.configSearchQuery = query),
-                onSectionChange: (section) => {
-                  state.configActiveSection = section;
-                  state.configActiveSubsection = null;
-                },
-                onSubsectionChange: (section) => (state.configActiveSubsection = section),
-                onReload: () => loadConfig(state),
-                onSave: () => saveConfig(state),
-                onApply: () => applyConfig(state),
-                onUpdate: () => runUpdate(state),
-              })
+            ? canManageConfig
+              ? renderConfig({
+                  raw: state.configRaw,
+                  originalRaw: state.configRawOriginal,
+                  valid: state.configValid,
+                  issues: state.configIssues,
+                  warnings: Array.isArray(state.configSnapshot?.warnings)
+                    ? state.configSnapshot?.warnings
+                    : [],
+                  loading: state.configLoading,
+                  saving: state.configSaving,
+                  applying: state.configApplying,
+                  updating: state.updateRunning,
+                  connected: state.connected,
+                  schema: state.configSchema,
+                  schemaLoading: state.configSchemaLoading,
+                  uiHints: state.configUiHints,
+                  formMode: state.configFormMode,
+                  formValue: state.configForm,
+                  originalValue: state.configFormOriginal,
+                  searchQuery: state.configSearchQuery,
+                  activeSection: state.configActiveSection,
+                  activeSubsection: state.configActiveSubsection,
+                  onRawChange: (next) => {
+                    state.configRaw = next;
+                  },
+                  onFormModeChange: (mode) => (state.configFormMode = mode),
+                  onFormPatch: (path, value) => updateConfigFormValue(state, path, value),
+                  onSearchChange: (query) => (state.configSearchQuery = query),
+                  onSectionChange: (section) => {
+                    state.configActiveSection = section;
+                    state.configActiveSubsection = null;
+                  },
+                  onSubsectionChange: (section) => (state.configActiveSubsection = section),
+                  onReload: () => loadConfig(state),
+                  onSave: () => saveConfig(state),
+                  onApply: () => applyConfig(state),
+                  onUpdate: () => runUpdate(state),
+                })
+              : html`
+                  <section class="card">
+                    <div class="card-title">Config Access Restricted</div>
+                    <div class="card-sub">
+                      Configuration controls require an admin principal role in multi-user mode.
+                    </div>
+                  </section>
+                `
             : nothing
         }
 

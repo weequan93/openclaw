@@ -16,6 +16,7 @@ import {
   setAbortMemory,
   stopSubagentsForRequester,
 } from "./abort.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { clearSessionQueues } from "./queue.js";
 
 function resolveSessionEntryForKey(
@@ -71,6 +72,13 @@ export const handleActivationCommand: CommandHandler = async (params, allowTextC
     logVerbose(
       `Ignoring /activation from unauthorized sender in group: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.activation",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/activation denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (!activationCommand.mode) {
@@ -110,6 +118,13 @@ export const handleSendPolicyCommand: CommandHandler = async (params, allowTextC
     logVerbose(
       `Ignoring /send from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.send",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/send denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (!sendPolicyCommand.mode) {
@@ -156,6 +171,13 @@ export const handleUsageCommand: CommandHandler = async (params, allowTextComman
     logVerbose(
       `Ignoring /usage from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.usage",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/usage denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
 
@@ -246,6 +268,13 @@ export const handleRestartCommand: CommandHandler = async (params, allowTextComm
     logVerbose(
       `Ignoring /restart from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.restart",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/restart denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (params.cfg.commands?.restart !== true) {
@@ -295,6 +324,13 @@ export const handleStopCommand: CommandHandler = async (params, allowTextCommand
     logVerbose(
       `Ignoring /stop from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.stop",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/stop denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   const abortTarget = resolveAbortTarget({

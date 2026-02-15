@@ -13,7 +13,10 @@ import type { GatewayTlsRuntime } from "./server/tls.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { CANVAS_HOST_PATH } from "../canvas-host/a2ui.js";
 import { type CanvasHostHandler, createCanvasHostHandler } from "../canvas-host/server.js";
+import { loadConfig } from "../config/config.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import { resolveGatewayListenHosts } from "./net.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import {
   type ChatRunEntry,
@@ -25,6 +28,7 @@ import { attachGatewayUpgradeHandler, createGatewayHttpServer } from "./server-h
 import { createGatewayHooksRequestHandler } from "./server/hooks.js";
 import { listenGatewayHttpServer } from "./server/http-listen.js";
 import { createGatewayPluginRequestHandler } from "./server/plugins-http.js";
+import { loadSessionEntry } from "./session-utils.js";
 
 export async function createGatewayRuntimeState(params: {
   cfg: import("../config/config.js").OpenClawConfig;
@@ -108,7 +112,26 @@ export async function createGatewayRuntimeState(params: {
   }
 
   const clients = new Set<GatewayWsClient>();
-  const { broadcast, broadcastToConnIds } = createGatewayBroadcaster({ clients });
+  const multiUserMode = resolveGatewayMultiUserMode(params.cfg);
+  const { broadcast, broadcastToConnIds } = createGatewayBroadcaster({
+    clients,
+    multiUserMode,
+    resolveOwnerUserIdForSessionKey: (sessionKey) => {
+      try {
+        const ownerUserId = loadSessionEntry(sessionKey).entry?.ownerUserId;
+        return typeof ownerUserId === "string" ? ownerUserId : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    canAccessOwnerScopedEvent: ({ viewerUserId, ownerUserId }) =>
+      hasGatewayDelegatedAccess({
+        cfg: loadConfig(),
+        fromUserId: viewerUserId,
+        ownerUserId,
+        resource: "sessions",
+      }),
+  });
 
   const handleHooksRequest = createGatewayHooksRequestHandler({
     deps: params.deps,

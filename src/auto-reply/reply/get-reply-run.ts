@@ -45,6 +45,7 @@ import { routeReply } from "./route-reply.js";
 import { ensureSkillSnapshot, prependSystemEvents } from "./session-updates.js";
 import { resolveTypingMode } from "./typing-mode.js";
 import { appendUntrustedContext } from "./untrusted-context.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 
 type AgentDefaults = NonNullable<OpenClawConfig["agents"]>["defaults"];
 type ExecOverrides = Pick<ExecToolDefaults, "host" | "security" | "ask" | "node">;
@@ -240,6 +241,19 @@ export async function runPreparedReply(
     prefixedBodyBase,
   });
   prefixedBodyBase = appendUntrustedContext(prefixedBodyBase, sessionCtx.UntrustedContext);
+  const viewerRole = resolveGatewayOwnerRoleFromContext(ctx);
+  const viewerUserId =
+    typeof sessionEntry?.ownerUserId === "string" && sessionEntry.ownerUserId.trim()
+      ? sessionEntry.ownerUserId.trim()
+      : typeof ctx.GatewayOwnerUserId === "string" && ctx.GatewayOwnerUserId.trim()
+        ? ctx.GatewayOwnerUserId.trim()
+        : undefined;
+  const viewerPrincipalId =
+    typeof sessionEntry?.ownerPrincipalId === "string" && sessionEntry.ownerPrincipalId.trim()
+      ? sessionEntry.ownerPrincipalId.trim()
+      : typeof ctx.GatewayOwnerPrincipalId === "string" && ctx.GatewayOwnerPrincipalId.trim()
+        ? ctx.GatewayOwnerPrincipalId.trim()
+        : undefined;
   const skillResult = await ensureSkillSnapshot({
     sessionEntry,
     sessionStore,
@@ -250,6 +264,8 @@ export async function runPreparedReply(
     workspaceDir,
     cfg,
     skillFilter: opts?.skillFilter,
+    viewerUserId,
+    viewerRole,
   });
   sessionEntry = skillResult.sessionEntry ?? sessionEntry;
   currentSystemSent = skillResult.systemSent;
@@ -379,6 +395,9 @@ export async function runPreparedReply(
       senderName: sessionCtx.SenderName?.trim() || undefined,
       senderUsername: sessionCtx.SenderUsername?.trim() || undefined,
       senderE164: sessionCtx.SenderE164?.trim() || undefined,
+      ownerUserId: viewerUserId,
+      ownerPrincipalId: viewerPrincipalId,
+      ownerRole: viewerRole,
       senderIsOwner: command.senderIsOwner,
       sessionFile,
       workspaceDir,

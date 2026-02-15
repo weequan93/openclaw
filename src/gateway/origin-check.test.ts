@@ -27,6 +27,14 @@ describe("checkBrowserOrigin", () => {
     expect(result.ok).toBe(true);
   });
 
+  it("accepts missing origin for loopback host", () => {
+    const result = checkBrowserOrigin({
+      requestHost: "127.0.0.1:18789",
+      origin: "",
+    });
+    expect(result.ok).toBe(true);
+  });
+
   it("rejects missing origin", () => {
     const result = checkBrowserOrigin({
       requestHost: "gateway.example.com:18789",

@@ -2,6 +2,8 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { CommandHandler } from "./commands-types.js";
 import { callGateway, randomIdempotencyKey } from "../../gateway/call.js";
 import { logVerbose } from "../../globals.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
+import { resolveCommandGatewayOwnerIdentity } from "./owner-identity.js";
 
 type NodeSummary = {
   nodeId: string;
@@ -36,24 +38,6 @@ function isIOSNode(node: NodeSummary): boolean {
     family.includes("ipad") ||
     family.includes("ios")
   );
-}
-
-async function loadNodes(cfg: OpenClawConfig): Promise<NodeSummary[]> {
-  try {
-    const res = await callGateway<{ nodes?: NodeSummary[] }>({
-      method: "node.list",
-      params: {},
-      config: cfg,
-    });
-    return Array.isArray(res.nodes) ? res.nodes : [];
-  } catch {
-    const res = await callGateway<{ pending?: unknown[]; paired?: NodeSummary[] }>({
-      method: "node.pair.list",
-      params: {},
-      config: cfg,
-    });
-    return Array.isArray(res.paired) ? res.paired : [];
-  }
 }
 
 function describeNodes(nodes: NodeSummary[]) {
@@ -151,12 +135,34 @@ export const handlePTTCommand: CommandHandler = async (params, allowTextCommands
     return null;
   }
   const { command, cfg } = params;
+  const ownerIdentity = resolveCommandGatewayOwnerIdentity(params);
+  const allowPairingFallback = !ownerIdentity;
+  const callGatewayOwned = async <T = Record<string, unknown>>(request: {
+    method: string;
+    params?: unknown;
+    timeoutMs?: number;
+    config?: OpenClawConfig;
+  }) =>
+    await callGateway<T>({
+      method: request.method,
+      params: request.params,
+      timeoutMs: request.timeoutMs,
+      config: request.config,
+      ...(ownerIdentity ? { identity: ownerIdentity } : {}),
+    });
   const normalized = command.commandBodyNormalized.trim();
   if (!normalized.startsWith("/ptt")) {
     return null;
   }
   if (!command.isAuthorizedSender) {
     logVerbose(`Ignoring /ptt from unauthorized sender: ${command.senderId || "<unknown>"}`);
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command,
+      method: "command.ptt",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/ptt denied for unauthorized sender",
+    });
     return { shouldContinue: false, reply: { text: "PTT requires an authorized sender." } };
   }
 
@@ -168,7 +174,26 @@ export const handlePTTCommand: CommandHandler = async (params, allowTextCommands
   }
 
   try {
-    const nodes = await loadNodes(cfg);
+    const nodes = await (async () => {
+      try {
+        const res = await callGatewayOwned<{ nodes?: NodeSummary[] }>({
+          method: "node.list",
+          params: {},
+          config: cfg,
+        });
+        return Array.isArray(res.nodes) ? res.nodes : [];
+      } catch (err) {
+        if (!allowPairingFallback) {
+          throw err;
+        }
+        const res = await callGatewayOwned<{ pending?: unknown[]; paired?: NodeSummary[] }>({
+          method: "node.pair.list",
+          params: {},
+          config: cfg,
+        });
+        return Array.isArray(res.paired) ? res.paired : [];
+      }
+    })();
     const nodeId = resolveNodeId(nodes, parsed.node);
     const invokeParams: Record<string, unknown> = {
       nodeId,
@@ -177,7 +202,7 @@ export const handlePTTCommand: CommandHandler = async (params, allowTextCommands
       idempotencyKey: randomIdempotencyKey(),
       timeoutMs: 15_000,
     };
-    const res = await callGateway<{
+    const res = await callGatewayOwned<{
       ok?: boolean;
       payload?: Record<string, unknown>;
       command?: string;

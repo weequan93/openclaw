@@ -279,6 +279,7 @@ export type ConfigSnapshot = {
   valid?: boolean | null;
   config?: Record<string, unknown> | null;
   issues?: ConfigSnapshotIssue[] | null;
+  warnings?: ConfigSnapshotIssue[] | null;
 };
 
 export type ConfigUiHint = {
@@ -761,6 +762,143 @@ export type SkillStatusReport = {
 export type StatusSummary = Record<string, unknown>;
 
 export type HealthSnapshot = Record<string, unknown>;
+
+export type AuthzDeniedEvent = {
+  ts: number;
+  requestId: string;
+  method: string;
+  reasonCode: string;
+  errorCode: string;
+  errorMessage: string;
+  userId: string | null;
+  userAlias?: string | null;
+  principalId: string | null;
+  actorRole: string | null;
+  sourceRole: string | null;
+  clientId?: string | null;
+  clientMode?: string | null;
+  sourceIp?: string | null;
+};
+
+export type AuthzDeniedSummaryBucket = {
+  key: string;
+  count: number;
+};
+
+export type AuthzDeniedSummary = {
+  ts: number;
+  total: number;
+  earliestTs?: number;
+  latestTs?: number;
+  window: {
+    sinceTs?: number;
+    untilTs?: number;
+  };
+  byReasonCode: AuthzDeniedSummaryBucket[];
+  byMethod: AuthzDeniedSummaryBucket[];
+  byActorRole: AuthzDeniedSummaryBucket[];
+  bySourceRole: AuthzDeniedSummaryBucket[];
+  byErrorCode: AuthzDeniedSummaryBucket[];
+  byPrincipalId: AuthzDeniedSummaryBucket[];
+  highFrequency: {
+    threshold: number;
+    principals: AuthzDeniedSummaryBucket[];
+  };
+};
+
+export type ConfigChangeEvent = {
+  ts: number;
+  requestId: string;
+  method: string;
+  path: string;
+  userId: string | null;
+  userAlias?: string | null;
+  principalId: string | null;
+  actorRole: string | null;
+  sourceRole: string | null;
+  clientId?: string | null;
+  clientMode?: string | null;
+  sourceIp?: string | null;
+  sessionKey?: string | null;
+  note?: string | null;
+  restartDelayMs?: number | null;
+};
+
+export type ConfigPolicyBundleId = "single_user" | "multi_user_isolated" | "strict_admin_control";
+
+export type ConfigPolicyBundle = {
+  id: ConfigPolicyBundleId;
+  title: string;
+  description: string;
+  patch: Record<string, unknown>;
+};
+
+export type OwnershipResourceName =
+  | "agents"
+  | "sessions"
+  | "nodes"
+  | "browserProfiles"
+  | "memory";
+
+type OwnershipGapStats = {
+  scanned: number;
+  missing: number;
+};
+
+type OwnershipBackfillStats = {
+  scanned: number;
+  updated: number;
+  skipped: number;
+};
+
+export type OwnershipGapsResult = {
+  ts: number;
+  resources: OwnershipResourceName[];
+  limit: number;
+  resourcesSummary: {
+    agents?: OwnershipGapStats & { missingAgentIds: string[] };
+    browserProfiles?: OwnershipGapStats & { missingProfiles: string[] };
+    sessions?: OwnershipGapStats & {
+      storesScanned: number;
+      storesWithMissing: number;
+      missingSamples: Array<{ storePath: string; key: string }>;
+    };
+    nodes?: OwnershipGapStats & { missingNodeIds: string[] };
+    memory?: OwnershipGapStats & { missingPaths: string[] };
+  };
+  summary: {
+    resources: OwnershipResourceName[];
+    scanned: number;
+    missing: number;
+  };
+};
+
+export type OwnershipBackfillResult = {
+  ts: number;
+  dryRun: boolean;
+  ownerUserId: string;
+  ownerPrincipalId?: string;
+  resources: {
+    agents?: OwnershipBackfillStats & { updatedAgentIds: string[] };
+    browserProfiles?: OwnershipBackfillStats & { updatedProfiles: string[] };
+    sessions?: OwnershipBackfillStats & {
+      storesScanned: number;
+      storesUpdated: number;
+      updatedStorePaths: string[];
+    };
+    nodes?: OwnershipBackfillStats & { updatedNodeIds: string[] };
+    memory?: OwnershipBackfillStats & {
+      updatedPaths: string[];
+      unresolvedPaths: string[];
+    };
+  };
+  summary: {
+    resources: OwnershipResourceName[];
+    scanned: number;
+    updated: number;
+    skipped: number;
+  };
+};
 
 export type LogLevel = "trace" | "debug" | "info" | "warn" | "error" | "fatal";
 

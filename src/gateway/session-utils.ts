@@ -35,6 +35,7 @@ import {
   readFirstUserMessageFromTranscript,
   readLastMessagePreviewFromTranscript,
 } from "./session-utils.fs.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 
 export {
   archiveFileOnDisk,
@@ -274,18 +275,27 @@ function listConfiguredAgentIds(cfg: OpenClawConfig): string[] {
   return sorted;
 }
 
-export function listAgentsForGateway(cfg: OpenClawConfig): {
+export function listAgentsForGateway(
+  cfg: OpenClawConfig,
+  opts?: {
+    ownerUserId?: string;
+  },
+): {
   defaultId: string;
   mainKey: string;
   scope: SessionScope;
   agents: GatewayAgentRow[];
 } {
+  const ownerUserId =
+    typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+      ? opts.ownerUserId.trim()
+      : undefined;
   const defaultId = normalizeAgentId(resolveDefaultAgentId(cfg));
   const mainKey = normalizeMainKey(cfg.session?.mainKey);
   const scope = cfg.session?.scope ?? "per-sender";
   const configuredById = new Map<
     string,
-    { name?: string; identity?: GatewayAgentRow["identity"] }
+    { name?: string; identity?: GatewayAgentRow["identity"]; ownerUserId?: string }
   >();
   for (const entry of cfg.agents?.list ?? []) {
     if (!entry?.id) {
@@ -307,6 +317,10 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
     configuredById.set(normalizeAgentId(entry.id), {
       name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : undefined,
       identity,
+      ownerUserId:
+        typeof entry.ownerUserId === "string" && entry.ownerUserId.trim()
+          ? entry.ownerUserId.trim()
+          : undefined,
     });
   }
   const explicitIds = new Set(
@@ -318,7 +332,23 @@ export function listAgentsForGateway(cfg: OpenClawConfig): {
   let agentIds = listConfiguredAgentIds(cfg).filter((id) =>
     allowedIds ? allowedIds.has(id) : true,
   );
-  if (mainKey && !agentIds.includes(mainKey)) {
+  const canAccessAgentOwner = (agentOwnerUserId: string | undefined): boolean => {
+    if (!ownerUserId || !agentOwnerUserId) {
+      return !ownerUserId;
+    }
+    return hasGatewayDelegatedAccess({
+      cfg,
+      fromUserId: ownerUserId,
+      ownerUserId: agentOwnerUserId,
+      resource: "agents",
+    });
+  };
+  if (ownerUserId) {
+    agentIds = agentIds.filter((id) => canAccessAgentOwner(configuredById.get(id)?.ownerUserId));
+  }
+  const mainKeyOwned = configuredById.get(mainKey)?.ownerUserId;
+  const includeMainKey = !ownerUserId || canAccessAgentOwner(mainKeyOwned);
+  if (mainKey && includeMainKey && !agentIds.includes(mainKey)) {
     agentIds = [...agentIds, mainKey];
   }
   const agents = agentIds.map((id) => {
@@ -549,7 +579,7 @@ export function listSessionsFromStore(params: {
   cfg: OpenClawConfig;
   storePath: string;
   store: Record<string, SessionEntry>;
-  opts: import("./protocol/index.js").SessionsListParams;
+  opts: import("./protocol/index.js").SessionsListParams & { ownerUserId?: string };
 }): SessionsListResult {
   const { cfg, storePath, store, opts } = params;
   const now = Date.now();
@@ -561,6 +591,7 @@ export function listSessionsFromStore(params: {
   const spawnedBy = typeof opts.spawnedBy === "string" ? opts.spawnedBy : "";
   const label = typeof opts.label === "string" ? opts.label.trim() : "";
   const agentId = typeof opts.agentId === "string" ? normalizeAgentId(opts.agentId) : "";
+  const ownerUserId = typeof opts.ownerUserId === "string" ? opts.ownerUserId.trim() : "";
   const search = typeof opts.search === "string" ? opts.search.trim().toLowerCase() : "";
   const activeMinutes =
     typeof opts.activeMinutes === "number" && Number.isFinite(opts.activeMinutes)
@@ -598,6 +629,25 @@ export function listSessionsFromStore(params: {
         return false;
       }
       return entry?.spawnedBy === spawnedBy;
+    })
+    .filter(([, entry]) => {
+      if (ownerUserId) {
+        const sessionOwnerUserId =
+          typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : "";
+        if (!sessionOwnerUserId) {
+          return false;
+        }
+        if (sessionOwnerUserId === ownerUserId) {
+          return true;
+        }
+        return hasGatewayDelegatedAccess({
+          cfg,
+          fromUserId: ownerUserId,
+          ownerUserId: sessionOwnerUserId,
+          resource: "sessions",
+        });
+      }
+      return true;
     })
     .filter(([, entry]) => {
       if (!label) {
@@ -640,6 +690,7 @@ export function listSessionsFromStore(params: {
       const model = resolvedModel.model ?? DEFAULT_MODEL;
       return {
         key,
+        ownerUserId: entry?.ownerUserId,
         entry,
         kind: classifySessionKey(key, entry),
         label: entry?.label,

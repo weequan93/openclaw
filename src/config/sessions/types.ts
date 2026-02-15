@@ -24,6 +24,13 @@ export type SessionOrigin = {
 
 export type SessionEntry = {
   /**
+   * User ownership boundary for multi-user gateway access control.
+   * Non-admin gateway users can only access sessions with matching ownerUserId.
+   */
+  ownerUserId?: string;
+  /** Principal that last claimed/updated session ownership. */
+  ownerPrincipalId?: string;
+  /**
    * Last delivered heartbeat payload (used to suppress duplicate heartbeat notifications).
    * Stored on the main session entry.
    */

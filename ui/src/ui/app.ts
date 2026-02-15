@@ -14,11 +14,19 @@ import type {
   AgentsFilesListResult,
   AgentIdentityResult,
   ConfigSnapshot,
+  ConfigSnapshotIssue,
   ConfigUiHints,
   CronJob,
   CronRunLogEntry,
   CronStatus,
   HealthSnapshot,
+  AuthzDeniedEvent,
+  AuthzDeniedSummary,
+  ConfigChangeEvent,
+  ConfigPolicyBundle,
+  ConfigPolicyBundleId,
+  OwnershipBackfillResult,
+  OwnershipGapsResult,
   LogEntry,
   LogLevel,
   PresenceEntry,
@@ -307,6 +315,59 @@ export class OpenClawApp extends LitElement {
   @state() debugCallParams = "{}";
   @state() debugCallResult: string | null = null;
   @state() debugCallError: string | null = null;
+  @state() securityLoading = false;
+  @state() securityDeniedEvents: AuthzDeniedEvent[] = [];
+  @state() securityDeniedSummary: AuthzDeniedSummary | null = null;
+  @state() securityDeniedError: string | null = null;
+  @state() securityDeniedSummaryError: string | null = null;
+  @state() securityConfigChanges: ConfigChangeEvent[] = [];
+  @state() securityConfigChangesError: string | null = null;
+  @state() securityConfigWarnings: ConfigSnapshotIssue[] = [];
+  @state() securityConfigWarningsError: string | null = null;
+  @state() securityIdentityRoleWarnings: Array<{
+    principalId: string;
+    path: string;
+    message: string;
+  }> = [];
+  @state() securityOwnershipGaps: OwnershipGapsResult | null = null;
+  @state() securityOwnershipGapsError: string | null = null;
+  @state() securityNextCursor: string | null = null;
+  @state() securityHasMore = false;
+  @state() securityPinnedHistory = false;
+  @state() securityPreset: string | null = null;
+  @state() securityTimePreset: string | null = null;
+  @state() securityOrder: "desc" | "asc" = "desc";
+  @state() securityLimit = "200";
+  @state() securityAlertThreshold = "5";
+  @state() securityFilterMethod = "";
+  @state() securityFilterReasonCode = "";
+  @state() securityFilterErrorCode = "";
+  @state() securityFilterUserId = "";
+  @state() securityFilterPrincipalId = "";
+  @state() securityFilterActorRole = "";
+  @state() securityFilterSourceRole = "";
+  @state() securityFilterClientId = "";
+  @state() securityFilterClientMode = "";
+  @state() securityFilterSourceIp = "";
+  @state() securityFilterSinceTs = "";
+  @state() securityFilterUntilTs = "";
+  @state() securityBackfillBusy = false;
+  @state() securityBackfillOwnerUserId = "";
+  @state() securityBackfillOwnerPrincipalId = "";
+  @state() securityBackfillResources = "";
+  @state() securityBackfillConfirmText = "";
+  @state() securityBackfillResult: OwnershipBackfillResult | null = null;
+  @state() securityBackfillError: string | null = null;
+  @state() securityPolicyBundles: ConfigPolicyBundle[] = [];
+  @state() securityPolicyBundlesLoading = false;
+  @state() securityPolicyBundlesError: string | null = null;
+  @state() securityPolicyBundleSelectedId: ConfigPolicyBundleId | "" = "";
+  @state() securityPolicyBundleResolved: ConfigPolicyBundle | null = null;
+  @state() securityPolicyBundleResolveLoading = false;
+  @state() securityPolicyBundleResolveError: string | null = null;
+  @state() securityPolicyBundleApplyBusy = false;
+  @state() securityPolicyBundleApplyError: string | null = null;
+  @state() securityPolicyBundleApplyMessage: string | null = null;
 
   @state() logsLoading = false;
   @state() logsError: string | null = null;
@@ -330,9 +391,10 @@ export class OpenClawApp extends LitElement {
   private chatHasAutoScrolled = false;
   private chatUserNearBottom = true;
   @state() chatNewMessagesBelow = false;
-  private nodesPollInterval: number | null = null;
-  private logsPollInterval: number | null = null;
-  private debugPollInterval: number | null = null;
+  private nodesPollInterval: ReturnType<typeof setInterval> | null = null;
+  private logsPollInterval: ReturnType<typeof setInterval> | null = null;
+  private debugPollInterval: ReturnType<typeof setInterval> | null = null;
+  private securityPollInterval: ReturnType<typeof setInterval> | null = null;
   private logsScrollFrame: number | null = null;
   private toolStreamById = new Map<string, ToolStreamEntry>();
   private toolStreamOrder: string[] = [];

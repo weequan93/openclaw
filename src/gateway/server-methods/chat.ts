@@ -30,6 +30,7 @@ import {
   validateChatSendParams,
 } from "../protocol/index.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
+import { assertSessionAccess } from "../session-owner.js";
 import {
   capArrayByJsonBytes,
   loadSessionEntry,
@@ -37,6 +38,7 @@ import {
   resolveSessionModelRef,
 } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
+import { registerAgentRunOwner } from "./agent-job.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 
 type TranscriptAppendResult = {
@@ -200,7 +202,7 @@ function broadcastChatError(params: {
 }
 
 export const chatHandlers: GatewayRequestHandlers = {
-  "chat.history": async ({ params, respond, context }) => {
+  "chat.history": async ({ params, respond, context, owner }) => {
     if (!validateChatHistoryParams(params)) {
       respond(
         false,
@@ -217,6 +219,16 @@ export const chatHandlers: GatewayRequestHandlers = {
       limit?: number;
     };
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
+    const access = assertSessionAccess({
+      owner,
+      entry,
+      sessionKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     const sessionId = entry?.sessionId;
     const rawMessages =
       sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
@@ -253,7 +265,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       verboseLevel,
     });
   },
-  "chat.abort": ({ params, respond, context }) => {
+  "chat.abort": ({ params, respond, context, owner }) => {
     if (!validateChatAbortParams(params)) {
       respond(
         false,
@@ -269,6 +281,17 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       runId?: string;
     };
+    const session = loadSessionEntry(sessionKey);
+    const access = assertSessionAccess({
+      owner,
+      entry: session.entry,
+      sessionKey,
+      cfg: session.cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
 
     const ops = {
       chatAbortControllers: context.chatAbortControllers,
@@ -315,7 +338,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       runIds: res.aborted ? [runId] : [],
     });
   },
-  "chat.send": async ({ params, respond, context, client }) => {
+  "chat.send": async ({ params, respond, context, client, owner }) => {
     if (!validateChatSendParams(params)) {
       respond(
         false,
@@ -386,6 +409,16 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     const rawSessionKey = p.sessionKey;
     const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const access = assertSessionAccess({
+      owner,
+      entry,
+      sessionKey: rawSessionKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -443,6 +476,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
       return;
     }
+    registerAgentRunOwner({ runId: clientRunId, ownerUserId: owner?.userId });
 
     try {
       const abortController = new AbortController();
@@ -487,6 +521,13 @@ export const chatHandlers: GatewayRequestHandlers = {
         SenderName: clientInfo?.displayName,
         SenderUsername: clientInfo?.displayName,
         GatewayClientScopes: client?.connect?.scopes,
+        GatewayClientId: clientInfo?.id,
+        GatewayClientMode: clientInfo?.mode,
+        GatewaySourceIp: client?.clientIp,
+        GatewayOwnerUserId: owner?.userId,
+        GatewayOwnerAlias: owner?.alias,
+        GatewayOwnerPrincipalId: owner?.principalId,
+        GatewayOwnerRole: owner?.role,
       };
 
       const agentId = resolveSessionAgentId({
@@ -528,6 +569,7 @@ export const chatHandlers: GatewayRequestHandlers = {
           disableBlockStreaming: true,
           onAgentRunStart: (runId) => {
             agentRunStarted = true;
+            registerAgentRunOwner({ runId, ownerUserId: owner?.userId });
             const connId = typeof client?.connId === "string" ? client.connId : undefined;
             const wantsToolEvents = hasGatewayClientCap(
               client?.connect?.caps,
@@ -639,7 +681,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       });
     }
   },
-  "chat.inject": async ({ params, respond, context }) => {
+  "chat.inject": async ({ params, respond, context, owner }) => {
     if (!validateChatInjectParams(params)) {
       respond(
         false,
@@ -659,7 +701,17 @@ export const chatHandlers: GatewayRequestHandlers = {
 
     // Load session to find transcript file
     const rawSessionKey = p.sessionKey;
-    const { storePath, entry } = loadSessionEntry(rawSessionKey);
+    const { cfg, storePath, entry } = loadSessionEntry(rawSessionKey);
+    const access = assertSessionAccess({
+      owner,
+      entry,
+      sessionKey: rawSessionKey,
+      cfg,
+    });
+    if (!access.ok) {
+      respond(false, undefined, access.error);
+      return;
+    }
     const sessionId = entry?.sessionId;
     if (!sessionId || !storePath) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "session not found"));

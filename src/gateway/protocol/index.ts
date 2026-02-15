@@ -10,6 +10,24 @@ import {
   AgentParamsSchema,
   type AgentSummary,
   AgentSummarySchema,
+  type AuthzDeniedEvent,
+  AuthzDeniedEventSchema,
+  type AuthzDeniedListParams,
+  AuthzDeniedListParamsSchema,
+  type AuthzDeniedListResult,
+  AuthzDeniedListResultSchema,
+  type AuthzDeniedSummaryParams,
+  AuthzDeniedSummaryParamsSchema,
+  type AuthzDeniedSummaryResult,
+  AuthzDeniedSummaryResultSchema,
+  type OwnershipBackfillParams,
+  OwnershipBackfillParamsSchema,
+  type OwnershipBackfillResult,
+  OwnershipBackfillResultSchema,
+  type OwnershipGapsParams,
+  OwnershipGapsParamsSchema,
+  type OwnershipGapsResult,
+  OwnershipGapsResultSchema,
   type AgentsFileEntry,
   AgentsFileEntrySchema,
   type AgentsCreateParams,
@@ -58,6 +76,24 @@ import {
   ChatSendParamsSchema,
   type ConfigApplyParams,
   ConfigApplyParamsSchema,
+  type ConfigPolicyBundleApplyParams,
+  ConfigPolicyBundleApplyParamsSchema,
+  type ConfigPolicyBundleResolveParams,
+  ConfigPolicyBundleResolveParamsSchema,
+  type ConfigPolicyBundleResolveResult,
+  ConfigPolicyBundleResolveResultSchema,
+  type ConfigPolicyBundlesListParams,
+  ConfigPolicyBundlesListParamsSchema,
+  type ConfigPolicyBundlesListResult,
+  ConfigPolicyBundlesListResultSchema,
+  type ConfigPolicyBundle,
+  ConfigPolicyBundleSchema,
+  type ConfigChangesListParams,
+  ConfigChangesListParamsSchema,
+  type ConfigChangesListResult,
+  ConfigChangesListResultSchema,
+  type ConfigChangeEvent,
+  ConfigChangeEventSchema,
   type ConfigGetParams,
   ConfigGetParamsSchema,
   type ConfigPatchParams,
@@ -238,6 +274,17 @@ export const validateAgentIdentityParams =
 export const validateAgentWaitParams = ajv.compile<AgentWaitParams>(AgentWaitParamsSchema);
 export const validateWakeParams = ajv.compile<WakeParams>(WakeParamsSchema);
 export const validateAgentsListParams = ajv.compile<AgentsListParams>(AgentsListParamsSchema);
+export const validateAuthzDeniedListParams = ajv.compile<AuthzDeniedListParams>(
+  AuthzDeniedListParamsSchema,
+);
+export const validateAuthzDeniedSummaryParams = ajv.compile<AuthzDeniedSummaryParams>(
+  AuthzDeniedSummaryParamsSchema,
+);
+export const validateOwnershipBackfillParams = ajv.compile<OwnershipBackfillParams>(
+  OwnershipBackfillParamsSchema,
+);
+export const validateOwnershipGapsParams =
+  ajv.compile<OwnershipGapsParams>(OwnershipGapsParamsSchema);
 export const validateAgentsCreateParams = ajv.compile<AgentsCreateParams>(AgentsCreateParamsSchema);
 export const validateAgentsUpdateParams = ajv.compile<AgentsUpdateParams>(AgentsUpdateParamsSchema);
 export const validateAgentsDeleteParams = ajv.compile<AgentsDeleteParams>(AgentsDeleteParamsSchema);
@@ -293,7 +340,19 @@ export const validateSessionsUsageParams =
 export const validateConfigGetParams = ajv.compile<ConfigGetParams>(ConfigGetParamsSchema);
 export const validateConfigSetParams = ajv.compile<ConfigSetParams>(ConfigSetParamsSchema);
 export const validateConfigApplyParams = ajv.compile<ConfigApplyParams>(ConfigApplyParamsSchema);
+export const validateConfigPolicyBundleApplyParams = ajv.compile<ConfigPolicyBundleApplyParams>(
+  ConfigPolicyBundleApplyParamsSchema,
+);
+export const validateConfigPolicyBundlesListParams = ajv.compile<ConfigPolicyBundlesListParams>(
+  ConfigPolicyBundlesListParamsSchema,
+);
+export const validateConfigPolicyBundleResolveParams = ajv.compile<ConfigPolicyBundleResolveParams>(
+  ConfigPolicyBundleResolveParamsSchema,
+);
 export const validateConfigPatchParams = ajv.compile<ConfigPatchParams>(ConfigPatchParamsSchema);
+export const validateConfigChangesListParams = ajv.compile<ConfigChangesListParams>(
+  ConfigChangesListParamsSchema,
+);
 export const validateConfigSchemaParams = ajv.compile<ConfigSchemaParams>(ConfigSchemaParamsSchema);
 export const validateWizardStartParams = ajv.compile<WizardStartParams>(WizardStartParamsSchema);
 export const validateWizardNextParams = ajv.compile<WizardNextParams>(WizardNextParamsSchema);
@@ -435,7 +494,16 @@ export {
   ConfigGetParamsSchema,
   ConfigSetParamsSchema,
   ConfigApplyParamsSchema,
+  ConfigPolicyBundleApplyParamsSchema,
+  ConfigPolicyBundlesListParamsSchema,
+  ConfigPolicyBundleResolveParamsSchema,
+  ConfigPolicyBundleSchema,
+  ConfigPolicyBundlesListResultSchema,
+  ConfigPolicyBundleResolveResultSchema,
   ConfigPatchParamsSchema,
+  ConfigChangesListParamsSchema,
+  ConfigChangesListResultSchema,
+  ConfigChangeEventSchema,
   ConfigSchemaParamsSchema,
   ConfigSchemaResponseSchema,
   WizardStartParamsSchema,
@@ -452,6 +520,15 @@ export {
   WebLoginStartParamsSchema,
   WebLoginWaitParamsSchema,
   AgentSummarySchema,
+  AuthzDeniedEventSchema,
+  AuthzDeniedListParamsSchema,
+  AuthzDeniedListResultSchema,
+  AuthzDeniedSummaryParamsSchema,
+  AuthzDeniedSummaryResultSchema,
+  OwnershipBackfillParamsSchema,
+  OwnershipBackfillResultSchema,
+  OwnershipGapsParamsSchema,
+  OwnershipGapsResultSchema,
   AgentsFileEntrySchema,
   AgentsCreateParamsSchema,
   AgentsCreateResultSchema,
@@ -521,7 +598,16 @@ export type {
   ConfigGetParams,
   ConfigSetParams,
   ConfigApplyParams,
+  ConfigPolicyBundleApplyParams,
+  ConfigPolicyBundlesListParams,
+  ConfigPolicyBundleResolveParams,
+  ConfigPolicyBundle,
+  ConfigPolicyBundlesListResult,
+  ConfigPolicyBundleResolveResult,
   ConfigPatchParams,
+  ConfigChangesListParams,
+  ConfigChangesListResult,
+  ConfigChangeEvent,
   ConfigSchemaParams,
   ConfigSchemaResponse,
   WizardStartParams,
@@ -539,6 +625,15 @@ export type {
   WebLoginStartParams,
   WebLoginWaitParams,
   AgentSummary,
+  AuthzDeniedEvent,
+  AuthzDeniedListParams,
+  AuthzDeniedListResult,
+  AuthzDeniedSummaryParams,
+  AuthzDeniedSummaryResult,
+  OwnershipBackfillParams,
+  OwnershipBackfillResult,
+  OwnershipGapsParams,
+  OwnershipGapsResult,
   AgentsFileEntry,
   AgentsCreateParams,
   AgentsCreateResult,

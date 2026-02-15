@@ -25,9 +25,12 @@ import {
   isGatewayMessageChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
+import { assertAgentOwnership } from "../agent-owner-policy.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
 import { parseMessageWithAttachments } from "../chat-attachments.js";
 import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
+import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
 import {
   ErrorCodes,
@@ -37,13 +40,18 @@ import {
   validateAgentParams,
   validateAgentWaitParams,
 } from "../protocol/index.js";
+import {
+  assertSessionAccess,
+  isOwnerRestrictedPrincipal,
+  stampSessionOwner,
+} from "../session-owner.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
-import { waitForAgentJob } from "./agent-job.js";
+import { registerAgentRunOwner, resolveAgentRunOwner, waitForAgentJob } from "./agent-job.js";
 import { injectTimestamp, timestampOptsFromConfig } from "./agent-timestamp.js";
 
 export const agentHandlers: GatewayRequestHandlers = {
-  agent: async ({ params, respond, context, client }) => {
+  agent: async ({ params, respond, context, client, owner }) => {
     const p = params;
     if (!validateAgentParams(p)) {
       respond(
@@ -192,6 +200,18 @@ export const agentHandlers: GatewayRequestHandlers = {
         cfg,
         agentId,
       });
+    const effectiveAgentId = requestedSessionKey
+      ? resolveAgentIdFromSessionKey(requestedSessionKey)
+      : (agentId ?? normalizeAgentId(listAgentIds(cfg)[0] ?? "main"));
+    const agentAccess = assertAgentOwnership({
+      cfg,
+      owner,
+      agentId: effectiveAgentId,
+    });
+    if (!agentAccess.ok) {
+      respond(false, undefined, agentAccess.error);
+      return;
+    }
     if (agentId && requestedSessionKeyRaw) {
       const sessionAgentId = resolveAgentIdFromSessionKey(requestedSessionKeyRaw);
       if (sessionAgentId !== agentId) {
@@ -213,6 +233,16 @@ export const agentHandlers: GatewayRequestHandlers = {
 
     if (requestedSessionKey) {
       const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(requestedSessionKey);
+      const sessionAccess = assertSessionAccess({
+        owner,
+        entry,
+        sessionKey: canonicalKey,
+        cfg,
+      });
+      if (!sessionAccess.ok) {
+        respond(false, undefined, sessionAccess.error);
+        return;
+      }
       cfgForAgent = cfg;
       const now = Date.now();
       const sessionId = entry?.sessionId ?? randomUUID();
@@ -237,9 +267,11 @@ export const agentHandlers: GatewayRequestHandlers = {
       resolvedGroupChannel = resolvedGroupChannel || inheritedGroup?.groupChannel;
       resolvedGroupSpace = resolvedGroupSpace || inheritedGroup?.groupSpace;
       const deliveryFields = normalizeSessionDeliveryFields(entry);
-      const nextEntry: SessionEntry = {
+      const nextEntryBase: SessionEntry = {
         sessionId,
         updatedAt: now,
+        ownerUserId: entry?.ownerUserId,
+        ownerPrincipalId: entry?.ownerPrincipalId,
         thinkingLevel: entry?.thinkingLevel,
         verboseLevel: entry?.verboseLevel,
         reasoningLevel: entry?.reasoningLevel,
@@ -261,6 +293,10 @@ export const agentHandlers: GatewayRequestHandlers = {
         cliSessionIds: entry?.cliSessionIds,
         claudeCliSessionId: entry?.claudeCliSessionId,
       };
+      const nextEntry = stampSessionOwner({
+        entry: nextEntryBase,
+        owner,
+      });
       sessionEntry = nextEntry;
       const sendPolicy = resolveSendPolicy({
         cfg,
@@ -297,6 +333,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
 
     const runId = idem;
+    registerAgentRunOwner({ runId, ownerUserId: owner?.userId });
     const connId = typeof client?.connId === "string" ? client.connId : undefined;
     const wantsToolEvents = hasGatewayClientCap(
       client?.connect?.caps,
@@ -439,7 +476,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         });
       });
   },
-  "agent.identity.get": ({ params, respond }) => {
+  "agent.identity.get": ({ params, respond, owner }) => {
     if (!validateAgentIdentityParams(params)) {
       respond(
         false,
@@ -473,6 +510,16 @@ export const agentHandlers: GatewayRequestHandlers = {
       agentId = resolved;
     }
     const cfg = loadConfig();
+    const effectiveAgentId = agentId ?? normalizeAgentId("main");
+    const agentAccess = assertAgentOwnership({
+      cfg,
+      owner,
+      agentId: effectiveAgentId,
+    });
+    if (!agentAccess.ok) {
+      respond(false, undefined, agentAccess.error);
+      return;
+    }
     const identity = resolveAssistantIdentity({ cfg, agentId });
     const avatarValue =
       resolveAssistantAvatarUrl({
@@ -482,7 +529,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       }) ?? identity.avatar;
     respond(true, { ...identity, avatar: avatarValue }, undefined);
   },
-  "agent.wait": async ({ params, respond }) => {
+  "agent.wait": async ({ params, respond, owner }) => {
     if (!validateAgentWaitParams(params)) {
       respond(
         false,
@@ -496,6 +543,39 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const runId = p.runId.trim();
+    const cfg = loadConfig();
+    if (isOwnerRestrictedPrincipal(owner, cfg)) {
+      const ownerUserId = owner?.userId;
+      const runOwnerUserId = resolveAgentRunOwner(runId);
+      const strict = isGatewayStrictOwnerMode(cfg);
+      const ownerMismatch = Boolean(
+        runOwnerUserId && ownerUserId && runOwnerUserId !== ownerUserId,
+      );
+      const delegated =
+        ownerMismatch &&
+        hasGatewayDelegatedAccess({
+          cfg,
+          fromUserId: ownerUserId,
+          ownerUserId: runOwnerUserId,
+          resource: "agents",
+        });
+      const missingOwner = !runOwnerUserId;
+      if (!ownerUserId || (!delegated && ownerMismatch) || (strict && missingOwner)) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "run owner mismatch", {
+            details: {
+              reasonCode: "OWNER_MISMATCH",
+              runId,
+              ownerUserId,
+              runOwnerUserId: runOwnerUserId ?? null,
+            },
+          }),
+        );
+        return;
+      }
+    }
     const timeoutMs =
       typeof p.timeoutMs === "number" && Number.isFinite(p.timeoutMs)
         ? Math.max(0, Math.floor(p.timeoutMs))

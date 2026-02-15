@@ -19,6 +19,8 @@ import { formatTimeAgo } from "../../infra/format-time/format-relative.ts";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { stopSubagentsForRequester } from "./abort.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
+import { resolveCommandGatewayOwnerIdentity } from "./owner-identity.js";
 import { clearSessionQueues } from "./queue.js";
 import { formatRunLabel, formatRunStatus, sortSubagentRuns } from "./subagents-utils.js";
 
@@ -177,6 +179,13 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     logVerbose(
       `Ignoring /subagents from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.subagents",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/subagents denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
 
@@ -192,6 +201,18 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     return { shouldContinue: false, reply: { text: "⚠️ Missing session key." } };
   }
   const runs = listSubagentRunsForRequester(requesterKey);
+  const ownerIdentity = resolveCommandGatewayOwnerIdentity(params);
+  const callGatewayOwned = async <T = Record<string, unknown>>(request: {
+    method: string;
+    params?: unknown;
+    timeoutMs?: number;
+  }) =>
+    await callGateway<T>({
+      method: request.method,
+      params: request.params,
+      timeoutMs: request.timeoutMs,
+      ...(ownerIdentity ? { identity: ownerIdentity } : {}),
+    });
 
   if (action === "help") {
     return { shouldContinue: false, reply: { text: buildSubagentsHelp() } };
@@ -333,7 +354,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
         reply: { text: `⚠️ ${resolved.error ?? "Unknown subagent."}` },
       };
     }
-    const history = await callGateway<{ messages: Array<unknown> }>({
+    const history = await callGatewayOwned<{ messages: Array<unknown> }>({
       method: "chat.history",
       params: { sessionKey: resolved.entry.childSessionKey, limit },
     });
@@ -366,7 +387,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     const idempotencyKey = crypto.randomUUID();
     let runId: string = idempotencyKey;
     try {
-      const response = await callGateway<{ runId: string }>({
+      const response = await callGatewayOwned<{ runId: string }>({
         method: "agent",
         params: {
           message,
@@ -389,7 +410,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
     }
 
     const waitMs = 30_000;
-    const wait = await callGateway<{ status?: string; error?: string }>({
+    const wait = await callGatewayOwned<{ status?: string; error?: string }>({
       method: "agent.wait",
       params: { runId, timeoutMs: waitMs },
       timeoutMs: waitMs + 2000,
@@ -410,7 +431,7 @@ export const handleSubagentsCommand: CommandHandler = async (params, allowTextCo
       };
     }
 
-    const history = await callGateway<{ messages: Array<unknown> }>({
+    const history = await callGatewayOwned<{ messages: Array<unknown> }>({
       method: "chat.history",
       params: { sessionKey: resolved.entry.childSessionKey, limit: 50 },
     });

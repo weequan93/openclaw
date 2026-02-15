@@ -3,13 +3,16 @@ import { loadConfig } from "../../config/config.js";
 import { listDevicePairing } from "../../infra/device-pairing.js";
 import {
   approveNodePairing,
+  getPairedNode,
   listNodePairing,
   rejectNodePairing,
   renamePairedNode,
   requestNodePairing,
   verifyNodeToken,
 } from "../../infra/node-pairing.js";
+import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import {
   ErrorCodes,
   errorShape,
@@ -25,6 +28,7 @@ import {
   validateNodePairVerifyParams,
   validateNodeRenameParams,
 } from "../protocol/index.js";
+import { isOwnerRestrictedPrincipal } from "../session-owner.js";
 import {
   respondInvalidParams,
   respondUnavailableOnThrow,
@@ -60,6 +64,29 @@ function normalizeNodeInvokeResultParams(params: unknown): unknown {
     delete normalized.error;
   }
   return normalized;
+}
+
+function normalizeOwnerUserId(raw: unknown): string | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function ownerMismatchError(params: {
+  ownerUserId: string;
+  nodeOwnerUserId?: string;
+  nodeId: string;
+}) {
+  return errorShape(ErrorCodes.INVALID_REQUEST, "node owner mismatch", {
+    details: {
+      reasonCode: "OWNER_MISMATCH",
+      ownerUserId: params.ownerUserId,
+      nodeOwnerUserId: params.nodeOwnerUserId ?? null,
+      nodeId: params.nodeId,
+    },
+  });
 }
 
 export const nodeHandlers: GatewayRequestHandlers = {
@@ -132,9 +159,32 @@ export const nodeHandlers: GatewayRequestHandlers = {
       });
       return;
     }
-    const { requestId } = params as { requestId: string };
+    const { requestId, ownerUserId: rawOwnerUserId } = params as {
+      requestId: string;
+      ownerUserId?: string;
+    };
+    const ownerUserId =
+      typeof rawOwnerUserId === "string" && rawOwnerUserId.trim()
+        ? rawOwnerUserId.trim()
+        : undefined;
+    const cfg = loadConfig();
+    const strictMultiUserMode = cfg.gateway?.multiUser?.mode === "strict";
+    if (strictMultiUserMode && !ownerUserId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "ownerUserId required in strict multi-user mode", {
+          details: {
+            reasonCode: "OWNER_REQUIRED",
+            resource: "node",
+            requestId,
+          },
+        }),
+      );
+      return;
+    }
     await respondUnavailableOnThrow(respond, async () => {
-      const approved = await approveNodePairing(requestId);
+      const approved = await approveNodePairing(requestId, { ownerUserId });
       if (!approved) {
         respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown requestId"));
         return;
@@ -226,7 +276,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
       respond(true, { nodeId: updated.nodeId, displayName: updated.displayName }, undefined);
     });
   },
-  "node.list": async ({ params, respond, context }) => {
+  "node.list": async ({ params, respond, context, owner }) => {
     if (!validateNodeListParams(params)) {
       respondInvalidParams({
         respond,
@@ -236,7 +286,19 @@ export const nodeHandlers: GatewayRequestHandlers = {
       return;
     }
     await respondUnavailableOnThrow(respond, async () => {
+      const cfg = loadConfig();
+      const strictOwner = isGatewayStrictOwnerMode(cfg);
       const list = await listDevicePairing();
+      const ownerRestricted = isOwnerRestrictedPrincipal(owner, cfg);
+      const ownerContext = ownerRestricted ? owner : null;
+      const ownerUserId = ownerContext?.userId;
+      const pairedNodeOwners = ownerRestricted
+        ? new Map(
+            (await listNodePairing()).paired.map(
+              (node) => [node.nodeId, normalizeOwnerUserId(node.ownerUserId)] as const,
+            ),
+          )
+        : null;
       const pairedById = new Map(
         list.paired
           .filter((entry) => isNodeEntry(entry))
@@ -288,8 +350,28 @@ export const nodeHandlers: GatewayRequestHandlers = {
           connected: Boolean(live),
         };
       });
+      const filteredNodes =
+        ownerContext && ownerUserId
+          ? nodes.filter((node) => {
+              const nodeOwner = pairedNodeOwners?.get(node.nodeId);
+              if (!nodeOwner) {
+                return !strictOwner;
+              }
+              if (
+                hasGatewayDelegatedAccess({
+                  cfg,
+                  fromUserId: ownerUserId,
+                  ownerUserId: nodeOwner,
+                  resource: "nodes",
+                })
+              ) {
+                return true;
+              }
+              return nodeOwner === ownerUserId;
+            })
+          : nodes;
 
-      nodes.sort((a, b) => {
+      filteredNodes.sort((a, b) => {
         if (a.connected !== b.connected) {
           return a.connected ? -1 : 1;
         }
@@ -304,10 +386,10 @@ export const nodeHandlers: GatewayRequestHandlers = {
         return a.nodeId.localeCompare(b.nodeId);
       });
 
-      respond(true, { ts: Date.now(), nodes }, undefined);
+      respond(true, { ts: Date.now(), nodes: filteredNodes }, undefined);
     });
   },
-  "node.describe": async ({ params, respond, context }) => {
+  "node.describe": async ({ params, respond, context, owner }) => {
     if (!validateNodeDescribeParams(params)) {
       respondInvalidParams({
         respond,
@@ -323,6 +405,35 @@ export const nodeHandlers: GatewayRequestHandlers = {
       return;
     }
     await respondUnavailableOnThrow(respond, async () => {
+      const cfg = loadConfig();
+      const ownerContext = isOwnerRestrictedPrincipal(owner, cfg) ? owner : null;
+      const strictOwner = isGatewayStrictOwnerMode(cfg);
+      if (ownerContext) {
+        const pairedNode = await getPairedNode(id);
+        const nodeOwnerUserId = normalizeOwnerUserId(pairedNode?.ownerUserId);
+        const ownerMismatch = Boolean(nodeOwnerUserId) && nodeOwnerUserId !== ownerContext.userId;
+        const ownerMissing = !nodeOwnerUserId;
+        const delegated =
+          ownerMismatch &&
+          hasGatewayDelegatedAccess({
+            cfg,
+            fromUserId: ownerContext.userId,
+            ownerUserId: nodeOwnerUserId,
+            resource: "nodes",
+          });
+        if ((!delegated && ownerMismatch) || (strictOwner && ownerMissing)) {
+          respond(
+            false,
+            undefined,
+            ownerMismatchError({
+              ownerUserId: ownerContext.userId,
+              nodeOwnerUserId,
+              nodeId: id,
+            }),
+          );
+          return;
+        }
+      }
       const list = await listDevicePairing();
       const paired = list.paired.find((n) => n.deviceId === id && isNodeEntry(n));
       const connected = context.nodeRegistry.listConnected();
@@ -361,7 +472,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
       );
     });
   },
-  "node.invoke": async ({ params, respond, context }) => {
+  "node.invoke": async ({ params, respond, context, owner }) => {
     if (!validateNodeInvokeParams(params)) {
       respondInvalidParams({
         respond,
@@ -389,6 +500,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
     }
 
     await respondUnavailableOnThrow(respond, async () => {
+      const cfg = loadConfig();
       const nodeSession = context.nodeRegistry.get(nodeId);
       if (!nodeSession) {
         respond(
@@ -400,7 +512,34 @@ export const nodeHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const cfg = loadConfig();
+      const ownerContext = isOwnerRestrictedPrincipal(owner, cfg) ? owner : null;
+      const strictOwner = isGatewayStrictOwnerMode(cfg);
+      if (ownerContext) {
+        const pairedNode = await getPairedNode(nodeId);
+        const nodeOwnerUserId = normalizeOwnerUserId(pairedNode?.ownerUserId);
+        const ownerMismatch = Boolean(nodeOwnerUserId) && nodeOwnerUserId !== ownerContext.userId;
+        const ownerMissing = !nodeOwnerUserId;
+        const delegated =
+          ownerMismatch &&
+          hasGatewayDelegatedAccess({
+            cfg,
+            fromUserId: ownerContext.userId,
+            ownerUserId: nodeOwnerUserId,
+            resource: "nodes",
+          });
+        if ((!delegated && ownerMismatch) || (strictOwner && ownerMissing)) {
+          respond(
+            false,
+            undefined,
+            ownerMismatchError({
+              ownerUserId: ownerContext.userId,
+              nodeOwnerUserId,
+              nodeId,
+            }),
+          );
+          return;
+        }
+      }
       const allowlist = resolveNodeCommandAllowlist(cfg, nodeSession);
       const allowed = isNodeCommandAllowed({
         command,

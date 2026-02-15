@@ -3,6 +3,7 @@ import { onAgentEvent } from "../../infra/agent-events.js";
 const AGENT_RUN_CACHE_TTL_MS = 10 * 60_000;
 const agentRunCache = new Map<string, AgentRunSnapshot>();
 const agentRunStarts = new Map<string, number>();
+const agentRunOwners = new Map<string, { ownerUserId: string; ts: number }>();
 let agentRunListenerStarted = false;
 
 type AgentRunSnapshot = {
@@ -20,11 +21,36 @@ function pruneAgentRunCache(now = Date.now()) {
       agentRunCache.delete(runId);
     }
   }
+  for (const [runId, entry] of agentRunOwners) {
+    if (now - entry.ts > AGENT_RUN_CACHE_TTL_MS) {
+      agentRunOwners.delete(runId);
+    }
+  }
 }
 
 function recordAgentRunSnapshot(entry: AgentRunSnapshot) {
   pruneAgentRunCache(entry.ts);
+  const owner = agentRunOwners.get(entry.runId);
+  if (owner) {
+    owner.ts = entry.ts;
+    agentRunOwners.set(entry.runId, owner);
+  }
   agentRunCache.set(entry.runId, entry);
+}
+
+export function registerAgentRunOwner(params: { runId: string; ownerUserId?: string }) {
+  const runId = params.runId.trim();
+  const ownerUserId = params.ownerUserId?.trim();
+  if (!runId || !ownerUserId) {
+    return;
+  }
+  pruneAgentRunCache();
+  agentRunOwners.set(runId, { ownerUserId, ts: Date.now() });
+}
+
+export function resolveAgentRunOwner(runId: string): string | undefined {
+  pruneAgentRunCache();
+  return agentRunOwners.get(runId.trim())?.ownerUserId;
 }
 
 function ensureAgentRunListener() {

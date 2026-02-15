@@ -1,8 +1,12 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "../../gateway/authz-denied-events.js";
 import type { MsgContext } from "../templating.js";
 import {
   addSubagentRunForTests,
@@ -39,6 +43,10 @@ afterAll(async () => {
   await fs.rm(testWorkspaceDir, { recursive: true, force: true });
 });
 
+beforeEach(() => {
+  authzDeniedEventsTest.clear();
+});
+
 function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Partial<MsgContext>) {
   const ctx = {
     Body: commandBody,
@@ -55,7 +63,7 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
     cfg,
     isGroup: false,
     triggerBodyNormalized: commandBody.trim().toLowerCase(),
-    commandAuthorized: true,
+    commandAuthorized: ctx.CommandAuthorized !== false,
   });
 
   return {
@@ -128,6 +136,224 @@ describe("handleCommands gating", () => {
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("/debug is disabled");
   });
+
+  it("blocks /debug for non-admin gateway principals", async () => {
+    const cfg = {
+      commands: { config: true, debug: true, text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/debug show", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/debug is admin-only");
+  });
+
+  it("blocks /debug for non-gateway senders in multi-user mode", async () => {
+    const cfg = {
+      commands: { config: true, debug: true, text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/debug show", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/debug is admin-only");
+  });
+
+  it("blocks /debug when gateway principal has admin scope but non-admin role", async () => {
+    const cfg = {
+      commands: { config: true, debug: true, text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/debug show", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/debug is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.debug" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
+  });
+
+  it("blocks /debug when gateway principal has admin scope but unresolved role", async () => {
+    const cfg = {
+      commands: { config: true, debug: true, text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/debug show", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/debug is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.debug" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBeNull();
+  });
+
+  it("records authz deny event for unauthorized /usage", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/usage", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.usage" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /restart", async () => {
+    const cfg = {
+      commands: { text: true, restart: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/restart", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.restart" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /stop", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/stop", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.stop" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /send", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/send off", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.send" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /activation in group", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/activation mention", cfg, { CommandAuthorized: false });
+    params.isGroup = true;
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.activation" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /reset", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/reset", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.reset" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /compact", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/compact", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.compact" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /tts", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts status", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny event for unauthorized /help", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/help", cfg, { CommandAuthorized: false });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.help" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("records authz deny events for unauthorized info commands", async () => {
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+
+    const checks = [
+      { commandBody: "/commands", method: "command.commands" },
+      { commandBody: "/status", method: "command.status" },
+      { commandBody: "/context", method: "command.context" },
+      { commandBody: "/whoami", method: "command.whoami" },
+    ] as const;
+
+    for (const check of checks) {
+      const params = buildParams(check.commandBody, cfg, { CommandAuthorized: false });
+      const result = await handleCommands(params);
+      expect(result.shouldContinue).toBe(false);
+      const events = listGatewayAuthzDenyEvents({ method: check.method });
+      expect(events).toHaveLength(1);
+      expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+    }
+  });
 });
 
 describe("handleCommands bash alias", () => {
@@ -154,6 +380,24 @@ describe("handleCommands bash alias", () => {
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("No active bash job");
   });
+
+  it("records authz deny event for unauthorized /bash", async () => {
+    resetBashChatCommandForTests();
+    const cfg = {
+      commands: { bash: true, text: true },
+      whatsapp: { allowFrom: ["*"] },
+    } as OpenClawConfig;
+    const params = buildParams("/bash echo hi", cfg, {
+      CommandAuthorized: false,
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.bash" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
 });
 
 describe("handleCommands plugin commands", () => {
@@ -175,6 +419,30 @@ describe("handleCommands plugin commands", () => {
 
     expect(commandResult.shouldContinue).toBe(false);
     expect(commandResult.reply?.text).toBe("from plugin");
+    clearPluginCommands();
+  });
+
+  it("records authz deny event for unauthorized plugin command requiring auth", async () => {
+    clearPluginCommands();
+    const result = registerPluginCommand("test-plugin", {
+      name: "card",
+      description: "Test card",
+      handler: async () => ({ text: "from plugin" }),
+    });
+    expect(result.ok).toBe(true);
+
+    const cfg = {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/card", cfg, { CommandAuthorized: false });
+    const commandResult = await handleCommands(params);
+
+    expect(commandResult.shouldContinue).toBe(false);
+    expect(commandResult.reply?.text).toContain("requires authorization");
+    const events = listGatewayAuthzDenyEvents({ method: "command.plugin" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
     clearPluginCommands();
   });
 });
@@ -430,5 +698,106 @@ describe("handleCommands /tts", () => {
     const result = await handleCommands(params);
     expect(result.shouldContinue).toBe(false);
     expect(result.reply?.text).toContain("TTS status");
+  });
+
+  it("blocks /tts setting changes for non-admin gateway principals in strict mode", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-user.json") } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts on", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/tts settings are admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+  });
+
+  it("blocks /tts setting changes for non-gateway senders in strict mode", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-non-gateway.json") } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts on", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/tts settings are admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("blocks /tts setting changes when gateway principal has admin scope but non-admin role", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-admin-scope-user-role.json") } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts on", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/tts settings are admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
+  });
+
+  it("allows non-admin gateway principals to use /tts status in strict mode", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-status.json") } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts status", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("TTS status");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(0);
+  });
+
+  it("allows non-admin gateway principals to use /tts audio help path in strict mode", async () => {
+    const cfg = {
+      commands: { text: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-audio.json") } },
+    } as OpenClawConfig;
+    const params = buildParams("/tts audio", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("Usage: /tts audio");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.tts" });
+    expect(events).toHaveLength(0);
   });
 });

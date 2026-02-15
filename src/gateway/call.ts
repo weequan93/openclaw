@@ -17,6 +17,7 @@ import {
 } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 import { pickPrimaryLanIPv4 } from "./net.js";
+import { resolveGatewayOperatorScopesForMethod } from "./operator-scopes.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 
 export type CallGatewayOptions = {
@@ -37,6 +38,12 @@ export type CallGatewayOptions = {
   instanceId?: string;
   minProtocol?: number;
   maxProtocol?: number;
+  scopes?: string[];
+  identity?: {
+    userId: string;
+    principalId: string;
+    alias?: string;
+  };
   /**
    * Overrides the config path shown in connection error details.
    * Does not affect config loading; callers still control auth via opts.token/password/env/config.
@@ -241,6 +248,7 @@ export async function callGateway<T = Record<string, unknown>>(
   };
   const formatTimeoutError = () =>
     `gateway timeout after ${timeoutMs}ms\n${connectionDetails.message}`;
+  const scopes = resolveCallGatewayScopes({ method: opts.method, scopes: opts.scopes });
   return await new Promise<T>((resolve, reject) => {
     let settled = false;
     let ignoreClose = false;
@@ -269,7 +277,8 @@ export async function callGateway<T = Record<string, unknown>>(
       platform: opts.platform,
       mode: opts.mode ?? GATEWAY_CLIENT_MODES.CLI,
       role: "operator",
-      scopes: ["operator.admin", "operator.approvals", "operator.pairing"],
+      scopes,
+      identity: opts.identity,
       deviceIdentity: loadOrCreateDeviceIdentity(),
       minProtocol: opts.minProtocol ?? PROTOCOL_VERSION,
       maxProtocol: opts.maxProtocol ?? PROTOCOL_VERSION,
@@ -309,4 +318,16 @@ export async function callGateway<T = Record<string, unknown>>(
 
 export function randomIdempotencyKey() {
   return randomUUID();
+}
+
+export function resolveCallGatewayScopes(params: { method: string; scopes?: string[] }): string[] {
+  const explicit = Array.isArray(params.scopes)
+    ? params.scopes
+        .map((scope) => (typeof scope === "string" ? scope.trim() : ""))
+        .filter((scope) => scope.length > 0)
+    : [];
+  if (explicit.length > 0) {
+    return Array.from(new Set(explicit));
+  }
+  return resolveGatewayOperatorScopesForMethod(params.method);
 }

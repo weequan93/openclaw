@@ -8,6 +8,7 @@ describe("config view", () => {
     originalRaw: "{\n}\n",
     valid: true,
     issues: [],
+    warnings: [],
     loading: false,
     saving: false,
     applying: false,

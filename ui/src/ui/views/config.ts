@@ -8,6 +8,7 @@ export type ConfigProps = {
   originalRaw: string;
   valid: boolean | null;
   issues: unknown[];
+  warnings: unknown[];
   loading: boolean;
   saving: boolean;
   applying: boolean;
@@ -728,6 +729,16 @@ export function renderConfig(props: ConfigProps) {
               `
           }
         </div>
+
+        ${
+          props.warnings.length > 0
+            ? html`<div class="callout warn" style="margin-top: 12px;">
+              <pre class="code-block">
+${JSON.stringify(props.warnings, null, 2)}</pre
+              >
+            </div>`
+            : nothing
+        }
 
         ${
           props.issues.length > 0

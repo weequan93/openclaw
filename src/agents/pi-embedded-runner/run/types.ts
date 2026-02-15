@@ -29,6 +29,14 @@ export type EmbeddedRunAttemptParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
+  /** Owner user id used for owner-aware skill visibility filtering. */
+  ownerUserId?: string;
+  /** Owner principal id used for owner-aware tool and auth context. */
+  ownerPrincipalId?: string;
+  /** Owner alias used for owner-aware tool and auth context. */
+  ownerAlias?: string;
+  /** Owner role used for owner-aware skill visibility filtering. */
+  ownerRole?: string;
   senderId?: string | null;
   senderName?: string | null;
   senderUsername?: string | null;

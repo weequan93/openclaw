@@ -1,6 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
+import { __test as authzDeniedEventsTest, listGatewayAuthzDenyEvents } from "../../gateway/authz-denied-events.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
 
@@ -71,7 +72,7 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
     cfg,
     isGroup: false,
     triggerBodyNormalized: commandBody.trim().toLowerCase(),
-    commandAuthorized: true,
+    commandAuthorized: ctx.CommandAuthorized !== false,
   });
 
   return {
@@ -94,11 +95,16 @@ function buildParams(commandBody: string, cfg: OpenClawConfig, ctxOverrides?: Pa
 }
 
 describe("handleCommands /allowlist", () => {
+  beforeEach(() => {
+    authzDeniedEventsTest.clear();
+  });
+
   it("lists config + store allowFrom entries", async () => {
     readChannelAllowFromStoreMock.mockResolvedValueOnce(["456"]);
 
     const cfg = {
       commands: { text: true },
+      gateway: { multiUser: { mode: "off" } },
       channels: { telegram: { allowFrom: ["123", "@Alice"] } },
     } as OpenClawConfig;
     const params = buildParams("/allowlist list dm", cfg);
@@ -128,6 +134,7 @@ describe("handleCommands /allowlist", () => {
 
     const cfg = {
       commands: { text: true, config: true },
+      gateway: { multiUser: { mode: "off" } },
       channels: { telegram: { allowFrom: ["123"] } },
     } as OpenClawConfig;
     const params = buildParams("/allowlist add dm 789", cfg);
@@ -145,6 +152,86 @@ describe("handleCommands /allowlist", () => {
     });
     expect(result.reply?.text).toContain("DM allowlist added");
   });
+
+  it("blocks /allowlist for non-gateway senders in multi-user mode", async () => {
+    const cfg = {
+      commands: { text: true, config: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { telegram: { allowFrom: ["123"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/allowlist list dm", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/allowlist is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.allowlist" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("blocks /allowlist for non-admin gateway principals", async () => {
+    const cfg = {
+      commands: { text: true, config: true },
+      channels: { telegram: { allowFrom: ["123"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/allowlist list dm", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.read", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/allowlist is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.allowlist" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.principalId).toBe("principal:user-1");
+  });
+
+  it("blocks /allowlist when gateway principal has admin scope but non-admin role", async () => {
+    const cfg = {
+      commands: { text: true, config: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { telegram: { allowFrom: ["123"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/allowlist list dm", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/allowlist is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.allowlist" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.principalId).toBe("principal:user-1");
+  });
+
+  it("blocks /allowlist when gateway principal has admin scope but unresolved role", async () => {
+    const cfg = {
+      commands: { text: true, config: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { telegram: { allowFrom: ["123"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/allowlist list dm", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/allowlist is admin-only");
+    const events = listGatewayAuthzDenyEvents({ method: "command.allowlist" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBeNull();
+    expect(events[0]?.userId).toBe("user-1");
+    expect(events[0]?.principalId).toBe("principal:user-1");
+  });
 });
 
 describe("/models command", () => {
@@ -160,6 +247,20 @@ describe("/models command", () => {
     expect(result.reply?.text).toContain("Providers:");
     expect(result.reply?.text).toContain("anthropic");
     expect(result.reply?.text).toContain("Use: /models <provider>");
+  });
+
+  it("records authz deny event for unauthorized sender", async () => {
+    const params = buildParams("/models", cfg, {
+      Provider: "discord",
+      Surface: "discord",
+      CommandAuthorized: false,
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply).toBeUndefined();
+    const events = listGatewayAuthzDenyEvents({ method: "command.models" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
   });
 
   it("lists providers on telegram (buttons)", async () => {

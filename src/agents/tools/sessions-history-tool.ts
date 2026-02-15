@@ -11,6 +11,7 @@ import {
   resolveSessionReference,
   resolveMainSessionAlias,
   resolveInternalSessionKey,
+  type GatewayOwnerIdentity,
   SessionListRow,
   stripToolMessages,
 } from "./sessions-helpers.js";
@@ -153,6 +154,7 @@ function resolveSandboxSessionToolsVisibility(cfg: ReturnType<typeof loadConfig>
 async function isSpawnedSessionAllowed(params: {
   requesterSessionKey: string;
   targetSessionKey: string;
+  ownerIdentity?: GatewayOwnerIdentity;
 }): Promise<boolean> {
   try {
     const list = await callGateway<{ sessions: Array<SessionListRow> }>({
@@ -163,6 +165,7 @@ async function isSpawnedSessionAllowed(params: {
         limit: 500,
         spawnedBy: params.requesterSessionKey,
       },
+      ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
     });
     const sessions = Array.isArray(list?.sessions) ? list.sessions : [];
     return sessions.some((entry) => entry?.key === params.targetSessionKey);
@@ -174,6 +177,9 @@ async function isSpawnedSessionAllowed(params: {
 export function createSessionsHistoryTool(opts?: {
   agentSessionKey?: string;
   sandboxed?: boolean;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
 }): AnyAgentTool {
   return {
     label: "Session History",
@@ -186,6 +192,30 @@ export function createSessionsHistoryTool(opts?: {
         required: true,
       });
       const cfg = loadConfig();
+      const gatewayIdentity: GatewayOwnerIdentity | undefined =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? {
+              userId: opts.ownerUserId.trim(),
+              principalId:
+                typeof opts.ownerPrincipalId === "string" && opts.ownerPrincipalId.trim()
+                  ? opts.ownerPrincipalId.trim()
+                  : `user:${opts.ownerUserId.trim()}`,
+              ...(typeof opts.ownerAlias === "string" && opts.ownerAlias.trim()
+                ? { alias: opts.ownerAlias.trim() }
+                : {}),
+            }
+          : undefined;
+      const callGatewayOwned = async <T = Record<string, unknown>>(request: {
+        method: string;
+        params?: unknown;
+        timeoutMs?: number;
+      }) =>
+        await callGateway<T>({
+          method: request.method,
+          params: request.params,
+          timeoutMs: request.timeoutMs,
+          ...(gatewayIdentity ? { identity: gatewayIdentity } : {}),
+        });
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = resolveSandboxSessionToolsVisibility(cfg);
       const requesterInternalKey =
@@ -207,6 +237,7 @@ export function createSessionsHistoryTool(opts?: {
         mainKey,
         requesterInternalKey,
         restrictToSpawned,
+        ownerIdentity: gatewayIdentity,
       });
       if (!resolvedSession.ok) {
         return jsonResult({ status: resolvedSession.status, error: resolvedSession.error });
@@ -219,6 +250,7 @@ export function createSessionsHistoryTool(opts?: {
         const ok = await isSpawnedSessionAllowed({
           requesterSessionKey: requesterInternalKey,
           targetSessionKey: resolvedKey,
+          ownerIdentity: gatewayIdentity,
         });
         if (!ok) {
           return jsonResult({
@@ -253,7 +285,7 @@ export function createSessionsHistoryTool(opts?: {
           ? Math.max(1, Math.floor(params.limit))
           : undefined;
       const includeTools = Boolean(params.includeTools);
-      const result = await callGateway<{ messages: Array<unknown> }>({
+      const result = await callGatewayOwned<{ messages: Array<unknown> }>({
         method: "chat.history",
         params: { sessionKey: resolvedKey, limit },
       });

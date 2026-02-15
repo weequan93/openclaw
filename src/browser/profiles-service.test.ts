@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BrowserRouteContext, BrowserServerState } from "./server-context.js";
 import { resolveBrowserConfig } from "./config.js";
 import { createBrowserProfilesService } from "./profiles-service.js";
@@ -46,6 +46,10 @@ function createCtx(resolved: BrowserServerState["resolved"]) {
 }
 
 describe("BrowserProfilesService", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("allocates next local port for new profiles", async () => {
     const resolved = resolveBrowserConfig({});
     const { ctx, state } = createCtx(resolved);
@@ -82,6 +86,48 @@ describe("BrowserProfilesService", () => {
           profiles: expect.objectContaining({
             remote: expect.objectContaining({
               cdpUrl: "http://10.0.0.42:9222",
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("requires ownerUserId for non-shared profiles in strict multi-user mode", async () => {
+    const resolved = resolveBrowserConfig({});
+    const { ctx } = createCtx(resolved);
+
+    vi.mocked(loadConfig).mockReturnValue({
+      gateway: { multiUser: { mode: "strict" } },
+      browser: { profiles: {} },
+    });
+
+    const service = createBrowserProfilesService(ctx);
+    await expect(service.createProfile({ name: "strict" })).rejects.toThrow(
+      "ownerUserId required",
+    );
+    expect(writeConfigFile).not.toHaveBeenCalled();
+  });
+
+  it("allows shared profiles without ownerUserId in strict multi-user mode", async () => {
+    const resolved = resolveBrowserConfig({});
+    const { ctx } = createCtx(resolved);
+
+    vi.mocked(loadConfig).mockReturnValue({
+      gateway: { multiUser: { mode: "strict" } },
+      browser: { profiles: {} },
+    });
+
+    const service = createBrowserProfilesService(ctx);
+    const result = await service.createProfile({ name: "shared", shared: true });
+
+    expect(result.ok).toBe(true);
+    expect(writeConfigFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        browser: expect.objectContaining({
+          profiles: expect.objectContaining({
+            shared: expect.objectContaining({
+              shared: true,
             }),
           }),
         }),

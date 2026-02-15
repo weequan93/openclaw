@@ -41,6 +41,7 @@ import {
   validateAgentsListParams,
   validateAgentsUpdateParams,
 } from "../protocol/index.js";
+import { isOwnerRestrictedPrincipal } from "../session-owner.js";
 import { listAgentsForGateway } from "../session-utils.js";
 
 const BOOTSTRAP_FILE_NAMES = [
@@ -165,7 +166,7 @@ async function moveToTrashBestEffort(pathname: string): Promise<void> {
 }
 
 export const agentsHandlers: GatewayRequestHandlers = {
-  "agents.list": ({ params, respond }) => {
+  "agents.list": ({ params, respond, owner }) => {
     if (!validateAgentsListParams(params)) {
       respond(
         false,
@@ -179,7 +180,9 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
-    const result = listAgentsForGateway(cfg);
+    const result = listAgentsForGateway(cfg, {
+      ownerUserId: isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined,
+    });
     respond(true, result, undefined);
   },
   "agents.create": async ({ params, respond }) => {
@@ -219,6 +222,25 @@ export const agentsHandlers: GatewayRequestHandlers = {
     }
 
     const workspaceDir = resolveUserPath(String(params.workspace ?? "").trim());
+    const ownerUserId =
+      typeof params.ownerUserId === "string" && params.ownerUserId.trim()
+        ? params.ownerUserId.trim()
+        : undefined;
+    const strictMultiUserMode = cfg.gateway?.multiUser?.mode === "strict";
+    if (strictMultiUserMode && !ownerUserId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "ownerUserId required in strict multi-user mode", {
+          details: {
+            reasonCode: "OWNER_REQUIRED",
+            resource: "agent",
+            agentId,
+          },
+        }),
+      );
+      return;
+    }
 
     // Resolve agentDir against the config we're about to persist (vs the pre-write config),
     // so subsequent resolutions can't disagree about the agent's directory.
@@ -226,6 +248,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
       agentId,
       name: rawName,
       workspace: workspaceDir,
+      ownerUserId,
     });
     const agentDir = resolveAgentDir(nextConfig, agentId);
     nextConfig = applyAgentConfig(nextConfig, { agentId, agentDir });
@@ -287,6 +310,32 @@ export const agentsHandlers: GatewayRequestHandlers = {
 
     const model = resolveOptionalStringParam(params.model);
     const avatar = resolveOptionalStringParam(params.avatar);
+    const ownerUserId =
+      typeof params.ownerUserId === "string" && params.ownerUserId.trim()
+        ? params.ownerUserId.trim()
+        : undefined;
+    const strictMultiUserMode = cfg.gateway?.multiUser?.mode === "strict";
+    const currentEntry = listAgentEntries(cfg).find(
+      (candidate) => normalizeAgentId(candidate.id) === agentId,
+    );
+    const currentOwnerUserId =
+      typeof currentEntry?.ownerUserId === "string" && currentEntry.ownerUserId.trim()
+        ? currentEntry.ownerUserId.trim()
+        : undefined;
+    if (strictMultiUserMode && !ownerUserId && !currentOwnerUserId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "ownerUserId required in strict multi-user mode", {
+          details: {
+            reasonCode: "OWNER_REQUIRED",
+            resource: "agent",
+            agentId,
+          },
+        }),
+      );
+      return;
+    }
 
     const nextConfig = applyAgentConfig(cfg, {
       agentId,
@@ -294,6 +343,7 @@ export const agentsHandlers: GatewayRequestHandlers = {
         ? { name: params.name.trim() }
         : {}),
       ...(workspaceDir ? { workspace: workspaceDir } : {}),
+      ...(ownerUserId ? { ownerUserId } : {}),
       ...(model ? { model } : {}),
     });
 

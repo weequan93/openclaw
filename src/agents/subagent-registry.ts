@@ -2,7 +2,11 @@ import { loadConfig } from "../config/config.js";
 import { callGateway } from "../gateway/call.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { type DeliveryContext, normalizeDeliveryContext } from "../utils/delivery-context.js";
-import { runSubagentAnnounceFlow, type SubagentRunOutcome } from "./subagent-announce.js";
+import {
+  runSubagentAnnounceFlow,
+  type SubagentOwnerIdentity,
+  type SubagentRunOutcome,
+} from "./subagent-announce.js";
 import {
   loadSubagentRegistryFromDisk,
   saveSubagentRegistryToDisk,
@@ -25,6 +29,7 @@ export type SubagentRunRecord = {
   archiveAtMs?: number;
   cleanupCompletedAt?: number;
   cleanupHandled?: boolean;
+  ownerIdentity?: SubagentOwnerIdentity;
 };
 
 const subagentRuns = new Map<string, SubagentRunRecord>();
@@ -76,6 +81,7 @@ function resumeSubagentRun(runId: string) {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      ownerIdentity: entry.ownerIdentity,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
     });
@@ -171,6 +177,7 @@ async function sweepSubagentRuns() {
         method: "sessions.delete",
         params: { key: entry.childSessionKey, deleteTranscript: true },
         timeoutMs: 10_000,
+        ...(entry.ownerIdentity ? { identity: entry.ownerIdentity } : {}),
       });
     } catch {
       // ignore
@@ -237,6 +244,7 @@ function ensureListener() {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      ownerIdentity: entry.ownerIdentity,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(evt.runId, entry.cleanup, didAnnounce);
     });
@@ -289,6 +297,7 @@ export function registerSubagentRun(params: {
   cleanup: "delete" | "keep";
   label?: string;
   runTimeoutSeconds?: number;
+  ownerIdentity?: SubagentOwnerIdentity;
 }) {
   const now = Date.now();
   const cfg = loadConfig();
@@ -309,6 +318,7 @@ export function registerSubagentRun(params: {
     startedAt: now,
     archiveAtMs,
     cleanupHandled: false,
+    ownerIdentity: params.ownerIdentity,
   });
   ensureListener();
   persistSubagentRuns();
@@ -323,6 +333,7 @@ export function registerSubagentRun(params: {
 async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
   try {
     const timeoutMs = Math.max(1, Math.floor(waitTimeoutMs));
+    const entryForWait = subagentRuns.get(runId);
     const wait = await callGateway<{
       status?: string;
       startedAt?: number;
@@ -335,6 +346,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
         timeoutMs,
       },
       timeoutMs: timeoutMs + 10_000,
+      ...(entryForWait?.ownerIdentity ? { identity: entryForWait.ownerIdentity } : {}),
     });
     if (wait?.status !== "ok" && wait?.status !== "error") {
       return;
@@ -381,6 +393,7 @@ async function waitForSubagentCompletion(runId: string, waitTimeoutMs: number) {
       endedAt: entry.endedAt,
       label: entry.label,
       outcome: entry.outcome,
+      ownerIdentity: entry.ownerIdentity,
     }).then((didAnnounce) => {
       finalizeSubagentCleanup(runId, entry.cleanup, didAnnounce);
     });

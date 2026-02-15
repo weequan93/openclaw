@@ -7,6 +7,7 @@ import {
   errorShape,
   type SessionsResolveParams,
 } from "./protocol/index.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import {
   listSessionsFromStore,
   loadCombinedSessionStoreForGateway,
@@ -15,11 +16,34 @@ import {
 
 export type SessionsResolveResult = { ok: true; key: string } | { ok: false; error: ErrorShape };
 
+function canResolveSessionForOwner(params: {
+  cfg: OpenClawConfig;
+  requesterUserId: string;
+  sessionOwnerUserId?: string;
+}): boolean {
+  const sessionOwnerUserId =
+    typeof params.sessionOwnerUserId === "string" ? params.sessionOwnerUserId.trim() : "";
+  if (!sessionOwnerUserId) {
+    return false;
+  }
+  if (sessionOwnerUserId === params.requesterUserId) {
+    return true;
+  }
+  return hasGatewayDelegatedAccess({
+    cfg: params.cfg,
+    fromUserId: params.requesterUserId,
+    ownerUserId: sessionOwnerUserId,
+    resource: "sessions",
+  });
+}
+
 export function resolveSessionKeyFromResolveParams(params: {
   cfg: OpenClawConfig;
   p: SessionsResolveParams;
+  ownerUserId?: string;
 }): SessionsResolveResult {
   const { cfg, p } = params;
+  const ownerUserId = typeof params.ownerUserId === "string" ? params.ownerUserId.trim() : "";
 
   const key = typeof p.key === "string" ? p.key.trim() : "";
   const hasKey = key.length > 0;
@@ -53,6 +77,21 @@ export function resolveSessionKeyFromResolveParams(params: {
         error: errorShape(ErrorCodes.INVALID_REQUEST, `No session found: ${key}`),
       };
     }
+    if (ownerUserId) {
+      const ownedEntry = store[existingKey];
+      if (
+        !canResolveSessionForOwner({
+          cfg,
+          requesterUserId: ownerUserId,
+          sessionOwnerUserId: ownedEntry?.ownerUserId,
+        })
+      ) {
+        return {
+          ok: false,
+          error: errorShape(ErrorCodes.INVALID_REQUEST, `No session found: ${key}`),
+        };
+      }
+    }
     return { ok: true, key: target.canonicalKey };
   }
 
@@ -71,9 +110,18 @@ export function resolveSessionKeyFromResolveParams(params: {
         limit: 8,
       },
     });
-    const matches = list.sessions.filter(
-      (session) => session.sessionId === sessionId || session.key === sessionId,
-    );
+    const matches = list.sessions
+      .filter((session) => session.sessionId === sessionId || session.key === sessionId)
+      .filter((session) => {
+        if (!ownerUserId) {
+          return true;
+        }
+        return canResolveSessionForOwner({
+          cfg,
+          requesterUserId: ownerUserId,
+          sessionOwnerUserId: session.ownerUserId,
+        });
+      });
     if (matches.length === 0) {
       return {
         ok: false,
@@ -115,7 +163,17 @@ export function resolveSessionKeyFromResolveParams(params: {
       limit: 2,
     },
   });
-  if (list.sessions.length === 0) {
+  const ownerFilteredSessions = list.sessions.filter((session) => {
+    if (!ownerUserId) {
+      return true;
+    }
+    return canResolveSessionForOwner({
+      cfg,
+      requesterUserId: ownerUserId,
+      sessionOwnerUserId: session.ownerUserId,
+    });
+  });
+  if (ownerFilteredSessions.length === 0) {
     return {
       ok: false,
       error: errorShape(
@@ -124,8 +182,8 @@ export function resolveSessionKeyFromResolveParams(params: {
       ),
     };
   }
-  if (list.sessions.length > 1) {
-    const keys = list.sessions.map((s) => s.key).join(", ");
+  if (ownerFilteredSessions.length > 1) {
+    const keys = ownerFilteredSessions.map((s) => s.key).join(", ");
     return {
       ok: false,
       error: errorShape(
@@ -135,5 +193,5 @@ export function resolveSessionKeyFromResolveParams(params: {
     };
   }
 
-  return { ok: true, key: String(list.sessions[0]?.key ?? "") };
+  return { ok: true, key: String(ownerFilteredSessions[0]?.key ?? "") };
 }

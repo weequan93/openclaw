@@ -34,6 +34,7 @@ export type GatewayHelloOk = {
     deviceToken?: string;
     role?: string;
     scopes?: string[];
+    principalRole?: string;
     issuedAtMs?: number;
   };
   policy?: { tickIntervalMs?: number };

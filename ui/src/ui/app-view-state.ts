@@ -14,18 +14,26 @@ import type {
   AgentsFilesListResult,
   AgentIdentityResult,
   ChannelsStatusSnapshot,
+  ConfigPolicyBundle,
+  ConfigPolicyBundleId,
   ConfigSnapshot,
+  ConfigSnapshotIssue,
   ConfigUiHints,
   CronJob,
   CronRunLogEntry,
   CronStatus,
   HealthSnapshot,
+  AuthzDeniedEvent,
+  AuthzDeniedSummary,
+  OwnershipBackfillResult,
+  OwnershipGapsResult,
   LogEntry,
   LogLevel,
   NostrProfile,
   PresenceEntry,
   SessionsUsageResult,
   CostUsageSummary,
+  ConfigChangeEvent,
   SessionUsageTimeSeries,
   SessionsListResult,
   SkillStatusReport,
@@ -206,6 +214,59 @@ export type AppViewState = {
   debugCallParams: string;
   debugCallResult: string | null;
   debugCallError: string | null;
+  securityLoading: boolean;
+  securityDeniedEvents: AuthzDeniedEvent[];
+  securityDeniedSummary: AuthzDeniedSummary | null;
+  securityDeniedError: string | null;
+  securityDeniedSummaryError: string | null;
+  securityConfigChanges: ConfigChangeEvent[];
+  securityConfigChangesError: string | null;
+  securityConfigWarnings: ConfigSnapshotIssue[];
+  securityConfigWarningsError: string | null;
+  securityIdentityRoleWarnings: Array<{
+    principalId: string;
+    path: string;
+    message: string;
+  }>;
+  securityOwnershipGaps: OwnershipGapsResult | null;
+  securityOwnershipGapsError: string | null;
+  securityNextCursor: string | null;
+  securityHasMore: boolean;
+  securityPinnedHistory: boolean;
+  securityPreset: string | null;
+  securityTimePreset: string | null;
+  securityOrder: "desc" | "asc";
+  securityLimit: string;
+  securityAlertThreshold: string;
+  securityFilterMethod: string;
+  securityFilterReasonCode: string;
+  securityFilterErrorCode: string;
+  securityFilterUserId: string;
+  securityFilterPrincipalId: string;
+  securityFilterActorRole: string;
+  securityFilterSourceRole: string;
+  securityFilterClientId: string;
+  securityFilterClientMode: string;
+  securityFilterSourceIp: string;
+  securityFilterSinceTs: string;
+  securityFilterUntilTs: string;
+  securityBackfillBusy: boolean;
+  securityBackfillOwnerUserId: string;
+  securityBackfillOwnerPrincipalId: string;
+  securityBackfillResources: string;
+  securityBackfillConfirmText: string;
+  securityBackfillResult: OwnershipBackfillResult | null;
+  securityBackfillError: string | null;
+  securityPolicyBundles: ConfigPolicyBundle[];
+  securityPolicyBundlesLoading: boolean;
+  securityPolicyBundlesError: string | null;
+  securityPolicyBundleSelectedId: ConfigPolicyBundleId | "";
+  securityPolicyBundleResolved: ConfigPolicyBundle | null;
+  securityPolicyBundleResolveLoading: boolean;
+  securityPolicyBundleResolveError: string | null;
+  securityPolicyBundleApplyBusy: boolean;
+  securityPolicyBundleApplyError: string | null;
+  securityPolicyBundleApplyMessage: string | null;
   logsLoading: boolean;
   logsError: string | null;
   logsFile: string | null;

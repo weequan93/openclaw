@@ -1,9 +1,10 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import "./test-helpers/fast-core-tools.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
+import { createGatewayTool } from "./tools/gateway-tool.js";
 
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: vi.fn(async (method: string) => {
@@ -15,6 +16,11 @@ vi.mock("./tools/gateway.js", () => ({
 }));
 
 describe("gateway tool", () => {
+  beforeEach(async () => {
+    const { callGatewayTool } = await import("./tools/gateway.js");
+    vi.mocked(callGatewayTool).mockClear();
+  });
+
   it("schedules SIGUSR1 restart", async () => {
     vi.useFakeTimers();
     const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
@@ -89,7 +95,12 @@ describe("gateway tool", () => {
       raw,
     });
 
-    expect(callGatewayTool).toHaveBeenCalledWith("config.get", expect.any(Object), {});
+    expect(callGatewayTool).toHaveBeenCalledWith(
+      "config.get",
+      expect.any(Object),
+      {},
+      expect.objectContaining({ allowAdmin: true }),
+    );
     expect(callGatewayTool).toHaveBeenCalledWith(
       "config.apply",
       expect.any(Object),
@@ -98,6 +109,7 @@ describe("gateway tool", () => {
         baseHash: "hash-1",
         sessionKey: "agent:main:whatsapp:dm:+15555550123",
       }),
+      expect.objectContaining({ allowAdmin: true }),
     );
   });
 
@@ -117,7 +129,12 @@ describe("gateway tool", () => {
       raw,
     });
 
-    expect(callGatewayTool).toHaveBeenCalledWith("config.get", expect.any(Object), {});
+    expect(callGatewayTool).toHaveBeenCalledWith(
+      "config.get",
+      expect.any(Object),
+      {},
+      expect.objectContaining({ allowAdmin: true }),
+    );
     expect(callGatewayTool).toHaveBeenCalledWith(
       "config.patch",
       expect.any(Object),
@@ -126,6 +143,7 @@ describe("gateway tool", () => {
         baseHash: "hash-1",
         sessionKey: "agent:main:whatsapp:dm:+15555550123",
       }),
+      expect.objectContaining({ allowAdmin: true }),
     );
   });
 
@@ -151,6 +169,7 @@ describe("gateway tool", () => {
         note: "test update",
         sessionKey: "agent:main:whatsapp:dm:+15555550123",
       }),
+      expect.objectContaining({ allowAdmin: true }),
     );
     const updateCall = vi
       .mocked(callGatewayTool)
@@ -161,5 +180,63 @@ describe("gateway tool", () => {
       expect(opts).toMatchObject({ timeoutMs: 20 * 60_000 });
       expect(params).toMatchObject({ timeoutMs: 20 * 60_000 });
     }
+  });
+
+  it("hides gateway tool for non-admin owner-bound runs in multi-user mode", () => {
+    const tools = createOpenClawTools({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "user-1",
+      ownerRole: "user",
+    });
+    expect(tools.some((candidate) => candidate.name === "gateway")).toBe(false);
+    expect(tools.some((candidate) => candidate.name === "cron")).toBe(false);
+  });
+
+  it("denies direct gateway tool execution for non-admin owner-bound runs", async () => {
+    const { callGatewayTool } = await import("./tools/gateway.js");
+    const tool = createGatewayTool({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "user-1",
+      ownerRole: "user",
+    });
+    await expect(
+      tool.execute("call-user-denied", {
+        action: "config.get",
+      }),
+    ).rejects.toThrow("admin-only");
+    expect(callGatewayTool).not.toHaveBeenCalled();
+  });
+
+  it("allows admin owner-bound runs in multi-user mode", async () => {
+    const { callGatewayTool } = await import("./tools/gateway.js");
+    const tool = createOpenClawTools({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "admin-1",
+      ownerRole: "admin",
+    }).find((candidate) => candidate.name === "gateway");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing gateway tool");
+    }
+
+    await tool.execute("call-admin-allowed", {
+      action: "config.get",
+    });
+    expect(callGatewayTool).toHaveBeenCalledWith(
+      "config.get",
+      expect.any(Object),
+      {},
+      expect.objectContaining({ allowAdmin: true }),
+    );
+  });
+
+  it("keeps cron and gateway tools visible for admin owner-bound runs", () => {
+    const tools = createOpenClawTools({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "admin-1",
+      ownerRole: "admin",
+    });
+    expect(tools.some((candidate) => candidate.name === "gateway")).toBe(true);
+    expect(tools.some((candidate) => candidate.name === "cron")).toBe(true);
   });
 });

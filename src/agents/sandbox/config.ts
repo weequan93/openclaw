@@ -7,6 +7,7 @@ import type {
   SandboxScope,
 } from "./types.js";
 import { resolveAgentConfig } from "../agent-scope.js";
+import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
 import {
   DEFAULT_SANDBOX_BROWSER_AUTOSTART_TIMEOUT_MS,
   DEFAULT_SANDBOX_BROWSER_CDP_PORT,
@@ -136,10 +137,14 @@ export function resolveSandboxConfigForAgent(
     agentSandbox = agentConfig.sandbox;
   }
 
-  const scope = resolveSandboxScope({
+  const rawScope = resolveSandboxScope({
     scope: agentSandbox?.scope ?? agent?.scope,
     perSession: agentSandbox?.perSession ?? agent?.perSession,
   });
+  // Shared sandbox containers mix ownership contexts. In multi-user modes,
+  // default to agent-scoped isolation even when legacy configs still set shared.
+  const scope =
+    resolveGatewayMultiUserMode(cfg) !== "off" && rawScope === "shared" ? "agent" : rawScope;
 
   const toolPolicy = resolveSandboxToolPolicyForAgent(cfg, agentId);
 

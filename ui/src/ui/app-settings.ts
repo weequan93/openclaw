@@ -6,6 +6,8 @@ import {
   stopLogsPolling,
   startDebugPolling,
   stopDebugPolling,
+  startSecurityPolling,
+  stopSecurityPolling,
 } from "./app-polling.ts";
 import { scheduleChatScroll, scheduleLogsScroll } from "./app-scroll.ts";
 import { loadAgentIdentities, loadAgentIdentity } from "./controllers/agent-identity.ts";
@@ -20,6 +22,7 @@ import { loadExecApprovals } from "./controllers/exec-approvals.ts";
 import { loadLogs } from "./controllers/logs.ts";
 import { loadNodes } from "./controllers/nodes.ts";
 import { loadPresence } from "./controllers/presence.ts";
+import { loadSecurity } from "./controllers/security.ts";
 import { loadSessions } from "./controllers/sessions.ts";
 import { loadSkills } from "./controllers/skills.ts";
 import {
@@ -48,13 +51,48 @@ type SettingsHost = {
   eventLog: unknown[];
   eventLogBuffer: unknown[];
   basePath: string;
+  securityPollInterval: ReturnType<typeof setInterval> | null;
   agentsList?: AgentsListResult | null;
   agentsSelectedId?: string | null;
   agentsPanel?: "overview" | "files" | "tools" | "skills" | "channels" | "cron";
   themeMedia: MediaQueryList | null;
   themeMediaHandler: ((event: MediaQueryListEvent) => void) | null;
   pendingGatewayUrl?: string | null;
+  hello?: {
+    auth?: {
+      role?: string;
+      principalRole?: string;
+      scopes?: string[];
+    } | null;
+  } | null;
 };
+
+function canManageControlConfig(host: SettingsHost): boolean {
+  const auth = host.hello?.auth;
+  // Backward compatibility for older hello payloads or disconnected state.
+  if (!auth) {
+    return true;
+  }
+  const principalRole =
+    typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
+  if (principalRole.length > 0) {
+    return principalRole === "admin";
+  }
+  const role = typeof auth.role === "string" ? auth.role.trim() : "";
+  const scopes = Array.isArray(auth.scopes)
+    ? auth.scopes.filter((scope): scope is string => typeof scope === "string")
+    : [];
+  return role === "admin" || scopes.includes("operator.admin");
+}
+
+const ADMIN_ONLY_TABS = new Set<Tab>(["security", "config", "debug", "logs"]);
+
+function resolveAccessibleTab(host: SettingsHost, next: Tab): Tab {
+  if (ADMIN_ONLY_TABS.has(next) && !canManageControlConfig(host)) {
+    return "chat";
+  }
+  return next;
+}
 
 export function applySettings(host: SettingsHost, next: UiSettings) {
   const normalized = {
@@ -147,24 +185,30 @@ export function applySettingsFromUrl(host: SettingsHost) {
 }
 
 export function setTab(host: SettingsHost, next: Tab) {
-  if (host.tab !== next) {
-    host.tab = next;
+  const resolved = resolveAccessibleTab(host, next);
+  if (host.tab !== resolved) {
+    host.tab = resolved;
   }
-  if (next === "chat") {
+  if (resolved === "chat") {
     host.chatHasAutoScrolled = false;
   }
-  if (next === "logs") {
+  if (resolved === "logs") {
     startLogsPolling(host as unknown as Parameters<typeof startLogsPolling>[0]);
   } else {
     stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
   }
-  if (next === "debug") {
+  if (resolved === "debug") {
     startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
   } else {
     stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
   }
+  if (resolved === "security") {
+    startSecurityPolling(host as unknown as Parameters<typeof startSecurityPolling>[0]);
+  } else {
+    stopSecurityPolling(host as unknown as Parameters<typeof stopSecurityPolling>[0]);
+  }
   void refreshActiveTab(host);
-  syncUrlWithTab(host, next, false);
+  syncUrlWithTab(host, resolved, false);
 }
 
 export function setTheme(host: SettingsHost, next: ThemeMode, context?: ThemeTransitionContext) {
@@ -182,6 +226,9 @@ export function setTheme(host: SettingsHost, next: ThemeMode, context?: ThemeTra
 }
 
 export async function refreshActiveTab(host: SettingsHost) {
+  if (ADMIN_ONLY_TABS.has(host.tab) && !canManageControlConfig(host)) {
+    return;
+  }
   if (host.tab === "overview") {
     await loadOverview(host);
   }
@@ -202,7 +249,9 @@ export async function refreshActiveTab(host: SettingsHost) {
   }
   if (host.tab === "agents") {
     await loadAgents(host as unknown as OpenClawApp);
-    await loadConfig(host as unknown as OpenClawApp);
+    if (canManageControlConfig(host)) {
+      await loadConfig(host as unknown as OpenClawApp);
+    }
     const agentIds = host.agentsList?.agents?.map((entry) => entry.id) ?? [];
     if (agentIds.length > 0) {
       void loadAgentIdentities(host as unknown as OpenClawApp, agentIds);
@@ -225,8 +274,10 @@ export async function refreshActiveTab(host: SettingsHost) {
   if (host.tab === "nodes") {
     await loadNodes(host as unknown as OpenClawApp);
     await loadDevices(host as unknown as OpenClawApp);
-    await loadConfig(host as unknown as OpenClawApp);
-    await loadExecApprovals(host as unknown as OpenClawApp);
+    if (canManageControlConfig(host)) {
+      await loadConfig(host as unknown as OpenClawApp);
+      await loadExecApprovals(host as unknown as OpenClawApp);
+    }
   }
   if (host.tab === "chat") {
     await refreshChat(host as unknown as Parameters<typeof refreshChat>[0]);
@@ -236,12 +287,18 @@ export async function refreshActiveTab(host: SettingsHost) {
     );
   }
   if (host.tab === "config") {
+    if (!canManageControlConfig(host)) {
+      return;
+    }
     await loadConfigSchema(host as unknown as OpenClawApp);
     await loadConfig(host as unknown as OpenClawApp);
   }
   if (host.tab === "debug") {
     await loadDebug(host as unknown as OpenClawApp);
     host.eventLog = host.eventLogBuffer;
+  }
+  if (host.tab === "security") {
+    await loadSecurity(host as unknown as OpenClawApp);
   }
   if (host.tab === "logs") {
     host.logsAtBottom = true;
@@ -318,8 +375,9 @@ export function syncTabWithLocation(host: SettingsHost, replace: boolean) {
     return;
   }
   const resolved = tabFromPath(window.location.pathname, host.basePath) ?? "chat";
-  setTabFromRoute(host, resolved);
-  syncUrlWithTab(host, resolved, replace);
+  const accessible = resolveAccessibleTab(host, resolved);
+  setTabFromRoute(host, accessible);
+  syncUrlWithTab(host, accessible, replace);
 }
 
 export function onPopState(host: SettingsHost) {
@@ -342,25 +400,31 @@ export function onPopState(host: SettingsHost) {
     });
   }
 
-  setTabFromRoute(host, resolved);
+  setTabFromRoute(host, resolveAccessibleTab(host, resolved));
 }
 
 export function setTabFromRoute(host: SettingsHost, next: Tab) {
-  if (host.tab !== next) {
-    host.tab = next;
+  const resolved = resolveAccessibleTab(host, next);
+  if (host.tab !== resolved) {
+    host.tab = resolved;
   }
-  if (next === "chat") {
+  if (resolved === "chat") {
     host.chatHasAutoScrolled = false;
   }
-  if (next === "logs") {
+  if (resolved === "logs") {
     startLogsPolling(host as unknown as Parameters<typeof startLogsPolling>[0]);
   } else {
     stopLogsPolling(host as unknown as Parameters<typeof stopLogsPolling>[0]);
   }
-  if (next === "debug") {
+  if (resolved === "debug") {
     startDebugPolling(host as unknown as Parameters<typeof startDebugPolling>[0]);
   } else {
     stopDebugPolling(host as unknown as Parameters<typeof stopDebugPolling>[0]);
+  }
+  if (resolved === "security") {
+    startSecurityPolling(host as unknown as Parameters<typeof startSecurityPolling>[0]);
+  } else {
+    stopSecurityPolling(host as unknown as Parameters<typeof stopSecurityPolling>[0]);
   }
   if (host.connected) {
     void refreshActiveTab(host);
@@ -406,16 +470,23 @@ export function syncUrlWithSessionKey(host: SettingsHost, sessionKey: string, re
 }
 
 export async function loadOverview(host: SettingsHost) {
-  await Promise.all([
+  const tasks: Array<Promise<unknown>> = [
     loadChannels(host as unknown as OpenClawApp, false),
     loadPresence(host as unknown as OpenClawApp),
     loadSessions(host as unknown as OpenClawApp),
     loadCronStatus(host as unknown as OpenClawApp),
-    loadDebug(host as unknown as OpenClawApp),
-  ]);
+  ];
+  if (canManageControlConfig(host)) {
+    tasks.push(loadDebug(host as unknown as OpenClawApp));
+  }
+  await Promise.all(tasks);
 }
 
 export async function loadChannelsTab(host: SettingsHost) {
+  if (!canManageControlConfig(host)) {
+    await loadChannels(host as unknown as OpenClawApp, true);
+    return;
+  }
   await Promise.all([
     loadChannels(host as unknown as OpenClawApp, true),
     loadConfigSchema(host as unknown as OpenClawApp),

@@ -4,11 +4,18 @@ const loadConfig = vi.fn();
 const resolveGatewayPort = vi.fn();
 const pickPrimaryTailnetIPv4 = vi.fn();
 const pickPrimaryLanIPv4 = vi.fn();
+const loadOrCreateDeviceIdentity = vi.fn(() => ({
+  deviceId: "test-device",
+  publicKeyPem: "public",
+  privateKeyPem: "private",
+}));
 
 let lastClientOptions: {
   url?: string;
   token?: string;
   password?: string;
+  scopes?: string[];
+  identity?: { userId: string; principalId: string; alias?: string };
   onHelloOk?: () => void | Promise<void>;
   onClose?: (code: number, reason: string) => void;
 } | null = null;
@@ -34,6 +41,10 @@ vi.mock("./net.js", () => ({
   pickPrimaryLanIPv4,
 }));
 
+vi.mock("../infra/device-identity.js", () => ({
+  loadOrCreateDeviceIdentity,
+}));
+
 vi.mock("./client.js", () => ({
   describeGatewayCloseCode: (code: number) => {
     if (code === 1000) {
@@ -49,6 +60,8 @@ vi.mock("./client.js", () => ({
       url?: string;
       token?: string;
       password?: string;
+      scopes?: string[];
+      identity?: { userId: string; principalId: string; alias?: string };
       onHelloOk?: () => void | Promise<void>;
       onClose?: (code: number, reason: string) => void;
     }) {
@@ -328,6 +341,29 @@ describe("callGateway error details", () => {
       }),
     ).rejects.toThrow("gateway remote mode misconfigured");
   });
+
+  it("passes connect identity through to GatewayClient", async () => {
+    loadConfig.mockReturnValue({
+      gateway: { mode: "local", bind: "loopback" },
+    });
+    resolveGatewayPort.mockReturnValue(18789);
+    pickPrimaryTailnetIPv4.mockReturnValue(undefined);
+
+    await callGateway({
+      method: "health",
+      identity: {
+        userId: "user-1",
+        principalId: "principal:user-1",
+        alias: "alice",
+      },
+    });
+
+    expect(lastClientOptions?.identity).toEqual({
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    });
+  });
 });
 
 describe("callGateway url override auth requirements", () => {
@@ -508,5 +544,93 @@ describe("callGateway token resolution", () => {
     });
 
     expect(lastClientOptions?.token).toBe("explicit-token");
+  });
+});
+
+describe("callGateway scope resolution", () => {
+  beforeEach(() => {
+    loadConfig.mockReset();
+    resolveGatewayPort.mockReset();
+    pickPrimaryTailnetIPv4.mockReset();
+    pickPrimaryLanIPv4.mockReset();
+    lastClientOptions = null;
+    startMode = "hello";
+    closeCode = 1006;
+    closeReason = "";
+    resolveGatewayPort.mockReturnValue(18789);
+    pickPrimaryTailnetIPv4.mockReturnValue(undefined);
+    loadConfig.mockReturnValue({
+      gateway: {
+        mode: "local",
+      },
+    });
+  });
+
+  it("uses read scope for read methods", async () => {
+    await callGateway({ method: "health" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.read"]);
+  });
+
+  it("uses write scope for write methods", async () => {
+    await callGateway({ method: "send" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.write"]);
+
+    await callGateway({ method: "sessions.patch" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.write"]);
+
+    await callGateway({ method: "sessions.reset" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.write"]);
+
+    await callGateway({ method: "sessions.delete" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.write"]);
+
+    await callGateway({ method: "sessions.compact" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.write"]);
+  });
+
+  it("uses pairing scope for pairing methods", async () => {
+    await callGateway({ method: "node.pair.list" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.pairing"]);
+  });
+
+  it("uses approvals scope for approval methods", async () => {
+    await callGateway({ method: "exec.approval.resolve" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.approvals"]);
+  });
+
+  it("falls back to admin scope for admin-only methods", async () => {
+    await callGateway({ method: "config.apply" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+  });
+
+  it("uses admin scope for ownership and authz audit methods", async () => {
+    await callGateway({ method: "ownership.gaps" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "ownership.backfill" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "authz.denied.list" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "authz.denied.summary" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "config.changes.list" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "config.policyBundles.list" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "config.policyBundle.resolve" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "config.policyBundle.apply" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+  });
+
+  it("preserves explicit scopes override", async () => {
+    await callGateway({ method: "health", scopes: ["operator.admin", "operator.admin"] });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
   });
 });

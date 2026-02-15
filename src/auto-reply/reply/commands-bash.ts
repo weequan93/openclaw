@@ -1,6 +1,7 @@
 import type { CommandHandler } from "./commands-types.js";
 import { logVerbose } from "../../globals.js";
 import { handleBashChatCommand } from "./bash-command.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 export const handleBashCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
@@ -15,6 +16,13 @@ export const handleBashCommand: CommandHandler = async (params, allowTextCommand
   }
   if (!command.isAuthorizedSender) {
     logVerbose(`Ignoring /bash from unauthorized sender: ${command.senderId || "<unknown>"}`);
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command,
+      method: "command.bash",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/bash denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   const reply = await handleBashChatCommand({

@@ -122,6 +122,8 @@ export async function ensureSkillSnapshot(params: {
   cfg: OpenClawConfig;
   /** If provided, only load skills with these names (for per-channel skill filtering) */
   skillFilter?: string[];
+  viewerUserId?: string;
+  viewerRole?: string;
 }): Promise<{
   sessionEntry?: SessionEntry;
   skillsSnapshot?: SessionEntry["skillsSnapshot"];
@@ -144,6 +146,14 @@ export async function ensureSkillSnapshot(params: {
   const remoteEligibility = getRemoteSkillEligibility();
   const snapshotVersion = getSkillsSnapshotVersion(workspaceDir);
   ensureSkillsWatcher({ workspaceDir, config: cfg });
+  const resolveViewerUserId = (entry?: SessionEntry): string | undefined => {
+    const explicit = typeof params.viewerUserId === "string" ? params.viewerUserId.trim() : "";
+    if (explicit) {
+      return explicit;
+    }
+    const fromEntry = typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : "";
+    return fromEntry || undefined;
+  };
   const shouldRefreshSnapshot =
     snapshotVersion > 0 && (nextEntry?.skillsSnapshot?.version ?? 0) < snapshotVersion;
 
@@ -160,6 +170,10 @@ export async function ensureSkillSnapshot(params: {
             skillFilter,
             eligibility: { remote: remoteEligibility },
             snapshotVersion,
+            viewer: {
+              userId: resolveViewerUserId(current),
+              role: params.viewerRole,
+            },
           })
         : current.skillsSnapshot;
     nextEntry = {
@@ -184,6 +198,10 @@ export async function ensureSkillSnapshot(params: {
         skillFilter,
         eligibility: { remote: remoteEligibility },
         snapshotVersion,
+        viewer: {
+          userId: resolveViewerUserId(nextEntry),
+          role: params.viewerRole,
+        },
       })
     : (nextEntry?.skillsSnapshot ??
       (isFirstTurnInSession
@@ -193,6 +211,10 @@ export async function ensureSkillSnapshot(params: {
             skillFilter,
             eligibility: { remote: remoteEligibility },
             snapshotVersion,
+            viewer: {
+              userId: resolveViewerUserId(nextEntry),
+              role: params.viewerRole,
+            },
           })));
   if (
     skillsSnapshot &&

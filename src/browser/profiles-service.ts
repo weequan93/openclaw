@@ -21,6 +21,8 @@ export type CreateProfileParams = {
   color?: string;
   cdpUrl?: string;
   driver?: "openclaw" | "extension";
+  shared?: boolean;
+  ownerUserId?: string;
 };
 
 export type CreateProfileResult = {
@@ -49,6 +51,8 @@ export function createBrowserProfilesService(ctx: BrowserRouteContext) {
     const name = params.name.trim();
     const rawCdpUrl = params.cdpUrl?.trim() || undefined;
     const driver = params.driver === "extension" ? "extension" : undefined;
+    const ownerUserId = params.ownerUserId?.trim() || undefined;
+    const shared = params.shared === true;
 
     if (!isValidProfileName(name)) {
       throw new Error("invalid profile name: use lowercase letters, numbers, and hyphens only");
@@ -65,6 +69,10 @@ export function createBrowserProfilesService(ctx: BrowserRouteContext) {
     if (name in rawProfiles) {
       throw new Error(`profile "${name}" already exists`);
     }
+    const strictMultiUserMode = cfg.gateway?.multiUser?.mode === "strict";
+    if (strictMultiUserMode && !shared && !ownerUserId) {
+      throw new Error("ownerUserId required for non-shared profiles in strict multi-user mode");
+    }
 
     const usedColors = getUsedColors(resolvedProfiles);
     const profileColor =
@@ -77,6 +85,8 @@ export function createBrowserProfilesService(ctx: BrowserRouteContext) {
         cdpUrl: parsed.normalized,
         ...(driver ? { driver } : {}),
         color: profileColor,
+        ...(shared ? { shared: true } : {}),
+        ...(ownerUserId ? { ownerUserId } : {}),
       };
     } else {
       const usedPorts = getUsedPorts(resolvedProfiles);
@@ -89,6 +99,8 @@ export function createBrowserProfilesService(ctx: BrowserRouteContext) {
         cdpPort,
         ...(driver ? { driver } : {}),
         color: profileColor,
+        ...(shared ? { shared: true } : {}),
+        ...(ownerUserId ? { ownerUserId } : {}),
       };
     }
 

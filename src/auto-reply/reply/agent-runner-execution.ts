@@ -35,6 +35,7 @@ import { stripHeartbeatToken } from "../heartbeat.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../tokens.js";
 import { buildThreadingToolContext, resolveEnforceFinalTag } from "./agent-runner-utils.js";
 import { createBlockReplyPayloadKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 import { parseReplyDirectives } from "./reply-directives.js";
 import { applyReplyTagsToPayload, isRenderablePayload } from "./reply-payloads.js";
 
@@ -255,6 +256,7 @@ export async function runAgentTurnWithFallback(params: {
             provider === params.followupRun.run.provider
               ? params.followupRun.run.authProfileId
               : undefined;
+          const activeSessionEntry = params.getActiveSessionEntry();
           return runEmbeddedPiAgent({
             sessionId: params.followupRun.run.sessionId,
             sessionKey: params.sessionKey,
@@ -282,6 +284,9 @@ export async function runAgentTurnWithFallback(params: {
             agentDir: params.followupRun.run.agentDir,
             config: params.followupRun.run.config,
             skillsSnapshot: params.followupRun.run.skillsSnapshot,
+            ownerUserId: activeSessionEntry?.ownerUserId,
+            ownerPrincipalId: activeSessionEntry?.ownerPrincipalId,
+            ownerRole: resolveGatewayOwnerRoleFromContext(params.sessionCtx),
             prompt: params.commandBody,
             extraSystemPrompt: params.followupRun.run.extraSystemPrompt,
             ownerNumbers: params.followupRun.run.ownerNumbers,

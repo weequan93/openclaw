@@ -21,6 +21,11 @@ import {
   type SessionFileEntry,
 } from "./session-files.js";
 import { requireNodeSqlite } from "./sqlite.js";
+import {
+  normalizeOwnerUserId,
+  resolveOwnedSessionFilesForAgent,
+  resolveOwnerPartitionedDirectory,
+} from "./owner-partition.js";
 
 type SqliteDatabase = import("node:sqlite").DatabaseSync;
 import type { ResolvedMemoryBackendConfig, ResolvedQmdConfig } from "./backend-config.js";
@@ -66,6 +71,7 @@ export class QmdMemoryManager implements MemorySearchManager {
 
   private readonly cfg: OpenClawConfig;
   private readonly agentId: string;
+  private readonly ownerUserId?: string;
   private readonly qmd: ResolvedQmdConfig;
   private readonly workspaceDir: string;
   private readonly stateDir: string;
@@ -99,9 +105,11 @@ export class QmdMemoryManager implements MemorySearchManager {
     this.cfg = params.cfg;
     this.agentId = params.agentId;
     this.qmd = params.resolved;
+    this.ownerUserId = normalizeOwnerUserId(this.qmd.ownerUserId);
     this.workspaceDir = resolveAgentWorkspaceDir(params.cfg, params.agentId);
     this.stateDir = resolveStateDir(process.env, os.homedir);
-    this.agentStateDir = path.join(this.stateDir, "agents", this.agentId);
+    const baseAgentStateDir = path.join(this.stateDir, "agents", this.agentId);
+    this.agentStateDir = resolveOwnerPartitionedDirectory(baseAgentStateDir, this.ownerUserId);
     this.qmdDir = path.join(this.agentStateDir, "qmd");
     // QMD uses XDG base dirs for its internal state.
     // Collections are managed via `qmd collection add` and stored inside the index DB.
@@ -600,11 +608,19 @@ export class QmdMemoryManager implements MemorySearchManager {
     const exportDir = this.sessionExporter.dir;
     await fs.mkdir(exportDir, { recursive: true });
     const files = await listSessionFilesForAgent(this.agentId);
+    const ownedSessionFiles = resolveOwnedSessionFilesForAgent({
+      cfg: this.cfg,
+      agentId: this.agentId,
+      ownerUserId: this.ownerUserId,
+    });
+    const scopedFiles = ownedSessionFiles
+      ? files.filter((file) => ownedSessionFiles.has(path.resolve(file)))
+      : files;
     const keep = new Set<string>();
     const cutoff = this.sessionExporter.retentionMs
       ? Date.now() - this.sessionExporter.retentionMs
       : null;
-    for (const sessionFile of files) {
+    for (const sessionFile of scopedFiles) {
       const entry = await buildSessionEntry(sessionFile);
       if (!entry) {
         continue;

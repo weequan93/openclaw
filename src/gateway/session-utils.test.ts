@@ -7,6 +7,7 @@ import {
   capArrayByJsonBytes,
   classifySessionKey,
   deriveSessionTitle,
+  listAgentsForGateway,
   listSessionsFromStore,
   parseGroupKey,
   resolveGatewaySessionStoreTarget,
@@ -91,6 +92,49 @@ describe("gateway session utils", () => {
     expect(target.canonicalKey).toBe("agent:ops:main");
     expect(target.storeKeys).toEqual(expect.arrayContaining(["agent:ops:main", "main"]));
     expect(target.storePath).toBe(path.resolve(storeTemplate.replace("{agentId}", "ops")));
+  });
+
+  test("listAgentsForGateway filters by ownerUserId when provided", () => {
+    const cfg = {
+      session: { mainKey: "main" },
+      agents: {
+        list: [
+          { id: "alpha", ownerUserId: "user-a" },
+          { id: "beta", ownerUserId: "user-b" },
+        ],
+      },
+    } as OpenClawConfig;
+    const result = listAgentsForGateway(cfg, { ownerUserId: "user-a" });
+    expect(result.agents.map((entry) => entry.id)).toEqual(["alpha"]);
+  });
+
+  test("listAgentsForGateway includes delegated agents when rule matches", () => {
+    const cfg = {
+      session: { mainKey: "main" },
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          delegation: {
+            enabled: true,
+            rules: [
+              {
+                fromUserId: "user-a",
+                toUserId: "user-b",
+                resources: ["agents"],
+              },
+            ],
+          },
+        },
+      },
+      agents: {
+        list: [
+          { id: "alpha", ownerUserId: "user-a" },
+          { id: "beta", ownerUserId: "user-b" },
+        ],
+      },
+    } as OpenClawConfig;
+    const result = listAgentsForGateway(cfg, { ownerUserId: "user-a" });
+    expect(result.agents.map((entry) => entry.id)).toEqual(["alpha", "beta"]);
   });
 });
 
@@ -355,5 +399,57 @@ describe("listSessionsFromStore search", () => {
     });
 
     expect(result.sessions.map((session) => session.key)).toEqual(["agent:main:cron:job-1"]);
+  });
+
+  test("filters sessions by ownerUserId when provided", () => {
+    const store = makeStore();
+    store["agent:main:work-project"].ownerUserId = "user-a";
+    store["agent:main:personal-chat"].ownerUserId = "user-b";
+    store["agent:main:discord:group:dev-team"].ownerUserId = "user-a";
+    const result = listSessionsFromStore({
+      cfg: baseCfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: { ownerUserId: "user-a" },
+    });
+    expect(result.sessions.map((session) => session.key).toSorted()).toEqual([
+      "agent:main:discord:group:dev-team",
+      "agent:main:work-project",
+    ]);
+  });
+
+  test("filters sessions by ownerUserId with delegation rules", () => {
+    const store = makeStore();
+    store["agent:main:work-project"].ownerUserId = "user-a";
+    store["agent:main:personal-chat"].ownerUserId = "user-b";
+    store["agent:main:discord:group:dev-team"].ownerUserId = "user-c";
+    const cfg = {
+      ...baseCfg,
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          delegation: {
+            enabled: true,
+            rules: [
+              {
+                fromUserId: "user-a",
+                toUserId: "user-b",
+                resources: ["sessions"],
+              },
+            ],
+          },
+        },
+      },
+    } as OpenClawConfig;
+    const result = listSessionsFromStore({
+      cfg,
+      storePath: "/tmp/sessions.json",
+      store,
+      opts: { ownerUserId: "user-a" },
+    });
+    expect(result.sessions.map((session) => session.key).toSorted()).toEqual([
+      "agent:main:personal-chat",
+      "agent:main:work-project",
+    ]);
   });
 });

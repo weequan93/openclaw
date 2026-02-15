@@ -49,6 +49,7 @@ import { detectRuntimeShell } from "../shell-utils.js";
 import {
   applySkillEnvOverrides,
   applySkillEnvOverridesFromSnapshot,
+  filterWorkspaceSkillEntries,
   loadWorkspaceSkillEntries,
   resolveSkillsPromptForRun,
   type SkillSnapshot,
@@ -89,6 +90,14 @@ export type CompactEmbeddedPiSessionParams = {
   groupSpace?: string | null;
   /** Parent session key for subagent policy inheritance. */
   spawnedBy?: string | null;
+  /** Owner user id used for owner-aware skill visibility filtering. */
+  ownerUserId?: string;
+  /** Owner principal id used for owner-aware tool and auth context. */
+  ownerPrincipalId?: string;
+  /** Owner alias used for owner-aware tool and auth context. */
+  ownerAlias?: string;
+  /** Owner role used for owner-aware skill visibility filtering. */
+  ownerRole?: string;
   /** Whether the sender is an owner (required for owner-only tools). */
   senderIsOwner?: boolean;
   sessionFile: string;
@@ -190,22 +199,43 @@ export async function compactEmbeddedPiSessionDirect(
   try {
     const shouldLoadSkillEntries = !params.skillsSnapshot || !params.skillsSnapshot.resolvedSkills;
     const skillEntries = shouldLoadSkillEntries
-      ? loadWorkspaceSkillEntries(effectiveWorkspace)
+      ? filterWorkspaceSkillEntries(
+          loadWorkspaceSkillEntries(effectiveWorkspace, {
+            config: params.config,
+          }),
+          params.config,
+          {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
+        )
       : [];
     restoreSkillEnv = params.skillsSnapshot
       ? applySkillEnvOverridesFromSnapshot({
           snapshot: params.skillsSnapshot,
           config: params.config,
+          viewer: {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
         })
       : applySkillEnvOverrides({
           skills: skillEntries ?? [],
           config: params.config,
+          viewer: {
+            userId: params.ownerUserId,
+            role: params.ownerRole,
+          },
         });
     const skillsPrompt = resolveSkillsPromptForRun({
       skillsSnapshot: params.skillsSnapshot,
       entries: shouldLoadSkillEntries ? skillEntries : undefined,
       config: params.config,
       workspaceDir: effectiveWorkspace,
+      viewer: {
+        userId: params.ownerUserId,
+        role: params.ownerRole,
+      },
     });
 
     const sessionLabel = params.sessionKey ?? params.sessionId;
@@ -230,6 +260,10 @@ export async function compactEmbeddedPiSessionDirect(
       groupChannel: params.groupChannel,
       groupSpace: params.groupSpace,
       spawnedBy: params.spawnedBy,
+      ownerUserId: params.ownerUserId,
+      ownerPrincipalId: params.ownerPrincipalId,
+      ownerAlias: params.ownerAlias,
+      ownerRole: params.ownerRole,
       senderIsOwner: params.senderIsOwner,
       agentDir,
       workspaceDir: effectiveWorkspace,

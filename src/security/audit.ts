@@ -11,6 +11,7 @@ import { resolveGatewayAuth } from "../gateway/auth.js";
 import { buildGatewayConnectionDetails } from "../gateway/call.js";
 import { probeGateway } from "../gateway/probe.js";
 import { readChannelAllowFromStore } from "../pairing/pairing-store.js";
+import { isRecord } from "../utils.js";
 import {
   collectAttackSurfaceSummaryFindings,
   collectExposureMatrixFindings,
@@ -359,6 +360,41 @@ function collectGatewayConfigFindings(
       title: "Gateway token looks short",
       detail: `gateway auth token is ${token.length} chars; prefer a long random token.`,
     });
+  }
+
+  const configuredMultiUserMode = cfg.gateway?.multiUser?.mode;
+  const effectiveMultiUserMode =
+    configuredMultiUserMode === "off" ||
+    configuredMultiUserMode === "compat" ||
+    configuredMultiUserMode === "strict"
+      ? configuredMultiUserMode
+      : "strict";
+  const identityMappings = cfg.gateway?.multiUser?.identities;
+  if (effectiveMultiUserMode !== "off" && isRecord(identityMappings)) {
+    const missingRolePrincipals = Object.entries(identityMappings)
+      .filter(([, entry]) => isRecord(entry))
+      .map(([principal, entry]) => {
+        const roleRaw = entry.role;
+        const role = typeof roleRaw === "string" ? roleRaw.trim() : "";
+        return role.length > 0 ? null : principal;
+      })
+      .filter(
+        (principal): principal is string => typeof principal === "string" && principal.length > 0,
+      );
+    if (missingRolePrincipals.length > 0) {
+      const sample = missingRolePrincipals.slice(0, 3).join(", ");
+      const suffix = missingRolePrincipals.length > 3 ? ", ..." : "";
+      findings.push({
+        checkId: "gateway.multi_user.identity_role_missing",
+        severity: "warn",
+        title: "Mapped identities are missing explicit role",
+        detail:
+          `${missingRolePrincipals.length} gateway.multiUser.identities entries have no role in ` +
+          `multi-user mode "${effectiveMultiUserMode}" (${sample}${suffix}).`,
+        remediation:
+          "Set gateway.multiUser.identities.<principal>.role to one of admin/user/node/service.",
+      });
+    }
   }
 
   return findings;

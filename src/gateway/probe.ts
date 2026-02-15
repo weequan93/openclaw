@@ -58,6 +58,7 @@ export async function probeGateway(opts: {
       clientVersion: "dev",
       mode: GATEWAY_CLIENT_MODES.PROBE,
       instanceId,
+      scopes: ["operator.read"],
       onConnectError: (err) => {
         connectError = formatErrorMessage(err);
       },
@@ -67,12 +68,17 @@ export async function probeGateway(opts: {
       onHelloOk: async () => {
         connectLatencyMs = Date.now() - startedAt;
         try {
-          const [health, status, presence, configSnapshot] = await Promise.all([
+          const [health, status, presence] = await Promise.all([
             client.request("health"),
             client.request("status"),
             client.request("system-presence"),
-            client.request("config.get", {}),
           ]);
+          let configSnapshot: unknown = null;
+          try {
+            configSnapshot = await client.request("config.get", {});
+          } catch {
+            configSnapshot = null;
+          }
           settle({
             ok: true,
             connectLatencyMs,

@@ -6,6 +6,7 @@ import { resolveStateDir } from "../config/paths.js";
 export type NodePairingPendingRequest = {
   requestId: string;
   nodeId: string;
+  ownerUserId?: string;
   displayName?: string;
   platform?: string;
   version?: string;
@@ -25,6 +26,7 @@ export type NodePairingPendingRequest = {
 export type NodePairingPairedNode = {
   nodeId: string;
   token: string;
+  ownerUserId?: string;
   displayName?: string;
   platform?: string;
   version?: string;
@@ -188,6 +190,7 @@ export async function requestNodePairing(
     const request: NodePairingPendingRequest = {
       requestId: randomUUID(),
       nodeId,
+      ownerUserId: req.ownerUserId,
       displayName: req.displayName,
       platform: req.platform,
       version: req.version,
@@ -211,6 +214,9 @@ export async function requestNodePairing(
 
 export async function approveNodePairing(
   requestId: string,
+  opts?: {
+    ownerUserId?: string;
+  },
   baseDir?: string,
 ): Promise<{ requestId: string; node: NodePairingPairedNode } | null> {
   return await withLock(async () => {
@@ -222,9 +228,14 @@ export async function approveNodePairing(
 
     const now = Date.now();
     const existing = state.pairedByNodeId[pending.nodeId];
+    const ownerUserId =
+      typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+        ? opts.ownerUserId.trim()
+        : pending.ownerUserId ?? existing?.ownerUserId;
     const node: NodePairingPairedNode = {
       nodeId: pending.nodeId,
       token: newToken(),
+      ownerUserId,
       displayName: pending.displayName,
       platform: pending.platform,
       version: pending.version,
@@ -292,6 +303,7 @@ export async function updatePairedNodeMetadata(
 
     const next: NodePairingPairedNode = {
       ...existing,
+      ownerUserId: patch.ownerUserId ?? existing.ownerUserId,
       displayName: patch.displayName ?? existing.displayName,
       platform: patch.platform ?? existing.platform,
       version: patch.version ?? existing.version,

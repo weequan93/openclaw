@@ -22,7 +22,10 @@ export const NodePairRequestParamsSchema = Type.Object(
 export const NodePairListParamsSchema = Type.Object({}, { additionalProperties: false });
 
 export const NodePairApproveParamsSchema = Type.Object(
-  { requestId: NonEmptyString },
+  {
+    requestId: NonEmptyString,
+    ownerUserId: Type.Optional(NonEmptyString),
+  },
   { additionalProperties: false },
 );
 

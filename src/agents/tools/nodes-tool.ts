@@ -93,6 +93,9 @@ const NodesToolSchema = Type.Object({
 export function createNodesTool(options?: {
   agentSessionKey?: string;
   config?: OpenClawConfig;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
 }): AnyAgentTool {
   const sessionKey = options?.agentSessionKey?.trim() || undefined;
   const agentId = resolveSessionAgentId({
@@ -112,6 +115,9 @@ export function createNodesTool(options?: {
         gatewayUrl: readStringParam(params, "gatewayUrl", { trim: false }),
         gatewayToken: readStringParam(params, "gatewayToken", { trim: false }),
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        ownerUserId: options?.ownerUserId,
+        ownerPrincipalId: options?.ownerPrincipalId,
+        ownerAlias: options?.ownerAlias,
       };
 
       try {

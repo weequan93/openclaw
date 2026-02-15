@@ -1,6 +1,6 @@
 import { listChannelPlugins } from "../channels/plugins/index.js";
 
-const BASE_METHODS = [
+export const GATEWAY_BASE_METHODS = [
   "health",
   "logs.tail",
   "channels.status",
@@ -18,6 +18,10 @@ const BASE_METHODS = [
   "config.set",
   "config.apply",
   "config.patch",
+  "config.policyBundles.list",
+  "config.policyBundle.resolve",
+  "config.policyBundle.apply",
+  "config.changes.list",
   "config.schema",
   "exec.approvals.get",
   "exec.approvals.set",
@@ -47,6 +51,7 @@ const BASE_METHODS = [
   "voicewake.set",
   "sessions.list",
   "sessions.preview",
+  "sessions.resolve",
   "sessions.patch",
   "sessions.reset",
   "sessions.delete",
@@ -83,6 +88,10 @@ const BASE_METHODS = [
   "agent",
   "agent.identity.get",
   "agent.wait",
+  "authz.denied.list",
+  "authz.denied.summary",
+  "ownership.gaps",
+  "ownership.backfill",
   "browser.request",
   // WebChat WebSocket-native chat methods
   "chat.history",
@@ -92,7 +101,7 @@ const BASE_METHODS = [
 
 export function listGatewayMethods(): string[] {
   const channelMethods = listChannelPlugins().flatMap((plugin) => plugin.gatewayMethods ?? []);
-  return Array.from(new Set([...BASE_METHODS, ...channelMethods]));
+  return Array.from(new Set([...GATEWAY_BASE_METHODS, ...channelMethods]));
 }
 
 export const GATEWAY_EVENTS = [

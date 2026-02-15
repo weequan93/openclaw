@@ -1,5 +1,8 @@
 import type { CommandHandler } from "./commands-types.js";
-import { resolveChannelConfigWrites } from "../../channels/plugins/config-writes.js";
+import {
+  resolveChannelConfigWrites,
+  resolveGatewayConfigAdminAccess,
+} from "../../channels/plugins/config-writes.js";
 import { normalizeChannelId } from "../../channels/registry.js";
 import {
   getConfigValueAtPath,
@@ -19,8 +22,24 @@ import {
   unsetConfigOverride,
 } from "../../config/runtime-overrides.js";
 import { logVerbose } from "../../globals.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { parseConfigCommand } from "./config-commands.js";
 import { parseDebugCommand } from "./debug-commands.js";
+
+function hasGatewayIdentity(ctx: {
+  GatewayOwnerUserId?: string;
+  GatewayOwnerPrincipalId?: string;
+  GatewayOwnerRole?: string;
+  GatewayClientScopes?: string[];
+}): boolean {
+  return (
+    (typeof ctx.GatewayOwnerUserId === "string" && ctx.GatewayOwnerUserId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerPrincipalId === "string" &&
+      ctx.GatewayOwnerPrincipalId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerRole === "string" && ctx.GatewayOwnerRole.trim().length > 0) ||
+    (Array.isArray(ctx.GatewayClientScopes) && ctx.GatewayClientScopes.length > 0)
+  );
+}
 
 export const handleConfigCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
@@ -34,6 +53,13 @@ export const handleConfigCommand: CommandHandler = async (params, allowTextComma
     logVerbose(
       `Ignoring /config from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.config",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/config denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (params.cfg.commands?.config !== true) {
@@ -48,6 +74,24 @@ export const handleConfigCommand: CommandHandler = async (params, allowTextComma
     return {
       shouldContinue: false,
       reply: { text: `⚠️ ${configCommand.message}` },
+    };
+  }
+  if (!resolveGatewayConfigAdminAccess({ ctx: params.ctx, cfg: params.cfg })) {
+    logVerbose(
+      `Denied /config from non-admin gateway principal: ${params.ctx.GatewayOwnerPrincipalId ?? "<unknown>"}`,
+    );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.config",
+      reasonCode: hasGatewayIdentity(params.ctx) ? "ROLE_FORBIDDEN" : "UNKNOWN_SENDER",
+      message: "/config is admin-only in gateway user mode",
+    });
+    return {
+      shouldContinue: false,
+      reply: {
+        text: "⚠️ /config is admin-only in gateway user mode.",
+      },
     };
   }
 
@@ -188,6 +232,13 @@ export const handleDebugCommand: CommandHandler = async (params, allowTextComman
     logVerbose(
       `Ignoring /debug from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.debug",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/debug denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (params.cfg.commands?.debug !== true) {
@@ -202,6 +253,24 @@ export const handleDebugCommand: CommandHandler = async (params, allowTextComman
     return {
       shouldContinue: false,
       reply: { text: `⚠️ ${debugCommand.message}` },
+    };
+  }
+  if (!resolveGatewayConfigAdminAccess({ ctx: params.ctx, cfg: params.cfg })) {
+    logVerbose(
+      `Denied /debug from non-admin gateway principal: ${params.ctx.GatewayOwnerPrincipalId ?? "<unknown>"}`,
+    );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.debug",
+      reasonCode: hasGatewayIdentity(params.ctx) ? "ROLE_FORBIDDEN" : "UNKNOWN_SENDER",
+      message: "/debug is admin-only in gateway user mode",
+    });
+    return {
+      shouldContinue: false,
+      reply: {
+        text: "⚠️ /debug is admin-only in gateway user mode.",
+      },
     };
   }
   if (debugCommand.action === "show") {

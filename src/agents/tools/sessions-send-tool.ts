@@ -38,6 +38,9 @@ export function createSessionsSendTool(opts?: {
   agentSessionKey?: string;
   agentChannel?: GatewayMessageChannel;
   sandboxed?: boolean;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
 }): AnyAgentTool {
   return {
     label: "Session Send",
@@ -48,6 +51,30 @@ export function createSessionsSendTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const message = readStringParam(params, "message", { required: true });
+      const gatewayIdentity =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? {
+              userId: opts.ownerUserId.trim(),
+              principalId:
+                typeof opts.ownerPrincipalId === "string" && opts.ownerPrincipalId.trim()
+                  ? opts.ownerPrincipalId.trim()
+                  : `user:${opts.ownerUserId.trim()}`,
+              ...(typeof opts.ownerAlias === "string" && opts.ownerAlias.trim()
+                ? { alias: opts.ownerAlias.trim() }
+                : {}),
+            }
+          : undefined;
+      const callGatewayOwned = async <T = Record<string, unknown>>(request: {
+        method: string;
+        params?: unknown;
+        timeoutMs?: number;
+      }) =>
+        await callGateway<T>({
+          method: request.method,
+          params: request.params,
+          timeoutMs: request.timeoutMs,
+          ...(gatewayIdentity ? { identity: gatewayIdentity } : {}),
+        });
       const cfg = loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = cfg.agents?.defaults?.sandbox?.sessionToolsVisibility ?? "spawned";
@@ -79,7 +106,7 @@ export function createSessionsSendTool(opts?: {
       }
 
       const listSessions = async (listParams: Record<string, unknown>) => {
-        const result = await callGateway<{ sessions: Array<{ key: string }> }>({
+        const result = await callGatewayOwned<{ sessions: Array<{ key: string }> }>({
           method: "sessions.list",
           params: listParams,
           timeoutMs: 10_000,
@@ -134,7 +161,7 @@ export function createSessionsSendTool(opts?: {
         };
         let resolvedKey = "";
         try {
-          const resolved = await callGateway<{ key: string }>({
+          const resolved = await callGatewayOwned<{ key: string }>({
             method: "sessions.resolve",
             params: resolveParams,
             timeoutMs: 10_000,
@@ -186,6 +213,7 @@ export function createSessionsSendTool(opts?: {
         mainKey,
         requesterInternalKey,
         restrictToSpawned,
+        ownerIdentity: gatewayIdentity,
       });
       if (!resolvedSession.ok) {
         return jsonResult({
@@ -274,6 +302,9 @@ export function createSessionsSendTool(opts?: {
           maxPingPongTurns,
           requesterSessionKey,
           requesterChannel,
+          ownerUserId: opts?.ownerUserId,
+          ownerPrincipalId: opts?.ownerPrincipalId,
+          ownerAlias: opts?.ownerAlias,
           roundOneReply,
           waitRunId,
         });
@@ -281,7 +312,7 @@ export function createSessionsSendTool(opts?: {
 
       if (timeoutSeconds === 0) {
         try {
-          const response = await callGateway<{ runId: string }>({
+          const response = await callGatewayOwned<{ runId: string }>({
             method: "agent",
             params: sendParams,
             timeoutMs: 10_000,
@@ -309,7 +340,7 @@ export function createSessionsSendTool(opts?: {
       }
 
       try {
-        const response = await callGateway<{ runId: string }>({
+        const response = await callGatewayOwned<{ runId: string }>({
           method: "agent",
           params: sendParams,
           timeoutMs: 10_000,
@@ -331,7 +362,7 @@ export function createSessionsSendTool(opts?: {
       let waitStatus: string | undefined;
       let waitError: string | undefined;
       try {
-        const wait = await callGateway<{ status?: string; error?: string }>({
+        const wait = await callGatewayOwned<{ status?: string; error?: string }>({
           method: "agent.wait",
           params: {
             runId,
@@ -369,7 +400,7 @@ export function createSessionsSendTool(opts?: {
         });
       }
 
-      const history = await callGateway<{ messages: Array<unknown> }>({
+      const history = await callGatewayOwned<{ messages: Array<unknown> }>({
         method: "chat.history",
         params: { sessionKey: resolvedKey, limit: 50 },
       });

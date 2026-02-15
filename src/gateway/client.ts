@@ -54,6 +54,11 @@ export type GatewayClientOptions = {
   commands?: string[];
   permissions?: Record<string, boolean>;
   pathEnv?: string;
+  identity?: {
+    userId: string;
+    principalId: string;
+    alias?: string;
+  };
   deviceIdentity?: DeviceIdentity;
   minProtocol?: number;
   maxProtocol?: number;
@@ -199,7 +204,33 @@ export class GatewayClient {
         : undefined;
     const signedAtMs = Date.now();
     const nonce = this.connectNonce ?? undefined;
-    const scopes = this.opts.scopes ?? ["operator.admin"];
+    const scopes = Array.isArray(this.opts.scopes)
+      ? Array.from(
+          new Set(
+            this.opts.scopes
+              .map((scope) => (typeof scope === "string" ? scope.trim() : ""))
+              .filter((scope) => scope.length > 0),
+          ),
+        )
+      : [];
+    const identity = (() => {
+      const userIdRaw =
+        typeof this.opts.identity?.userId === "string" ? this.opts.identity.userId.trim() : "";
+      const principalIdRaw =
+        typeof this.opts.identity?.principalId === "string"
+          ? this.opts.identity.principalId.trim()
+          : "";
+      if (!userIdRaw || !principalIdRaw) {
+        return undefined;
+      }
+      const aliasRaw =
+        typeof this.opts.identity?.alias === "string" ? this.opts.identity.alias.trim() : "";
+      return {
+        userId: userIdRaw,
+        principalId: principalIdRaw,
+        ...(aliasRaw ? { alias: aliasRaw } : {}),
+      };
+    })();
     const device = (() => {
       if (!this.opts.deviceIdentity) {
         return undefined;
@@ -244,6 +275,7 @@ export class GatewayClient {
       auth,
       role,
       scopes,
+      identity,
       device,
     };
 

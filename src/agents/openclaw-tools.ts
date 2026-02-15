@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import type { AnyAgentTool } from "./tools/common.js";
+import { resolveGatewayMultiUserMode } from "../gateway/multi-user-mode.js";
 import { resolvePluginTools } from "../plugins/tools.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
@@ -18,6 +19,24 @@ import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
+
+function shouldIncludeAdminControlPlaneTools(options?: {
+  config?: OpenClawConfig;
+  ownerUserId?: string;
+  ownerRole?: string;
+}) {
+  const mode = resolveGatewayMultiUserMode(options?.config);
+  const ownerUserId =
+    typeof options?.ownerUserId === "string" && options.ownerUserId.trim()
+      ? options.ownerUserId.trim()
+      : undefined;
+  if (mode === "off" || !ownerUserId) {
+    return true;
+  }
+  const ownerRole =
+    typeof options?.ownerRole === "string" ? options.ownerRole.trim().toLowerCase() : "";
+  return ownerRole === "admin";
+}
 
 export function createOpenClawTools(options?: {
   sandboxBrowserBridgeUrl?: string;
@@ -51,6 +70,14 @@ export function createOpenClawTools(options?: {
   hasRepliedRef?: { value: boolean };
   /** If true, the model has native vision capability */
   modelHasVision?: boolean;
+  /** Gateway owner identity used for owner-aware control-plane tool gating. */
+  ownerUserId?: string;
+  /** Gateway owner principal identity for internal gateway RPC context. */
+  ownerPrincipalId?: string;
+  /** Gateway owner alias for internal gateway RPC context. */
+  ownerAlias?: string;
+  /** Gateway owner role used for owner-aware control-plane tool gating. */
+  ownerRole?: string;
   /** Explicit agent ID override for cron/hook sessions. */
   requesterAgentIdOverride?: string;
   /** Require explicit message targets (no implicit last-route sends). */
@@ -92,24 +119,51 @@ export function createOpenClawTools(options?: {
     createBrowserTool({
       sandboxBridgeUrl: options?.sandboxBrowserBridgeUrl,
       allowHostControl: options?.allowHostBrowserControl,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
     }),
-    createCanvasTool(),
+    createCanvasTool({
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
+    }),
     createNodesTool({
       agentSessionKey: options?.agentSessionKey,
       config: options?.config,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
     }),
-    createCronTool({
-      agentSessionKey: options?.agentSessionKey,
-    }),
+    ...(shouldIncludeAdminControlPlaneTools(options)
+      ? [
+          createCronTool({
+            agentSessionKey: options?.agentSessionKey,
+            config: options?.config,
+            ownerUserId: options?.ownerUserId,
+            ownerPrincipalId: options?.ownerPrincipalId,
+            ownerAlias: options?.ownerAlias,
+            ownerRole: options?.ownerRole,
+          }),
+        ]
+      : []),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
       agentChannel: options?.agentChannel,
       config: options?.config,
     }),
-    createGatewayTool({
-      agentSessionKey: options?.agentSessionKey,
-      config: options?.config,
-    }),
+    ...(shouldIncludeAdminControlPlaneTools(options)
+      ? [
+          createGatewayTool({
+            agentSessionKey: options?.agentSessionKey,
+            config: options?.config,
+            ownerUserId: options?.ownerUserId,
+            ownerPrincipalId: options?.ownerPrincipalId,
+            ownerAlias: options?.ownerAlias,
+            ownerRole: options?.ownerRole,
+          }),
+        ]
+      : []),
     createAgentsListTool({
       agentSessionKey: options?.agentSessionKey,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
@@ -117,15 +171,24 @@ export function createOpenClawTools(options?: {
     createSessionsListTool({
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
     }),
     createSessionsHistoryTool({
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
     }),
     createSessionsSendTool({
       agentSessionKey: options?.agentSessionKey,
       agentChannel: options?.agentChannel,
       sandboxed: options?.sandboxed,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
     }),
     createSessionsSpawnTool({
       agentSessionKey: options?.agentSessionKey,
@@ -137,6 +200,9 @@ export function createOpenClawTools(options?: {
       agentGroupChannel: options?.agentGroupChannel,
       agentGroupSpace: options?.agentGroupSpace,
       sandboxed: options?.sandboxed,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
     }),
     createSessionStatusTool({

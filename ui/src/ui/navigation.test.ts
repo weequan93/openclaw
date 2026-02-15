@@ -34,6 +34,7 @@ describe("iconForTab", () => {
     expect(iconForTab("cron")).toBe("loader");
     expect(iconForTab("skills")).toBe("zap");
     expect(iconForTab("nodes")).toBe("monitor");
+    expect(iconForTab("security")).toBe("shield");
     expect(iconForTab("config")).toBe("settings");
     expect(iconForTab("debug")).toBe("bug");
     expect(iconForTab("logs")).toBe("scrollText");
@@ -58,6 +59,7 @@ describe("titleForTab", () => {
   it("returns expected titles", () => {
     expect(titleForTab("chat")).toBe("Chat");
     expect(titleForTab("overview")).toBe("Overview");
+    expect(titleForTab("security")).toBe("Security");
     expect(titleForTab("cron")).toBe("Cron Jobs");
   });
 });
@@ -72,6 +74,7 @@ describe("subtitleForTab", () => {
 
   it("returns descriptive subtitles", () => {
     expect(subtitleForTab("chat")).toContain("chat session");
+    expect(subtitleForTab("security")).toContain("denied access");
     expect(subtitleForTab("config")).toContain("openclaw.json");
   });
 });
@@ -129,6 +132,7 @@ describe("tabFromPath", () => {
   it("returns tab for valid path", () => {
     expect(tabFromPath("/chat")).toBe("chat");
     expect(tabFromPath("/overview")).toBe("overview");
+    expect(tabFromPath("/security")).toBe("security");
     expect(tabFromPath("/sessions")).toBe("sessions");
   });
 

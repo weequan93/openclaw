@@ -257,10 +257,16 @@ export async function initSessionState(params: {
   const lastTo = deliveryFields.lastTo ?? lastToRaw;
   const lastAccountId = deliveryFields.lastAccountId ?? lastAccountIdRaw;
   const lastThreadId = deliveryFields.lastThreadId ?? lastThreadIdRaw;
+  const gatewayOwnerUserId =
+    typeof ctx.GatewayOwnerUserId === "string" ? ctx.GatewayOwnerUserId.trim() : "";
+  const gatewayOwnerPrincipalId =
+    typeof ctx.GatewayOwnerPrincipalId === "string" ? ctx.GatewayOwnerPrincipalId.trim() : "";
   sessionEntry = {
     ...baseEntry,
     sessionId,
     updatedAt: Date.now(),
+    ownerUserId: baseEntry?.ownerUserId ?? (gatewayOwnerUserId || undefined),
+    ownerPrincipalId: baseEntry?.ownerPrincipalId ?? (gatewayOwnerPrincipalId || undefined),
     systemSent,
     abortedLastRun,
     // Persist previously stored thinking/verbose levels when present.

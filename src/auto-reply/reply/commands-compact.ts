@@ -10,7 +10,9 @@ import { resolveSessionFilePath } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { formatContextUsageShort, formatTokenCount } from "../status.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { stripMentions, stripStructuralPrefixes } from "./mentions.js";
+import { resolveGatewayOwnerRoleFromContext } from "./owner-identity.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
 function extractCompactInstructions(params: {
@@ -51,6 +53,13 @@ export const handleCompactCommand: CommandHandler = async (params) => {
     logVerbose(
       `Ignoring /compact from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.compact",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/compact denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
   if (!params.sessionEntry?.sessionId) {
@@ -92,6 +101,9 @@ export const handleCompactCommand: CommandHandler = async (params) => {
       defaultLevel: "off",
     },
     customInstructions,
+    ownerUserId: params.sessionEntry.ownerUserId,
+    ownerPrincipalId: params.sessionEntry.ownerPrincipalId,
+    ownerRole: resolveGatewayOwnerRoleFromContext(params.ctx),
     senderIsOwner: params.command.senderIsOwner,
     ownerNumbers: params.command.ownerList.length > 0 ? params.command.ownerList : undefined,
   });

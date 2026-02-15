@@ -158,6 +158,14 @@ export function createOpenClawCodingTools(options?: {
   hasRepliedRef?: { value: boolean };
   /** If true, the model has native vision capability */
   modelHasVision?: boolean;
+  /** Gateway owner identity used for owner-aware control-plane tool gating. */
+  ownerUserId?: string;
+  /** Gateway owner principal identity for internal gateway RPC context. */
+  ownerPrincipalId?: string;
+  /** Gateway owner alias for internal gateway RPC context. */
+  ownerAlias?: string;
+  /** Gateway owner role used for owner-aware control-plane tool gating. */
+  ownerRole?: string;
   /** Require explicit message targets (no implicit last-route sends). */
   requireExplicitMessageTarget?: boolean;
   /** If true, omit the message tool from the tool list. */
@@ -355,6 +363,10 @@ export function createOpenClawCodingTools(options?: {
       replyToMode: options?.replyToMode,
       hasRepliedRef: options?.hasRepliedRef,
       modelHasVision: options?.modelHasVision,
+      ownerUserId: options?.ownerUserId,
+      ownerPrincipalId: options?.ownerPrincipalId,
+      ownerAlias: options?.ownerAlias,
+      ownerRole: options?.ownerRole,
       requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
       disableMessageTool: options?.disableMessageTool,
       requesterAgentIdOverride: agentId,

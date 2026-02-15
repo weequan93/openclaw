@@ -10,6 +10,7 @@ import {
   resolveConfiguredModelRef,
   resolveModelRefFromString,
 } from "../../agents/model-selection.js";
+import { logVerbose } from "../../globals.js";
 import {
   buildModelsKeyboard,
   buildProviderKeyboard,
@@ -17,6 +18,7 @@ import {
   getModelsPageSize,
   type ProviderInfo,
 } from "../../telegram/model-buttons.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 const PAGE_SIZE_DEFAULT = 20;
 const PAGE_SIZE_MAX = 100;
@@ -311,6 +313,22 @@ export async function resolveModelsCommandReply(params: {
 export const handleModelsCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {
     return null;
+  }
+  if (!params.command.isAuthorizedSender) {
+    const normalized = params.command.commandBodyNormalized;
+    if (normalized === "/models" || normalized.startsWith("/models ")) {
+      logVerbose(
+        `Ignoring /models from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
+      );
+      recordCommandAuthzDeny({
+        ctx: params.ctx,
+        command: params.command,
+        method: "command.models",
+        reasonCode: "UNKNOWN_SENDER",
+        message: "/models denied for unauthorized sender",
+      });
+      return { shouldContinue: false };
+    }
   }
 
   const reply = await resolveModelsCommandReply({

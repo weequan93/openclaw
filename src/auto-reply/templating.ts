@@ -118,6 +118,20 @@ export type MsgContext = {
   CommandTargetSessionKey?: string;
   /** Gateway client scopes when the message originates from the gateway. */
   GatewayClientScopes?: string[];
+  /** Gateway client id for authz audit attribution. */
+  GatewayClientId?: string;
+  /** Gateway client mode for authz audit attribution. */
+  GatewayClientMode?: string;
+  /** Gateway source IP when available (non-local or trusted proxy-derived). */
+  GatewaySourceIp?: string;
+  /** Gateway-owned user identity for multi-user session isolation. */
+  GatewayOwnerUserId?: string;
+  /** Gateway-owned alias for UI/audit display. */
+  GatewayOwnerAlias?: string;
+  /** Gateway principal identity for ownership audit trails. */
+  GatewayOwnerPrincipalId?: string;
+  /** Gateway principal role resolved during authz (admin, user, node, service). */
+  GatewayOwnerRole?: string;
   /** Thread identifier (Telegram topic id or Matrix thread event id). */
   MessageThreadId?: string | number;
   /** Telegram forum supergroup marker. */

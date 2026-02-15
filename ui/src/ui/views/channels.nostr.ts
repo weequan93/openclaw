@@ -51,7 +51,7 @@ export function renderNostrCard(params: {
   const summaryLastStartAt = nostr?.lastStartAt ?? primaryAccount?.lastStartAt ?? null;
   const summaryLastError = nostr?.lastError ?? primaryAccount?.lastError ?? null;
   const hasMultipleAccounts = nostrAccounts.length > 1;
-  const showingForm = profileFormState !== null && profileFormState !== undefined;
+  const showingForm = props.canManage && profileFormState !== null && profileFormState !== undefined;
 
   const renderAccountCard = (account: ChannelAccountSnapshot) => {
     const publicKey = (account as { publicKey?: string }).publicKey;
@@ -125,7 +125,7 @@ export function renderNostrCard(params: {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <div style="font-weight: 500;">Profile</div>
           ${
-            summaryConfigured
+            summaryConfigured && props.canManage
               ? html`
                 <button
                   class="btn btn-sm"

@@ -40,6 +40,12 @@ export type SessionListRow = {
   messages?: unknown[];
 };
 
+export type GatewayOwnerIdentity = {
+  userId: string;
+  principalId: string;
+  alias?: string;
+};
+
 function normalizeKey(value?: string) {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
@@ -164,6 +170,7 @@ async function resolveSessionKeyFromSessionId(params: {
   mainKey: string;
   requesterInternalKey?: string;
   restrictToSpawned: boolean;
+  ownerIdentity?: GatewayOwnerIdentity;
 }): Promise<SessionReferenceResolution> {
   try {
     // Resolve via gateway so we respect store routing and visibility rules.
@@ -175,6 +182,7 @@ async function resolveSessionKeyFromSessionId(params: {
         includeGlobal: !params.restrictToSpawned,
         includeUnknown: !params.restrictToSpawned,
       },
+      ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
     });
     const key = typeof result?.key === "string" ? result.key.trim() : "";
     if (!key) {
@@ -217,6 +225,7 @@ async function resolveSessionKeyFromKey(params: {
   mainKey: string;
   requesterInternalKey?: string;
   restrictToSpawned: boolean;
+  ownerIdentity?: GatewayOwnerIdentity;
 }): Promise<SessionReferenceResolution | null> {
   try {
     // Try key-based resolution first so non-standard keys keep working.
@@ -226,6 +235,7 @@ async function resolveSessionKeyFromKey(params: {
         key: params.key,
         spawnedBy: params.restrictToSpawned ? params.requesterInternalKey : undefined,
       },
+      ...(params.ownerIdentity ? { identity: params.ownerIdentity } : {}),
     });
     const key = typeof result?.key === "string" ? result.key.trim() : "";
     if (!key) {
@@ -252,6 +262,7 @@ export async function resolveSessionReference(params: {
   mainKey: string;
   requesterInternalKey?: string;
   restrictToSpawned: boolean;
+  ownerIdentity?: GatewayOwnerIdentity;
 }): Promise<SessionReferenceResolution> {
   const raw = params.sessionKey.trim();
   if (shouldResolveSessionIdInput(raw)) {
@@ -262,6 +273,7 @@ export async function resolveSessionReference(params: {
       mainKey: params.mainKey,
       requesterInternalKey: params.requesterInternalKey,
       restrictToSpawned: params.restrictToSpawned,
+      ownerIdentity: params.ownerIdentity,
     });
     if (resolvedByKey) {
       return resolvedByKey;
@@ -272,6 +284,7 @@ export async function resolveSessionReference(params: {
       mainKey: params.mainKey,
       requesterInternalKey: params.requesterInternalKey,
       restrictToSpawned: params.restrictToSpawned,
+      ownerIdentity: params.ownerIdentity,
     });
   }
 

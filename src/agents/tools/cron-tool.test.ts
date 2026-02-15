@@ -47,6 +47,36 @@ describe("cron tool", () => {
     expect(call.params).toEqual(expectedParams);
   });
 
+  it("denies non-admin owner-bound runs in strict multi-user mode", async () => {
+    const tool = createCronTool({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "user-1",
+      ownerRole: "user",
+    });
+    await expect(
+      tool.execute("call-denied", {
+        action: "status",
+      }),
+    ).rejects.toThrow("admin-only");
+    expect(callGatewayMock).not.toHaveBeenCalled();
+  });
+
+  it("allows admin owner-bound runs in strict multi-user mode", async () => {
+    const tool = createCronTool({
+      config: { gateway: { multiUser: { mode: "strict" } } },
+      ownerUserId: "admin-1",
+      ownerRole: "admin",
+    });
+    await tool.execute("call-allowed", {
+      action: "status",
+    });
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+    const call = callGatewayMock.mock.calls[0]?.[0] as {
+      method?: string;
+    };
+    expect(call.method).toBe("cron.status");
+  });
+
   it("prefers jobId over id when both are provided", async () => {
     const tool = createCronTool();
     await tool.execute("call1", {
@@ -73,6 +103,25 @@ describe("cron tool", () => {
       params?: unknown;
     };
     expect(call?.params).toEqual({ id: "job-due", mode: "due" });
+  });
+
+  it("routes wake action with admin scope", async () => {
+    const tool = createCronTool();
+    await tool.execute("call-wake", {
+      action: "wake",
+      text: "wake up",
+      mode: "now",
+    });
+
+    expect(callGatewayMock).toHaveBeenCalledTimes(1);
+    const call = callGatewayMock.mock.calls[0]?.[0] as {
+      method?: string;
+      params?: unknown;
+      scopes?: string[];
+    };
+    expect(call.method).toBe("wake");
+    expect(call.params).toEqual({ mode: "now", text: "wake up" });
+    expect(call.scopes).toEqual(["operator.admin"]);
   });
 
   it("normalizes cron.add job payloads", async () => {

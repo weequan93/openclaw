@@ -337,6 +337,9 @@ export async function runCronIsolatedAgentTurn(params: {
         config: cfgWithAgentDefaults,
         eligibility: { remote: getRemoteSkillEligibility() },
         snapshotVersion: skillsSnapshotVersion,
+        viewer: {
+          userId: cronSession.sessionEntry.ownerUserId,
+        },
       })
     : cronSession.sessionEntry.skillsSnapshot;
   if (needsSkillsSnapshot && skillsSnapshot) {
@@ -403,6 +406,7 @@ export async function runCronIsolatedAgentTurn(params: {
           workspaceDir,
           config: cfgWithAgentDefaults,
           skillsSnapshot,
+          ownerUserId: cronSession.sessionEntry.ownerUserId,
           prompt: commandBody,
           lane: params.lane ?? "cron",
           provider: providerOverride,

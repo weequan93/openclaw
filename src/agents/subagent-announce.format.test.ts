@@ -3,6 +3,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const agentSpy = vi.fn(async () => ({ runId: "run-main", status: "ok" }));
 const sessionsDeleteSpy = vi.fn();
 const readLatestAssistantReplyMock = vi.fn(async () => "raw subagent reply");
+const callGatewaySpy = vi.fn(async (req: unknown) => {
+  const typed = req as { method?: string; params?: { message?: string; sessionKey?: string } };
+  if (typed.method === "agent") {
+    return await agentSpy(typed);
+  }
+  if (typed.method === "agent.wait") {
+    return { status: "error", startedAt: 10, endedAt: 20, error: "boom" };
+  }
+  if (typed.method === "sessions.patch") {
+    return {};
+  }
+  if (typed.method === "sessions.delete") {
+    sessionsDeleteSpy(typed);
+    return {};
+  }
+  return {};
+});
 const embeddedRunMock = {
   isEmbeddedPiRunActive: vi.fn(() => false),
   isEmbeddedPiRunStreaming: vi.fn(() => false),
@@ -18,23 +35,7 @@ let configOverride: ReturnType<(typeof import("../config/config.js"))["loadConfi
 };
 
 vi.mock("../gateway/call.js", () => ({
-  callGateway: vi.fn(async (req: unknown) => {
-    const typed = req as { method?: string; params?: { message?: string; sessionKey?: string } };
-    if (typed.method === "agent") {
-      return await agentSpy(typed);
-    }
-    if (typed.method === "agent.wait") {
-      return { status: "error", startedAt: 10, endedAt: 20, error: "boom" };
-    }
-    if (typed.method === "sessions.patch") {
-      return {};
-    }
-    if (typed.method === "sessions.delete") {
-      sessionsDeleteSpy(typed);
-      return {};
-    }
-    return {};
-  }),
+  callGateway: (req: unknown) => callGatewaySpy(req),
 }));
 
 vi.mock("./tools/agent-step.js", () => ({
@@ -64,6 +65,7 @@ describe("subagent announce formatting", () => {
   beforeEach(() => {
     agentSpy.mockClear();
     sessionsDeleteSpy.mockClear();
+    callGatewaySpy.mockClear();
     embeddedRunMock.isEmbeddedPiRunActive.mockReset().mockReturnValue(false);
     embeddedRunMock.isEmbeddedPiRunStreaming.mockReset().mockReturnValue(false);
     embeddedRunMock.queueEmbeddedPiMessage.mockReset().mockReturnValue(false);
@@ -105,6 +107,43 @@ describe("subagent announce formatting", () => {
     expect(msg).toContain("Findings:");
     expect(msg).toContain("raw subagent reply");
     expect(msg).toContain("Stats:");
+  });
+
+  it("forwards owner identity to announce flow gateway calls", async () => {
+    const { runSubagentAnnounceFlow } = await import("./subagent-announce.js");
+    await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-owner",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "do thing",
+      timeoutMs: 1000,
+      cleanup: "delete",
+      waitForCompletion: true,
+      ownerIdentity: {
+        userId: "user-1",
+        principalId: "principal:user-1",
+        alias: "alice",
+      },
+    });
+
+    const expectedIdentity = {
+      userId: "user-1",
+      principalId: "principal:user-1",
+      alias: "alice",
+    };
+    const waitCall = callGatewaySpy.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "agent.wait",
+    )?.[0] as { identity?: unknown } | undefined;
+    const announceCall = callGatewaySpy.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "agent",
+    )?.[0] as { identity?: unknown } | undefined;
+    const deleteCall = callGatewaySpy.mock.calls.find(
+      (call) => (call[0] as { method?: string }).method === "sessions.delete",
+    )?.[0] as { identity?: unknown } | undefined;
+    expect(waitCall?.identity).toEqual(expectedIdentity);
+    expect(announceCall?.identity).toEqual(expectedIdentity);
+    expect(deleteCall?.identity).toEqual(expectedIdentity);
   });
 
   it("includes success status when outcome is ok", async () => {

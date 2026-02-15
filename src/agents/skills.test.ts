@@ -129,6 +129,86 @@ describe("buildWorkspaceSkillCommandSpecs", () => {
     const cmd = commands.find((entry) => entry.skillName === "tool-dispatch");
     expect(cmd?.dispatch).toEqual({ kind: "tool", toolName: "sessions_send", argMode: "raw" });
   });
+
+  it("hides user-private skills for non-owners in strict multi-user mode", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "shared-skill"),
+      name: "shared-skill",
+      description: "Shared skill",
+    });
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "private-skill"),
+      name: "private-skill",
+      description: "Private skill",
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "shared-skill": { visibility: "shared" as const },
+          "private-skill": {
+            visibility: "user_private" as const,
+            ownerUserId: "user-a",
+          },
+        },
+      },
+    };
+
+    const otherUser = buildWorkspaceSkillCommandSpecs(workspaceDir, {
+      config,
+      viewer: { userId: "user-b", role: "user" },
+    });
+    const ownerUser = buildWorkspaceSkillCommandSpecs(workspaceDir, {
+      config,
+      viewer: { userId: "user-a", role: "user" },
+    });
+
+    expect(otherUser.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(otherUser.some((entry) => entry.skillName === "private-skill")).toBe(false);
+    expect(ownerUser.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(ownerUser.some((entry) => entry.skillName === "private-skill")).toBe(true);
+  });
+
+  it("shows group-shared skills only for viewers in allowed groups", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "shared-skill"),
+      name: "shared-skill",
+      description: "Shared skill",
+    });
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "ops-skill"),
+      name: "ops-skill",
+      description: "Ops only skill",
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "shared-skill": { visibility: "shared" as const },
+          "ops-skill": {
+            visibility: "group_shared" as const,
+            groupIds: ["ops"],
+          },
+        },
+      },
+    };
+
+    const opsViewer = buildWorkspaceSkillCommandSpecs(workspaceDir, {
+      config,
+      viewer: { userId: "user-a", role: "user", groupIds: ["ops"] },
+    });
+    const financeViewer = buildWorkspaceSkillCommandSpecs(workspaceDir, {
+      config,
+      viewer: { userId: "user-b", role: "user", groupIds: ["finance"] },
+    });
+
+    expect(opsViewer.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(opsViewer.some((entry) => entry.skillName === "ops-skill")).toBe(true);
+    expect(financeViewer.some((entry) => entry.skillName === "shared-skill")).toBe(true);
+    expect(financeViewer.some((entry) => entry.skillName === "ops-skill")).toBe(false);
+  });
 });
 
 describe("buildWorkspaceSkillsPrompt", () => {
@@ -225,6 +305,86 @@ describe("buildWorkspaceSkillsPrompt", () => {
     expect(prompt).toContain("Does demo things");
     expect(prompt).toContain(path.join(skillDir, "SKILL.md"));
   });
+
+  it("hides user-private skills for non-owners in strict multi-user mode", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "shared-skill"),
+      name: "shared-skill",
+      description: "Shared skill",
+    });
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "private-skill"),
+      name: "private-skill",
+      description: "Private skill",
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "shared-skill": { visibility: "shared" as const },
+          "private-skill": {
+            visibility: "user_private" as const,
+            ownerUserId: "user-a",
+          },
+        },
+      },
+    };
+
+    const promptForOtherUser = buildWorkspaceSkillsPrompt(workspaceDir, {
+      config,
+      viewer: { userId: "user-b", role: "user" },
+    });
+    const promptForOwner = buildWorkspaceSkillsPrompt(workspaceDir, {
+      config,
+      viewer: { userId: "user-a", role: "user" },
+    });
+
+    expect(promptForOtherUser).toContain("shared-skill");
+    expect(promptForOtherUser).not.toContain("private-skill");
+    expect(promptForOwner).toContain("shared-skill");
+    expect(promptForOwner).toContain("private-skill");
+  });
+
+  it("hides group-shared skills from viewers outside configured groups", async () => {
+    const workspaceDir = await makeWorkspace();
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "shared-skill"),
+      name: "shared-skill",
+      description: "Shared skill",
+    });
+    await writeSkill({
+      dir: path.join(workspaceDir, "skills", "ops-skill"),
+      name: "ops-skill",
+      description: "Ops only skill",
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "shared-skill": { visibility: "shared" as const },
+          "ops-skill": {
+            visibility: "group_shared" as const,
+            groupIds: ["ops"],
+          },
+        },
+      },
+    };
+
+    const promptForOps = buildWorkspaceSkillsPrompt(workspaceDir, {
+      config,
+      viewer: { userId: "user-a", role: "user", groupIds: ["ops"] },
+    });
+    const promptForFinance = buildWorkspaceSkillsPrompt(workspaceDir, {
+      config,
+      viewer: { userId: "user-b", role: "user", groupIds: ["finance"] },
+    });
+
+    expect(promptForOps).toContain("shared-skill");
+    expect(promptForOps).toContain("ops-skill");
+    expect(promptForFinance).toContain("shared-skill");
+    expect(promptForFinance).not.toContain("ops-skill");
+  });
 });
 
 describe("applySkillEnvOverrides", () => {
@@ -289,6 +449,118 @@ describe("applySkillEnvOverrides", () => {
       expect(process.env.ENV_KEY).toBe("snap-key");
     } finally {
       restore();
+      if (originalEnv === undefined) {
+        expect(process.env.ENV_KEY).toBeUndefined();
+      } else {
+        expect(process.env.ENV_KEY).toBe(originalEnv);
+      }
+    }
+  });
+
+  it("does not inject private skill secrets for non-owners in strict mode", async () => {
+    const workspaceDir = await makeWorkspace();
+    const skillDir = path.join(workspaceDir, "skills", "env-skill");
+    await writeSkill({
+      dir: skillDir,
+      name: "env-skill",
+      description: "Needs env",
+      metadata: '{"openclaw":{"requires":{"env":["ENV_KEY"]},"primaryEnv":"ENV_KEY"}}',
+    });
+
+    const entries = loadWorkspaceSkillEntries(workspaceDir, {
+      managedSkillsDir: path.join(workspaceDir, ".managed"),
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "env-skill": {
+            apiKey: "private-key",
+            visibility: "user_private" as const,
+            ownerUserId: "user-a",
+          },
+        },
+      },
+    };
+    const originalEnv = process.env.ENV_KEY;
+    delete process.env.ENV_KEY;
+
+    const restoreDenied = applySkillEnvOverrides({
+      skills: entries,
+      config,
+      viewer: { userId: "user-b", role: "user" },
+    });
+    try {
+      expect(process.env.ENV_KEY).toBeUndefined();
+    } finally {
+      restoreDenied();
+    }
+
+    const restoreAllowed = applySkillEnvOverrides({
+      skills: entries,
+      config,
+      viewer: { userId: "user-a", role: "user" },
+    });
+    try {
+      expect(process.env.ENV_KEY).toBe("private-key");
+    } finally {
+      restoreAllowed();
+      if (originalEnv === undefined) {
+        expect(process.env.ENV_KEY).toBeUndefined();
+      } else {
+        expect(process.env.ENV_KEY).toBe(originalEnv);
+      }
+    }
+  });
+
+  it("does not inject private snapshot secrets for non-owners in strict mode", async () => {
+    const workspaceDir = await makeWorkspace();
+    const skillDir = path.join(workspaceDir, "skills", "env-skill");
+    await writeSkill({
+      dir: skillDir,
+      name: "env-skill",
+      description: "Needs env",
+      metadata: '{"openclaw":{"requires":{"env":["ENV_KEY"]},"primaryEnv":"ENV_KEY"}}',
+    });
+    const config = {
+      gateway: { multiUser: { mode: "strict" as const } },
+      skills: {
+        entries: {
+          "env-skill": {
+            apiKey: "private-key",
+            visibility: "user_private" as const,
+            ownerUserId: "user-a",
+          },
+        },
+      },
+    };
+    const snapshot = buildWorkspaceSkillSnapshot(workspaceDir, {
+      config,
+      viewer: { userId: "user-a", role: "user" },
+    });
+    const originalEnv = process.env.ENV_KEY;
+    delete process.env.ENV_KEY;
+
+    const restoreDenied = applySkillEnvOverridesFromSnapshot({
+      snapshot,
+      config,
+      viewer: { userId: "user-b", role: "user" },
+    });
+    try {
+      expect(process.env.ENV_KEY).toBeUndefined();
+    } finally {
+      restoreDenied();
+    }
+
+    const restoreAllowed = applySkillEnvOverridesFromSnapshot({
+      snapshot,
+      config,
+      viewer: { userId: "user-a", role: "user" },
+    });
+    try {
+      expect(process.env.ENV_KEY).toBe("private-key");
+    } finally {
+      restoreAllowed();
       if (originalEnv === undefined) {
         expect(process.env.ENV_KEY).toBeUndefined();
       } else {

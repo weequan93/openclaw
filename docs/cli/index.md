@@ -721,6 +721,12 @@ Include `--token` or `--password` explicitly. Missing explicit credentials is an
 Subcommands:
 
 - `gateway call <method> [--params <json>]`
+- `gateway authz-denied`
+- `gateway authz-denied-summary`
+- `gateway config-changes`
+- `gateway policy-bundles`
+- `gateway policy-bundle-resolve --bundle <id>`
+- `gateway policy-bundle-apply --bundle <id>`
 - `gateway health`
 - `gateway status`
 - `gateway probe`

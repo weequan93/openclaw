@@ -65,6 +65,10 @@ import {
 } from "./session-files.js";
 import { loadSqliteVecExtension } from "./sqlite-vec.js";
 import { requireNodeSqlite } from "./sqlite.js";
+import {
+  normalizeOwnerUserId,
+  resolveOwnedSessionFilesForAgent,
+} from "./owner-partition.js";
 
 type MemoryIndexMeta = {
   model: string;
@@ -112,6 +116,7 @@ export class MemoryIndexManager implements MemorySearchManager {
   private readonly cacheKey: string;
   private readonly cfg: OpenClawConfig;
   private readonly agentId: string;
+  private readonly ownerUserId?: string;
   private readonly workspaceDir: string;
   private readonly settings: ResolvedMemorySearchConfig;
   private provider: EmbeddingProvider;
@@ -169,14 +174,16 @@ export class MemoryIndexManager implements MemorySearchManager {
   static async get(params: {
     cfg: OpenClawConfig;
     agentId: string;
+    ownerUserId?: string;
   }): Promise<MemoryIndexManager | null> {
     const { cfg, agentId } = params;
-    const settings = resolveMemorySearchConfig(cfg, agentId);
+    const ownerUserId = normalizeOwnerUserId(params.ownerUserId);
+    const settings = resolveMemorySearchConfig(cfg, agentId, { ownerUserId });
     if (!settings) {
       return null;
     }
     const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-    const key = `${agentId}:${workspaceDir}:${JSON.stringify(settings)}`;
+    const key = `${agentId}:${workspaceDir}:${ownerUserId ?? "shared"}:${JSON.stringify(settings)}`;
     const existing = INDEX_CACHE.get(key);
     if (existing) {
       return existing;
@@ -194,6 +201,7 @@ export class MemoryIndexManager implements MemorySearchManager {
       cacheKey: key,
       cfg,
       agentId,
+      ownerUserId,
       workspaceDir,
       settings,
       providerResult,
@@ -206,6 +214,7 @@ export class MemoryIndexManager implements MemorySearchManager {
     cacheKey: string;
     cfg: OpenClawConfig;
     agentId: string;
+    ownerUserId?: string;
     workspaceDir: string;
     settings: ResolvedMemorySearchConfig;
     providerResult: EmbeddingProviderResult;
@@ -213,6 +222,7 @@ export class MemoryIndexManager implements MemorySearchManager {
     this.cacheKey = params.cacheKey;
     this.cfg = params.cfg;
     this.agentId = params.agentId;
+    this.ownerUserId = normalizeOwnerUserId(params.ownerUserId);
     this.workspaceDir = params.workspaceDir;
     this.settings = params.settings;
     this.provider = params.providerResult.provider;
@@ -1009,6 +1019,14 @@ export class MemoryIndexManager implements MemorySearchManager {
     state.pendingMessages = 0;
   }
 
+  private resolveOwnedSessionFiles(): Set<string> | null {
+    return resolveOwnedSessionFilesForAgent({
+      cfg: this.cfg,
+      agentId: this.agentId,
+      ownerUserId: this.ownerUserId,
+    });
+  }
+
   private isSessionFileForAgent(sessionFile: string): boolean {
     if (!sessionFile) {
       return false;
@@ -1016,7 +1034,14 @@ export class MemoryIndexManager implements MemorySearchManager {
     const sessionsDir = resolveSessionTranscriptsDirForAgent(this.agentId);
     const resolvedFile = path.resolve(sessionFile);
     const resolvedDir = path.resolve(sessionsDir);
-    return resolvedFile.startsWith(`${resolvedDir}${path.sep}`);
+    if (!resolvedFile.startsWith(`${resolvedDir}${path.sep}`)) {
+      return false;
+    }
+    const ownedSessionFiles = this.resolveOwnedSessionFiles();
+    if (!ownedSessionFiles) {
+      return true;
+    }
+    return ownedSessionFiles.has(resolvedFile);
   }
 
   private ensureIntervalSync() {
@@ -1147,17 +1172,21 @@ export class MemoryIndexManager implements MemorySearchManager {
     progress?: MemorySyncProgressState;
   }) {
     const files = await listSessionFilesForAgent(this.agentId);
-    const activePaths = new Set(files.map((file) => sessionPathForFile(file)));
+    const ownedSessionFiles = this.resolveOwnedSessionFiles();
+    const scopedFiles = ownedSessionFiles
+      ? files.filter((file) => ownedSessionFiles.has(path.resolve(file)))
+      : files;
+    const activePaths = new Set(scopedFiles.map((file) => sessionPathForFile(file)));
     const indexAll = params.needsFullReindex || this.sessionsDirtyFiles.size === 0;
     log.debug("memory sync: indexing session files", {
-      files: files.length,
+      files: scopedFiles.length,
       indexAll,
       dirtyFiles: this.sessionsDirtyFiles.size,
       batch: this.batch.enabled,
       concurrency: this.getIndexConcurrency(),
     });
     if (params.progress) {
-      params.progress.total += files.length;
+      params.progress.total += scopedFiles.length;
       params.progress.report({
         completed: params.progress.completed,
         total: params.progress.total,
@@ -1165,7 +1194,7 @@ export class MemoryIndexManager implements MemorySearchManager {
       });
     }
 
-    const tasks = files.map((absPath) => async () => {
+    const tasks = scopedFiles.map((absPath) => async () => {
       if (!indexAll && !this.sessionsDirtyFiles.has(absPath)) {
         if (params.progress) {
           params.progress.completed += 1;

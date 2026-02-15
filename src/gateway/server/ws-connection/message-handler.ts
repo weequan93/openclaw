@@ -24,17 +24,26 @@ import { recordRemoteNodeInfo, refreshRemoteNodeBins } from "../../../infra/skil
 import { upsertPresence } from "../../../infra/system-presence.js";
 import { loadVoiceWakeConfig } from "../../../infra/voicewake.js";
 import { rawDataToString } from "../../../infra/ws.js";
-import { isGatewayCliClient, isWebchatClient } from "../../../utils/message-channel.js";
+import {
+  GATEWAY_CLIENT_MODES,
+  isGatewayCliClient,
+  isWebchatClient,
+} from "../../../utils/message-channel.js";
+import { recordGatewayAuthzDenyEvent } from "../../authz-denied-events.js";
+import { resolveGatewayMultiUserMode } from "../../multi-user-mode.js";
 import { authorizeGatewayConnect, isLocalDirectRequest } from "../../auth.js";
 import { buildDeviceAuthPayload } from "../../device-auth.js";
 import { isLoopbackAddress, isTrustedProxyAddress, resolveGatewayClientIp } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
 import { checkBrowserOrigin } from "../../origin-check.js";
+import { OPERATOR_ADMIN_SCOPE } from "../../operator-scopes.js";
+import { hasConnectSenderIdentity, resolveConnectOwnerContext } from "../../owner-context.js";
 import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
 import {
   type ConnectParams,
   ErrorCodes,
   type ErrorShape,
+  type HelloOk,
   errorShape,
   formatValidationErrors,
   PROTOCOL_VERSION,
@@ -357,12 +366,11 @@ export function attachGatewayWsMessageHandler(params: {
           return;
         }
         const requestedScopes = Array.isArray(connectParams.scopes) ? connectParams.scopes : [];
-        const scopes =
-          requestedScopes.length > 0
-            ? requestedScopes
-            : role === "operator"
-              ? ["operator.admin"]
-              : [];
+        // Do not implicitly elevate operator connections to admin. Missing scopes
+        // stay empty and are denied at method authorization time.
+        const scopes = Array.from(
+          new Set(requestedScopes.map((scope) => scope.trim()).filter((scope) => scope.length > 0)),
+        );
         connectParams.role = role;
         connectParams.scopes = scopes;
 
@@ -409,6 +417,7 @@ export function attachGatewayWsMessageHandler(params: {
           isControlUi && configSnapshot.gateway?.controlUi?.dangerouslyDisableDeviceAuth === true;
         const allowControlUiBypass = allowInsecureControlUi || disableControlUiDeviceAuth;
         const device = disableControlUiDeviceAuth ? null : deviceRaw;
+        const multiUserMode = resolveGatewayMultiUserMode(configSnapshot);
 
         const authResult = await authorizeGatewayConnect({
           auth: resolvedAuth,
@@ -446,6 +455,7 @@ export function attachGatewayWsMessageHandler(params: {
             reason: authResult.reason,
             client: connectParams.client,
           });
+          const authError = errorShape(ErrorCodes.INVALID_REQUEST, authMessage);
           setCloseCause("unauthorized", {
             authMode: resolvedAuth.mode,
             authProvided,
@@ -456,11 +466,27 @@ export function attachGatewayWsMessageHandler(params: {
             mode: connectParams.client.mode,
             version: connectParams.client.version,
           });
+          recordGatewayAuthzDenyEvent({
+            ts: Date.now(),
+            requestId: frame.id,
+            method: "connect",
+            reasonCode: "AUTH_UNAUTHORIZED",
+            errorCode: authError.code,
+            errorMessage: authError.message,
+            userId: null,
+            userAlias: null,
+            principalId: null,
+            actorRole: null,
+            sourceRole: role,
+            clientId: connectParams.client.id,
+            clientMode: connectParams.client.mode,
+            sourceIp: reportedClientIp ?? null,
+          });
           send({
             type: "res",
             id: frame.id,
             ok: false,
-            error: errorShape(ErrorCodes.INVALID_REQUEST, authMessage),
+            error: authError,
           });
           close(1008, truncateCloseReason(authMessage));
         };
@@ -488,6 +514,51 @@ export function attachGatewayWsMessageHandler(params: {
 
           // Allow shared-secret authenticated connections (e.g., control-ui) to skip device identity
           if (!canSkipDevice) {
+            if (
+              multiUserMode === "strict" &&
+              !authOk &&
+              !hasSharedAuth &&
+              !hasConnectSenderIdentity(connectParams, {
+                connId,
+                mappings: configSnapshot.gateway?.multiUser?.identities,
+              })
+            ) {
+              setHandshakeState("failed");
+              setCloseCause("unknown-sender", {
+                client: connectParams.client.id,
+                clientDisplayName: connectParams.client.displayName,
+                mode: connectParams.client.mode,
+                version: connectParams.client.version,
+                role,
+              });
+              const error = errorShape(ErrorCodes.INVALID_REQUEST, "unknown sender identity", {
+                details: { reasonCode: "UNKNOWN_SENDER" },
+              });
+              recordGatewayAuthzDenyEvent({
+                ts: Date.now(),
+                requestId: frame.id,
+                method: "connect",
+                reasonCode: "UNKNOWN_SENDER",
+                errorCode: error.code,
+                errorMessage: error.message,
+                userId: null,
+                userAlias: null,
+                principalId: null,
+                actorRole: null,
+                sourceRole: role,
+                clientId: connectParams.client.id,
+                clientMode: connectParams.client.mode,
+                sourceIp: reportedClientIp ?? null,
+              });
+              send({
+                type: "res",
+                id: frame.id,
+                ok: false,
+                error,
+              });
+              close(1008, "unknown sender identity");
+              return;
+            }
             if (!authOk && hasSharedAuth) {
               rejectUnauthorized();
               return;
@@ -849,7 +920,7 @@ export function attachGatewayWsMessageHandler(params: {
           snapshot.health = cachedHealth;
           snapshot.stateVersion.health = getHealthVersion();
         }
-        const helloOk = {
+        const helloOk: HelloOk = {
           type: "hello-ok",
           protocol: PROTOCOL_VERSION,
           server: {
@@ -862,13 +933,13 @@ export function attachGatewayWsMessageHandler(params: {
           snapshot,
           canvasHostUrl,
           auth: deviceToken
-            ? {
-                deviceToken: deviceToken.token,
-                role: deviceToken.role,
-                scopes: deviceToken.scopes,
-                issuedAtMs: deviceToken.rotatedAtMs ?? deviceToken.createdAtMs,
-              }
-            : undefined,
+              ? {
+                  deviceToken: deviceToken.token,
+                  role: deviceToken.role,
+                  scopes: deviceToken.scopes,
+                  issuedAtMs: deviceToken.rotatedAtMs ?? deviceToken.createdAtMs,
+                }
+              : undefined,
           policy: {
             maxPayload: MAX_PAYLOAD_BYTES,
             maxBufferedBytes: MAX_BUFFERED_BYTES,
@@ -876,10 +947,97 @@ export function attachGatewayWsMessageHandler(params: {
           },
         };
 
+        const hasAdminScope = scopes.includes(OPERATOR_ADMIN_SCOPE);
+        const trustedLocalIdentityClient =
+          isLocalClient &&
+          Boolean(device) &&
+          (connectParams.client.id === GATEWAY_CLIENT_IDS.GATEWAY_CLIENT ||
+            isGatewayCliClient(connectParams.client) ||
+            connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND ||
+            connectParams.client.mode === GATEWAY_CLIENT_MODES.TEST);
+        const allowExplicitSenderIdentity =
+          !sharedAuthOk || hasAdminScope || trustedLocalIdentityClient;
+        const senderIdentityKnown =
+          hasConnectSenderIdentity(connectParams, {
+            connId,
+            mappings: configSnapshot.gateway?.multiUser?.identities,
+            allowExplicitIdentity: allowExplicitSenderIdentity,
+          }) || (sharedAuthOk && hasAdminScope);
+        if (multiUserMode === "strict" && !senderIdentityKnown) {
+          setHandshakeState("failed");
+          setCloseCause("unknown-sender", {
+            client: connectParams.client.id,
+            clientDisplayName: connectParams.client.displayName,
+            mode: connectParams.client.mode,
+            version: connectParams.client.version,
+            role,
+          });
+          const error = errorShape(ErrorCodes.INVALID_REQUEST, "unknown sender identity", {
+            details: { reasonCode: "UNKNOWN_SENDER" },
+          });
+          recordGatewayAuthzDenyEvent({
+            ts: Date.now(),
+            requestId: frame.id,
+            method: "connect",
+            reasonCode: "UNKNOWN_SENDER",
+            errorCode: error.code,
+            errorMessage: error.message,
+            userId: null,
+            userAlias: null,
+            principalId: null,
+            actorRole: null,
+            sourceRole: role,
+            clientId: connectParams.client.id,
+            clientMode: connectParams.client.mode,
+            sourceIp: reportedClientIp ?? null,
+          });
+          send({
+            type: "res",
+            id: frame.id,
+            ok: false,
+            error,
+          });
+          close(1008, "unknown sender identity");
+          return;
+        }
+
+        const owner = resolveConnectOwnerContext({
+          connect: connectParams,
+          connId,
+          mappings: configSnapshot.gateway?.multiUser?.identities,
+          allowExplicitIdentity: allowExplicitSenderIdentity,
+        });
+        if (!owner.userId || !owner.principalId) {
+          setHandshakeState("failed");
+          setCloseCause("owner-context-missing", {
+            client: connectParams.client.id,
+            role,
+          });
+          send({
+            type: "res",
+            id: frame.id,
+            ok: false,
+            error: errorShape(ErrorCodes.INVALID_REQUEST, "owner context required", {
+              details: { reasonCode: "OWNER_CONTEXT_MISSING" },
+            }),
+          });
+          close(1008, "owner context required");
+          return;
+        }
+        connectParams.identity = {
+          userId: owner.userId,
+          principalId: owner.principalId,
+          alias: owner.alias,
+        };
+        if (helloOk.auth) {
+          helloOk.auth.principalRole = owner.role;
+        }
+
         clearHandshakeTimer();
         const nextClient: GatewayWsClient = {
           socket,
           connect: connectParams,
+          owner,
           connId,
           presenceKey,
           clientIp: reportedClientIp,

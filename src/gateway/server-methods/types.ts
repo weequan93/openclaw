@@ -6,6 +6,7 @@ import type { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { WizardSession } from "../../wizard/session.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { NodeRegistry } from "../node-registry.js";
+import type { GatewayOwnerContext } from "../owner-context.js";
 import type { ConnectParams, ErrorShape, RequestFrame } from "../protocol/index.js";
 import type { ChannelRuntimeSnapshot } from "../server-channels.js";
 import type { DedupeEntry } from "../server-shared.js";
@@ -15,6 +16,8 @@ type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 export type GatewayClient = {
   connect: ConnectParams;
   connId?: string;
+  owner?: GatewayOwnerContext;
+  clientIp?: string;
 };
 
 export type RespondFn = (
@@ -109,6 +112,7 @@ export type GatewayRequestHandlerOptions = {
   req: RequestFrame;
   params: Record<string, unknown>;
   client: GatewayClient | null;
+  owner?: GatewayOwnerContext | null;
   isWebchatConnect: (params: ConnectParams | null | undefined) => boolean;
   respond: RespondFn;
   context: GatewayRequestContext;

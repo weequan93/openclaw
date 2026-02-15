@@ -75,6 +75,9 @@ export function createSessionsSpawnTool(opts?: {
   agentGroupChannel?: string | null;
   agentGroupSpace?: string | null;
   sandboxed?: boolean;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
   /** Explicit agent ID override for cron/hook sessions where session key parsing may not work. */
   requesterAgentIdOverride?: string;
 }): AnyAgentTool {
@@ -117,6 +120,30 @@ export function createSessionsSpawnTool(opts?: {
       let modelApplied = false;
 
       const cfg = loadConfig();
+      const gatewayIdentity =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? {
+              userId: opts.ownerUserId.trim(),
+              principalId:
+                typeof opts.ownerPrincipalId === "string" && opts.ownerPrincipalId.trim()
+                  ? opts.ownerPrincipalId.trim()
+                  : `user:${opts.ownerUserId.trim()}`,
+              ...(typeof opts.ownerAlias === "string" && opts.ownerAlias.trim()
+                ? { alias: opts.ownerAlias.trim() }
+                : {}),
+            }
+          : undefined;
+      const callGatewayOwned = async <T = Record<string, unknown>>(params: {
+        method: string;
+        params?: unknown;
+        timeoutMs?: number;
+      }) =>
+        await callGateway<T>({
+          method: params.method,
+          params: params.params,
+          timeoutMs: params.timeoutMs,
+          ...(gatewayIdentity ? { identity: gatewayIdentity } : {}),
+        });
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const requesterSessionKey = opts?.agentSessionKey;
       if (typeof requesterSessionKey === "string" && isSubagentSessionKey(requesterSessionKey)) {
@@ -193,7 +220,7 @@ export function createSessionsSpawnTool(opts?: {
       }
       if (resolvedModel) {
         try {
-          await callGateway({
+          await callGatewayOwned({
             method: "sessions.patch",
             params: { key: childSessionKey, model: resolvedModel },
             timeoutMs: 10_000,
@@ -216,7 +243,7 @@ export function createSessionsSpawnTool(opts?: {
       }
       if (thinkingOverride !== undefined) {
         try {
-          await callGateway({
+          await callGatewayOwned({
             method: "sessions.patch",
             params: {
               key: childSessionKey,
@@ -245,7 +272,7 @@ export function createSessionsSpawnTool(opts?: {
       const childIdem = crypto.randomUUID();
       let childRunId: string = childIdem;
       try {
-        const response = await callGateway<{ runId: string }>({
+        const response = await callGatewayOwned<{ runId: string }>({
           method: "agent",
           params: {
             message: task,
@@ -293,6 +320,7 @@ export function createSessionsSpawnTool(opts?: {
         cleanup,
         label: label || undefined,
         runTimeoutSeconds,
+        ownerIdentity: gatewayIdentity,
       });
 
       return jsonResult({

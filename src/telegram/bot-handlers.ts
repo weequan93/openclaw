@@ -12,7 +12,10 @@ import { buildModelsProviderData } from "../auto-reply/reply/commands-models.js"
 import { resolveStoredModelOverride } from "../auto-reply/reply/model-selection.js";
 import { listSkillCommandsForAgents } from "../auto-reply/skill-commands.js";
 import { buildCommandsMessagePaginated } from "../auto-reply/status.js";
-import { resolveChannelConfigWrites } from "../channels/plugins/config-writes.js";
+import {
+  resolveChannelConfigWrites,
+  resolveGatewayConfigAdminAccess,
+} from "../channels/plugins/config-writes.js";
 import { loadConfig } from "../config/config.js";
 import { writeConfigFile } from "../config/io.js";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
@@ -632,6 +635,12 @@ export const registerTelegramHandlers = ({
 
       if (!resolveChannelConfigWrites({ cfg, channelId: "telegram", accountId })) {
         runtime.log?.(warn("[telegram] Config writes disabled; skipping group config migration."));
+        return;
+      }
+      if (!resolveGatewayConfigAdminAccess({ cfg })) {
+        runtime.log?.(
+          warn("[telegram] Multi-user mode blocks automatic config migration outside admin plane."),
+        );
         return;
       }
 

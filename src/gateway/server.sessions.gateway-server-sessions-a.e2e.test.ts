@@ -470,4 +470,203 @@ describe("gateway server sessions", () => {
 
     ws.close();
   });
+
+  test("sessions.delete and sessions.compact deny owner mismatch", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-owner-"));
+    const storePath = path.join(dir, "sessions.json");
+    testState.sessionStorePath = storePath;
+    const sinceTs = Date.now();
+
+    await fs.writeFile(
+      path.join(dir, "sess-foreign.jsonl"),
+      `${JSON.stringify({ role: "user", content: "foreign history" })}\n`,
+      "utf-8",
+    );
+
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
+          ownerUserId: "user-a",
+        },
+        "discord:group:foreign": {
+          sessionId: "sess-foreign",
+          updatedAt: Date.now(),
+          ownerUserId: "user-b",
+        },
+      },
+    });
+
+    const { ws } = await openClient({
+      scopes: ["operator.write"],
+      identity: {
+        userId: "user-a",
+        principalId: "msg:discord:default:user-a",
+        alias: "Alice",
+      },
+    });
+
+    const deniedDelete = await rpcReq(ws, "sessions.delete", { key: "discord:group:foreign" });
+    expect(deniedDelete.ok).toBe(false);
+    expect(deniedDelete.error?.message ?? "").toContain("owner mismatch");
+    expect(
+      (
+        deniedDelete.error as
+          | { details?: { reasonCode?: string } }
+          | undefined
+      )?.details?.reasonCode,
+    ).toBe("OWNER_MISMATCH");
+
+    const deniedCompact = await rpcReq(ws, "sessions.compact", {
+      key: "discord:group:foreign",
+      maxLines: 1,
+    });
+    expect(deniedCompact.ok).toBe(false);
+    expect(deniedCompact.error?.message ?? "").toContain("owner mismatch");
+    expect(
+      (
+        deniedCompact.error as
+          | { details?: { reasonCode?: string } }
+          | undefined
+      )?.details?.reasonCode,
+    ).toBe("OWNER_MISMATCH");
+
+    const list = await rpcReq<{ sessions: Array<{ key: string }> }>(ws, "sessions.list", {
+      includeGlobal: false,
+      includeUnknown: false,
+    });
+    expect(list.ok).toBe(true);
+    expect(list.payload?.sessions.map((session) => session.key)).toEqual(["agent:main:main"]);
+
+    const { ws: adminWs } = await openClient({
+      scopes: ["operator.admin"],
+      identity: {
+        userId: "admin-user",
+        principalId: "admin:test:1",
+        alias: "Admin",
+      },
+    });
+    const deniedFeed = await rpcReq<{
+      events?: Array<{ method?: string; userAlias?: string | null }>;
+    }>(adminWs, "authz.denied.list", {
+      reasonCode: "OWNER_MISMATCH",
+      userId: "user-a",
+      sinceTs,
+      limit: 50,
+    });
+    expect(deniedFeed.ok).toBe(true);
+    const deniedMethods = (deniedFeed.payload?.events ?? []).map((event) => event.method);
+    expect(deniedMethods).toContain("sessions.delete");
+    expect(deniedMethods).toContain("sessions.compact");
+    expect(
+      (deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice"),
+    ).toBe(true);
+    adminWs.close();
+
+    ws.close();
+  });
+
+  test("sessions.resolve allows delegated session ownership access", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-resolve-delegated-"));
+    const storePath = path.join(dir, "sessions.json");
+    testState.sessionStorePath = storePath;
+
+    await writeSessionStore({
+      entries: {
+        main: {
+          sessionId: "sess-main",
+          updatedAt: Date.now(),
+          ownerUserId: "user-a",
+        },
+        "discord:group:delegated": {
+          sessionId: "sess-delegated",
+          updatedAt: Date.now(),
+          ownerUserId: "user-b",
+          label: "Delegated Session",
+        },
+      },
+    });
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          delegation: {
+            enabled: true,
+            rules: [
+              {
+                fromUserId: "user-a",
+                toUserId: "user-b",
+                resources: ["sessions"],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const { ws } = await openClient({
+      scopes: ["operator.read", "operator.write"],
+      identity: {
+        userId: "user-a",
+        principalId: "msg:discord:default:user-a",
+        alias: "Alice",
+      },
+    });
+
+    const delegatedList = await rpcReq<{ sessions: Array<{ key: string }> }>(ws, "sessions.list", {
+      includeGlobal: false,
+      includeUnknown: false,
+    });
+    expect(delegatedList.ok).toBe(true);
+    const delegatedKeys = delegatedList.payload?.sessions.map((session) => session.key) ?? [];
+    expect(delegatedKeys).toContain("agent:main:main");
+    expect(delegatedKeys).toContain("agent:main:discord:group:delegated");
+
+    const resolveByKey = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      key: "discord:group:delegated",
+    });
+    expect(resolveByKey.ok).toBe(true);
+    expect(resolveByKey.payload?.key).toBe("agent:main:discord:group:delegated");
+
+    const resolveBySessionId = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      sessionId: "sess-delegated",
+    });
+    expect(resolveBySessionId.ok).toBe(true);
+    expect(resolveBySessionId.payload?.key).toBe("agent:main:discord:group:delegated");
+
+    const resolveByLabel = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      label: "Delegated Session",
+      agentId: "main",
+    });
+    expect(resolveByLabel.ok).toBe(true);
+    expect(resolveByLabel.payload?.key).toBe("agent:main:discord:group:delegated");
+
+    const patchDelegated = await rpcReq<{ ok: true }>(ws, "sessions.patch", {
+      key: "discord:group:delegated",
+      verboseLevel: "on",
+    });
+    expect(patchDelegated.ok).toBe(true);
+
+    const resetDelegated = await rpcReq<{ ok: true }>(ws, "sessions.reset", {
+      key: "discord:group:delegated",
+    });
+    expect(resetDelegated.ok).toBe(true);
+
+    const adminList = await rpcReq<{
+      sessions: Array<{ key: string; ownerUserId?: string }>;
+    }>(ws, "sessions.list", {
+      includeGlobal: false,
+      includeUnknown: false,
+    });
+    expect(adminList.ok).toBe(true);
+    const delegatedSession = adminList.payload?.sessions.find(
+      (session) => session.key === "agent:main:discord:group:delegated",
+    );
+    expect(delegatedSession?.ownerUserId).toBe("user-b");
+
+    ws.close();
+  });
 });

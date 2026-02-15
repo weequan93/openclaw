@@ -3,7 +3,7 @@ import type { CostUsageSummary } from "../../infra/session-cost-usage.js";
 import type { GatewayDiscoverOpts } from "./discover.js";
 import { gatewayStatusCommand } from "../../commands/gateway-status.js";
 import { formatHealthChannelLines, type HealthSummary } from "../../commands/health.js";
-import { loadConfig } from "../../config/config.js";
+import { loadConfig, resolveConfigSnapshotHash } from "../../config/config.js";
 import { discoverGatewayBeacons } from "../../infra/bonjour-discovery.js";
 import { resolveWideAreaDiscoveryDomain } from "../../infra/widearea-dns.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -90,6 +90,70 @@ function parseDaysOption(raw: unknown, fallback = 30): number {
     }
   }
   return fallback;
+}
+
+function parseOptionalNonNegativeInt(raw: unknown, label: string): number | undefined {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return undefined;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return Math.floor(parsed);
+}
+
+function parsePositiveIntOption(raw: unknown, fallback: number, label: string): number {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return Math.floor(parsed);
+}
+
+const OWNERSHIP_BACKFILL_RESOURCES = new Set(["agents", "sessions", "nodes", "browserProfiles"]);
+const GATEWAY_POLICY_BUNDLE_IDS = new Set([
+  "single_user",
+  "multi_user_isolated",
+  "strict_admin_control",
+]);
+
+function parseOwnershipBackfillResources(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const tokens = raw
+    .flatMap((entry) => String(entry ?? "").split(","))
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) {
+    return undefined;
+  }
+  const unique = Array.from(new Set(tokens));
+  for (const token of unique) {
+    if (!OWNERSHIP_BACKFILL_RESOURCES.has(token)) {
+      throw new Error(
+        `resource must be one of: ${Array.from(OWNERSHIP_BACKFILL_RESOURCES).join(", ")}`,
+      );
+    }
+  }
+  return unique;
+}
+
+function parseGatewayPolicyBundleId(raw: unknown): string {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(
+      `bundle is required and must be one of: ${Array.from(GATEWAY_POLICY_BUNDLE_IDS).join(", ")}`,
+    );
+  }
+  const bundleId = raw.trim();
+  if (!GATEWAY_POLICY_BUNDLE_IDS.has(bundleId)) {
+    throw new Error(`bundle must be one of: ${Array.from(GATEWAY_POLICY_BUNDLE_IDS).join(", ")}`);
+  }
+  return bundleId;
 }
 
 function renderCostUsageSummary(summary: CostUsageSummary, days: number, rich: boolean): string[] {
@@ -239,6 +303,551 @@ export function registerGatewayCli(program: Command) {
             defaultRuntime.log(line);
           }
         }, "Gateway usage cost failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("authz-denied")
+      .description("List recent gateway authorization deny events (admin)")
+      .option("--limit <n>", "Max events to return", "100")
+      .option("--cursor <cursor>", "Pagination cursor from a previous result")
+      .option("--order <order>", "Sort order for the returned page (desc|asc)", "desc")
+      .option("--method <method>", "Filter by method")
+      .option("--reason <reasonCode>", "Filter by deny reason code")
+      .option("--user-id <userId>", "Filter by user ID")
+      .option("--principal-id <principalId>", "Filter by principal ID")
+      .option("--since <ms>", "Filter events after timestamp (epoch ms)")
+      .option("--until <ms>", "Filter events before timestamp (epoch ms)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const limit = parsePositiveIntOption(opts.limit, 100, "limit");
+          const cursor =
+            typeof opts.cursor === "string" && opts.cursor.trim() ? opts.cursor.trim() : undefined;
+          const orderRaw =
+            typeof opts.order === "string" && opts.order.trim() ? opts.order.trim() : "desc";
+          if (orderRaw !== "asc" && orderRaw !== "desc") {
+            throw new Error("order must be either desc or asc");
+          }
+          const order = orderRaw as "asc" | "desc";
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const method =
+            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+          const reasonCode =
+            typeof opts.reason === "string" && opts.reason.trim() ? opts.reason.trim() : undefined;
+          const userId =
+            typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
+          const principalId =
+            typeof opts.principalId === "string" && opts.principalId.trim()
+              ? opts.principalId.trim()
+              : undefined;
+          const result = (await callGatewayCli("authz.denied.list", opts, {
+            limit,
+            ...(cursor ? { cursor } : {}),
+            ...(order !== "desc" ? { order } : {}),
+            ...(method ? { method } : {}),
+            ...(reasonCode ? { reasonCode } : {}),
+            ...(userId ? { userId } : {}),
+            ...(principalId ? { principalId } : {}),
+            ...(sinceTs !== undefined ? { sinceTs } : {}),
+            ...(untilTs !== undefined ? { untilTs } : {}),
+          })) as {
+            ts?: number;
+            nextCursor?: string | null;
+            hasMore?: boolean;
+            events?: Array<{
+              ts?: number;
+              method?: string;
+              reasonCode?: string;
+              requestId?: string;
+              userId?: string | null;
+              principalId?: string | null;
+              errorMessage?: string;
+            }>;
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Authz Denied Events"));
+          const events = Array.isArray(result.events) ? result.events : [];
+          if (events.length === 0) {
+            defaultRuntime.log(colorize(rich, theme.muted, "No denied authorization events."));
+            return;
+          }
+          for (const event of events) {
+            const ts =
+              typeof event.ts === "number" && Number.isFinite(event.ts)
+                ? new Date(event.ts).toISOString()
+                : "unknown-time";
+            const actor = event.principalId ?? event.userId ?? "unknown-actor";
+            defaultRuntime.log(
+              `${colorize(rich, theme.muted, ts)} ${event.reasonCode ?? "UNKNOWN"} ${event.method ?? "unknown"} ${actor} ${event.errorMessage ?? ""}`.trim(),
+            );
+          }
+          if (result.hasMore && result.nextCursor) {
+            defaultRuntime.log(colorize(rich, theme.muted, `next cursor: ${result.nextCursor}`));
+          }
+        }, "Gateway authz denied failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("authz-denied-summary")
+      .description("Summarize gateway authorization deny events (admin)")
+      .option("--top-n <n>", "Max buckets per summary group", "5")
+      .option("--alert-threshold <n>", "Count threshold for high-frequency principals", "5")
+      .option("--method <method>", "Filter by method")
+      .option("--reason <reasonCode>", "Filter by deny reason code")
+      .option("--error-code <errorCode>", "Filter by error code")
+      .option("--user-id <userId>", "Filter by user ID")
+      .option("--principal-id <principalId>", "Filter by principal ID")
+      .option("--since <ms>", "Filter events after timestamp (epoch ms)")
+      .option("--until <ms>", "Filter events before timestamp (epoch ms)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const topN = parsePositiveIntOption(opts.topN, 5, "top-n");
+          const alertThreshold = parsePositiveIntOption(opts.alertThreshold, 5, "alert-threshold");
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const method =
+            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+          const reasonCode =
+            typeof opts.reason === "string" && opts.reason.trim() ? opts.reason.trim() : undefined;
+          const errorCode =
+            typeof opts.errorCode === "string" && opts.errorCode.trim()
+              ? opts.errorCode.trim()
+              : undefined;
+          const userId =
+            typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
+          const principalId =
+            typeof opts.principalId === "string" && opts.principalId.trim()
+              ? opts.principalId.trim()
+              : undefined;
+
+          const result = (await callGatewayCli("authz.denied.summary", opts, {
+            topN,
+            alertThreshold,
+            ...(method ? { method } : {}),
+            ...(reasonCode ? { reasonCode } : {}),
+            ...(errorCode ? { errorCode } : {}),
+            ...(userId ? { userId } : {}),
+            ...(principalId ? { principalId } : {}),
+            ...(sinceTs !== undefined ? { sinceTs } : {}),
+            ...(untilTs !== undefined ? { untilTs } : {}),
+          })) as {
+            ts?: number;
+            total?: number;
+            byReasonCode?: Array<{ key?: string; count?: number }>;
+            byMethod?: Array<{ key?: string; count?: number }>;
+            byPrincipalId?: Array<{ key?: string; count?: number }>;
+            highFrequency?: {
+              threshold?: number;
+              principals?: Array<{ key?: string; count?: number }>;
+            };
+          };
+
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Authz Denied Summary"));
+          defaultRuntime.log(`${colorize(rich, theme.muted, "Total:")} ${result.total ?? 0}`);
+
+          const renderBuckets = (label: string, rows?: Array<{ key?: string; count?: number }>) => {
+            const items = Array.isArray(rows) ? rows : [];
+            if (items.length === 0) {
+              defaultRuntime.log(`${colorize(rich, theme.muted, `${label}:`)} none`);
+              return;
+            }
+            const formatted = items
+              .map((row) => `${row.key ?? "unknown"}=${row.count ?? 0}`)
+              .join(", ");
+            defaultRuntime.log(`${colorize(rich, theme.muted, `${label}:`)} ${formatted}`);
+          };
+
+          renderBuckets("Top reasons", result.byReasonCode);
+          renderBuckets("Top methods", result.byMethod);
+          renderBuckets("Top principals", result.byPrincipalId);
+          renderBuckets(
+            `High frequency (>=${result.highFrequency?.threshold ?? alertThreshold})`,
+            result.highFrequency?.principals,
+          );
+        }, "Gateway authz denied summary failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("config-changes")
+      .description("List recent gateway config change events (admin)")
+      .option("--limit <n>", "Max events to return", "100")
+      .option("--cursor <cursor>", "Pagination cursor from a previous result")
+      .option("--order <order>", "Sort order for the returned page (desc|asc)", "desc")
+      .option("--method <method>", "Filter by method")
+      .option("--policy-bundles", "Shortcut for --method config.policyBundle.apply", false)
+      .option("--user-id <userId>", "Filter by user ID")
+      .option("--principal-id <principalId>", "Filter by principal ID")
+      .option("--since <ms>", "Filter events after timestamp (epoch ms)")
+      .option("--until <ms>", "Filter events before timestamp (epoch ms)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const limit = parsePositiveIntOption(opts.limit, 100, "limit");
+          const cursor =
+            typeof opts.cursor === "string" && opts.cursor.trim() ? opts.cursor.trim() : undefined;
+          const orderRaw =
+            typeof opts.order === "string" && opts.order.trim() ? opts.order.trim() : "desc";
+          if (orderRaw !== "asc" && orderRaw !== "desc") {
+            throw new Error("order must be either desc or asc");
+          }
+          const order = orderRaw as "asc" | "desc";
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const method =
+            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+          const policyBundlesOnly = opts.policyBundles === true;
+          if (policyBundlesOnly && method && method !== "config.policyBundle.apply") {
+            throw new Error(
+              "policy-bundles filter cannot be combined with a different method filter",
+            );
+          }
+          const methodFilter = policyBundlesOnly ? "config.policyBundle.apply" : method;
+          const userId =
+            typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
+          const principalId =
+            typeof opts.principalId === "string" && opts.principalId.trim()
+              ? opts.principalId.trim()
+              : undefined;
+          const result = (await callGatewayCli("config.changes.list", opts, {
+            limit,
+            ...(cursor ? { cursor } : {}),
+            ...(order !== "desc" ? { order } : {}),
+            ...(methodFilter ? { method: methodFilter } : {}),
+            ...(userId ? { userId } : {}),
+            ...(principalId ? { principalId } : {}),
+            ...(sinceTs !== undefined ? { sinceTs } : {}),
+            ...(untilTs !== undefined ? { untilTs } : {}),
+          })) as {
+            ts?: number;
+            nextCursor?: string | null;
+            hasMore?: boolean;
+            events?: Array<{
+              ts?: number;
+              method?: string;
+              requestId?: string;
+              userId?: string | null;
+              userAlias?: string | null;
+              principalId?: string | null;
+              note?: string | null;
+            }>;
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Gateway Config Changes"));
+          const events = Array.isArray(result.events) ? result.events : [];
+          if (events.length === 0) {
+            defaultRuntime.log(colorize(rich, theme.muted, "No config change events."));
+            return;
+          }
+          for (const event of events) {
+            const ts =
+              typeof event.ts === "number" && Number.isFinite(event.ts)
+                ? new Date(event.ts).toISOString()
+                : "unknown-time";
+            const actor = event.principalId ?? event.userAlias ?? event.userId ?? "unknown-actor";
+            const notePart = event.note ? ` note=${event.note}` : "";
+            defaultRuntime.log(
+              `${colorize(rich, theme.muted, ts)} ${event.method ?? "unknown"} ${actor}${notePart}`,
+            );
+          }
+          if (result.hasMore && result.nextCursor) {
+            defaultRuntime.log(colorize(rich, theme.muted, `next cursor: ${result.nextCursor}`));
+          }
+        }, "Gateway config changes failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("policy-bundles")
+      .description("List gateway policy bundles (admin)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const result = (await callGatewayCli("config.policyBundles.list", opts, {})) as {
+            bundles?: Array<{
+              id?: string;
+              title?: string;
+              description?: string;
+            }>;
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Gateway Policy Bundles"));
+          const bundles = Array.isArray(result.bundles) ? result.bundles : [];
+          if (bundles.length === 0) {
+            defaultRuntime.log(colorize(rich, theme.muted, "No policy bundles available."));
+            return;
+          }
+          for (const bundle of bundles) {
+            defaultRuntime.log(
+              `${bundle.id ?? "unknown"}${bundle.title ? ` · ${bundle.title}` : ""}`,
+            );
+            if (bundle.description) {
+              defaultRuntime.log(colorize(rich, theme.muted, `  ${bundle.description}`));
+            }
+          }
+        }, "Gateway policy bundles failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("policy-bundle-resolve")
+      .description("Resolve a gateway policy bundle patch (admin)")
+      .requiredOption(
+        "--bundle <id>",
+        "Bundle id: single_user|multi_user_isolated|strict_admin_control",
+      )
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const bundleId = parseGatewayPolicyBundleId((opts as { bundle?: unknown }).bundle);
+          const result = (await callGatewayCli("config.policyBundle.resolve", opts, {
+            bundleId,
+          })) as {
+            bundle?: {
+              id?: string;
+              title?: string;
+              description?: string;
+              patch?: unknown;
+            };
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Gateway Policy Bundle"));
+          const bundle = result.bundle;
+          if (!bundle) {
+            defaultRuntime.log(colorize(rich, theme.muted, "No bundle payload returned."));
+            return;
+          }
+          defaultRuntime.log(`${bundle.id ?? bundleId}${bundle.title ? ` · ${bundle.title}` : ""}`);
+          if (bundle.description) {
+            defaultRuntime.log(colorize(rich, theme.muted, bundle.description));
+          }
+          defaultRuntime.log(JSON.stringify(bundle.patch ?? {}, null, 2));
+        }, "Gateway policy bundle resolve failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("policy-bundle-apply")
+      .description("Apply a gateway policy bundle and restart (admin)")
+      .requiredOption(
+        "--bundle <id>",
+        "Bundle id: single_user|multi_user_isolated|strict_admin_control",
+      )
+      .option("--session-key <sessionKey>", "Session key for restart wake notification")
+      .option("--note <note>", "Optional admin note stored in config change log")
+      .option("--restart-delay <ms>", "Restart delay in ms")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const bundleId = parseGatewayPolicyBundleId((opts as { bundle?: unknown }).bundle);
+          const note =
+            typeof (opts as { note?: unknown }).note === "string" &&
+            (opts as { note?: string }).note?.trim()
+              ? (opts as { note?: string }).note?.trim()
+              : undefined;
+          const restartDelayMs = parseOptionalNonNegativeInt(
+            (opts as { restartDelay?: unknown }).restartDelay,
+            "restart-delay",
+          );
+          const sessionKey =
+            typeof (opts as { sessionKey?: unknown }).sessionKey === "string" &&
+            (opts as { sessionKey?: string }).sessionKey?.trim()
+              ? (opts as { sessionKey?: string }).sessionKey?.trim()
+              : undefined;
+
+          const snapshot = (await callGatewayCli("config.get", opts, {})) as {
+            hash?: string;
+            raw?: string;
+          };
+          const baseHash = resolveConfigSnapshotHash({
+            hash: snapshot.hash,
+            raw: snapshot.raw,
+          });
+          const defaultNote = `policy-bundle:${bundleId}`;
+
+          const applyParams = {
+            bundleId,
+            ...(baseHash ? { baseHash } : {}),
+            ...(sessionKey ? { sessionKey } : {}),
+            ...(note ? { note } : { note: defaultNote }),
+            ...(restartDelayMs !== undefined ? { restartDelayMs } : {}),
+          };
+
+          const result = await (async () => {
+            try {
+              return await callGatewayCli("config.policyBundle.apply", opts, applyParams);
+            } catch (err) {
+              const message = String(err);
+              if (!message.toLowerCase().includes("unknown method")) {
+                throw err;
+              }
+              const resolved = (await callGatewayCli("config.policyBundle.resolve", opts, {
+                bundleId,
+              })) as { bundle?: { patch?: unknown } };
+              const patch = resolved.bundle?.patch;
+              if (!patch || typeof patch !== "object" || Array.isArray(patch)) {
+                throw new Error("policy bundle resolve returned invalid patch payload", {
+                  cause: err,
+                });
+              }
+              return await callGatewayCli("config.patch", opts, {
+                raw: JSON.stringify(patch, null, 2),
+                ...(baseHash ? { baseHash } : {}),
+                ...(sessionKey ? { sessionKey } : {}),
+                ...(note ? { note } : { note: defaultNote }),
+                ...(restartDelayMs !== undefined ? { restartDelayMs } : {}),
+              });
+            }
+          })();
+
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Policy Bundle Applied"));
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Bundle:")} ${bundleId}${baseHash ? "" : " (no base hash)"}`,
+          );
+          defaultRuntime.log(JSON.stringify(result, null, 2));
+        }, "Gateway policy bundle apply failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("ownership-gaps")
+      .description("List resources missing owner metadata (admin)")
+      .option(
+        "--resource <name>",
+        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles",
+        (value, prev: string[]) => [...prev, value],
+        [],
+      )
+      .option("--limit <n>", "Max sample entries per resource (default: 50)", "50")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const resources = parseOwnershipBackfillResources(opts.resource);
+          const limit = parsePositiveIntOption(opts.limit, 50, "limit");
+          const result = await callGatewayCli("ownership.gaps", opts, {
+            limit,
+            ...(resources ? { resources } : {}),
+          });
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          const typed = result as {
+            limit?: number;
+            summary?: { scanned?: number; missing?: number };
+            resourcesSummary?: Record<string, { scanned?: number; missing?: number }>;
+          };
+          defaultRuntime.log(colorize(rich, theme.heading, "Ownership Gaps"));
+          defaultRuntime.log(`${colorize(rich, theme.muted, "Limit:")} ${typed.limit ?? limit}`);
+          const summary = typed.summary ?? {};
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Summary:")} scanned=${summary.scanned ?? 0} missing=${summary.missing ?? 0}`,
+          );
+          const resourcesObj = typed.resourcesSummary ?? {};
+          for (const [name, stats] of Object.entries(resourcesObj)) {
+            defaultRuntime.log(
+              `${colorize(rich, theme.muted, name)} scanned=${stats.scanned ?? 0} missing=${stats.missing ?? 0}`,
+            );
+          }
+        }, "Gateway ownership gaps failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("ownership-backfill")
+      .description("Backfill missing owner metadata for multi-user migration (admin)")
+      .requiredOption("--owner-user <userId>", "Owner user UUID used for missing ownership")
+      .option("--owner-principal <principalId>", "Owner principal ID for session ownership stamp")
+      .option(
+        "--resource <name>",
+        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles",
+        (value, prev: string[]) => [...prev, value],
+        [],
+      )
+      .option("--dry-run", "Preview changes without writing data", false)
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const ownerUserId =
+            typeof opts.ownerUser === "string" && opts.ownerUser.trim()
+              ? opts.ownerUser.trim()
+              : "";
+          if (!ownerUserId) {
+            throw new Error("owner-user is required");
+          }
+          const ownerPrincipalId =
+            typeof opts.ownerPrincipal === "string" && opts.ownerPrincipal.trim()
+              ? opts.ownerPrincipal.trim()
+              : undefined;
+          const resources = parseOwnershipBackfillResources(opts.resource);
+          const dryRun = opts.dryRun === true;
+          const result = await callGatewayCli("ownership.backfill", opts, {
+            ownerUserId,
+            ...(ownerPrincipalId ? { ownerPrincipalId } : {}),
+            ...(resources ? { resources } : {}),
+            ...(dryRun ? { dryRun: true } : {}),
+          });
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          const typed = result as {
+            dryRun?: boolean;
+            ownerUserId?: string;
+            summary?: { scanned?: number; updated?: number; skipped?: number };
+            resources?: Record<string, { scanned?: number; updated?: number; skipped?: number }>;
+          };
+          defaultRuntime.log(colorize(rich, theme.heading, "Ownership Backfill"));
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Owner:")} ${typed.ownerUserId ?? ownerUserId}`,
+          );
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Mode:")} ${typed.dryRun ? "dry-run" : "apply"}`,
+          );
+          const summary = typed.summary ?? {};
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Summary:")} scanned=${summary.scanned ?? 0} updated=${summary.updated ?? 0} skipped=${summary.skipped ?? 0}`,
+          );
+          const resourcesObj = typed.resources ?? {};
+          for (const [name, stats] of Object.entries(resourcesObj)) {
+            defaultRuntime.log(
+              `${colorize(rich, theme.muted, name)} scanned=${stats.scanned ?? 0} updated=${stats.updated ?? 0} skipped=${stats.skipped ?? 0}`,
+            );
+          }
+        }, "Gateway ownership backfill failed");
       }),
   );
 

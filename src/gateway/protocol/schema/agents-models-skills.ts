@@ -48,6 +48,7 @@ export const AgentsCreateParamsSchema = Type.Object(
   {
     name: NonEmptyString,
     workspace: NonEmptyString,
+    ownerUserId: Type.Optional(NonEmptyString),
     emoji: Type.Optional(Type.String()),
     avatar: Type.Optional(Type.String()),
   },
@@ -69,6 +70,7 @@ export const AgentsUpdateParamsSchema = Type.Object(
     agentId: NonEmptyString,
     name: Type.Optional(NonEmptyString),
     workspace: Type.Optional(NonEmptyString),
+    ownerUserId: Type.Optional(NonEmptyString),
     model: Type.Optional(NonEmptyString),
     avatar: Type.Optional(Type.String()),
   },
@@ -204,6 +206,15 @@ export const SkillsUpdateParamsSchema = Type.Object(
     enabled: Type.Optional(Type.Boolean()),
     apiKey: Type.Optional(Type.String()),
     env: Type.Optional(Type.Record(NonEmptyString, Type.String())),
+    visibility: Type.Optional(
+      Type.Union([
+        Type.Literal("shared"),
+        Type.Literal("group_shared"),
+        Type.Literal("user_private"),
+      ]),
+    ),
+    groupIds: Type.Optional(Type.Array(NonEmptyString)),
+    ownerUserId: Type.Optional(Type.String()),
   },
   { additionalProperties: false },
 );

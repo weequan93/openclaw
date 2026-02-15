@@ -211,6 +211,65 @@ export type GatewayNodesConfig = {
   denyCommands?: string[];
 };
 
+export type GatewayMultiUserMode = "off" | "compat" | "strict";
+
+export type GatewayIdentityMappingRole = "admin" | "user" | "node" | "service";
+
+export type GatewayIdentityMappingEntry = {
+  /** Immutable owner UUID used for storage and authorization checks. */
+  userId: string;
+  /** Optional canonical principal id override (defaults to mapping key). */
+  principalId?: string;
+  /** Optional display alias for user-facing messages and admin feeds. */
+  alias?: string;
+  /** Optional explicit role assignment for mapped principal. */
+  role?: GatewayIdentityMappingRole;
+  /** Optional group IDs for group-shared skill visibility. */
+  groupIds?: string[];
+};
+
+export type GatewayMultiUserDelegationResource =
+  | "agents"
+  | "nodes"
+  | "sessions"
+  | "browser"
+  | "memory";
+
+export type GatewayMultiUserDelegationRule = {
+  /** Requesting user UUID allowed to access delegated resources. */
+  fromUserId: string;
+  /** Resource owner UUID receiving delegated access from fromUserId. */
+  toUserId: string;
+  /** Optional resource allowlist; omitted means all ownership-enforced resources. */
+  resources?: GatewayMultiUserDelegationResource[];
+};
+
+export type GatewayMultiUserDelegationConfig = {
+  /** Delegation is disabled by default and must be enabled by admins explicitly. */
+  enabled?: boolean;
+  /** Explicit allowlist rules for cross-owner access. */
+  rules?: GatewayMultiUserDelegationRule[];
+};
+
+export type GatewayMultiUserConfig = {
+  /**
+   * Multi-user ownership enforcement mode.
+   * - off: disable user-ownership enforcement checks
+   * - compat: enforce owner mismatch checks, but allow resources missing owner metadata
+   * - strict: require owner metadata and enforce owner match checks
+   */
+  mode?: GatewayMultiUserMode;
+  /**
+   * Admin-managed sender identity mappings keyed by source principal.
+   * Example key: msg:telegram:default:123456789
+   */
+  identities?: Record<string, GatewayIdentityMappingEntry>;
+  /**
+   * Admin-managed cross-owner delegation policy.
+   */
+  delegation?: GatewayMultiUserDelegationConfig;
+};
+
 export type GatewayConfig = {
   /** Single multiplexed port for Gateway WS + HTTP (default: 18789). */
   port?: number;
@@ -239,6 +298,7 @@ export type GatewayConfig = {
   tls?: GatewayTlsConfig;
   http?: GatewayHttpConfig;
   nodes?: GatewayNodesConfig;
+  multiUser?: GatewayMultiUserConfig;
   /**
    * IPs of trusted reverse proxies (e.g. Traefik, nginx). When a connection
    * arrives from one of these IPs, the Gateway trusts `x-forwarded-for` (or

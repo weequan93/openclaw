@@ -26,11 +26,24 @@ import {
 import { scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
 import {
+  listGatewayConfigChangeEventsPage,
+  recordGatewayConfigChangeEvent,
+} from "../config-change-events.js";
+import {
+  applyGatewayPolicyBundle,
+  listGatewayPolicyBundles,
+  resolveGatewayPolicyBundle,
+} from "../config-policy-bundles.js";
+import {
   ErrorCodes,
   errorShape,
   formatValidationErrors,
   validateConfigApplyParams,
+  validateConfigChangesListParams,
   validateConfigGetParams,
+  validateConfigPolicyBundleApplyParams,
+  validateConfigPolicyBundleResolveParams,
+  validateConfigPolicyBundlesListParams,
   validateConfigPatchParams,
   validateConfigSchemaParams,
   validateConfigSetParams,
@@ -92,6 +105,249 @@ function requireConfigBaseHash(
 }
 
 export const configHandlers: GatewayRequestHandlers = {
+  "config.policyBundles.list": async ({ params, respond }) => {
+    if (!validateConfigPolicyBundlesListParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid config.policyBundles.list params: ${formatValidationErrors(validateConfigPolicyBundlesListParams.errors)}`,
+        ),
+      );
+      return;
+    }
+    respond(
+      true,
+      {
+        ts: Date.now(),
+        bundles: listGatewayPolicyBundles(),
+      },
+      undefined,
+    );
+  },
+  "config.policyBundle.resolve": async ({ params, respond }) => {
+    if (!validateConfigPolicyBundleResolveParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid config.policyBundle.resolve params: ${formatValidationErrors(validateConfigPolicyBundleResolveParams.errors)}`,
+        ),
+      );
+      return;
+    }
+    const bundleId = (
+      params as {
+        bundleId: "single_user" | "multi_user_isolated" | "strict_admin_control";
+      }
+    ).bundleId;
+    const bundle = resolveGatewayPolicyBundle(bundleId);
+    if (!bundle) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, `unknown policy bundle: ${bundleId}`),
+      );
+      return;
+    }
+    respond(
+      true,
+      {
+        ts: Date.now(),
+        bundle,
+      },
+      undefined,
+    );
+  },
+  "config.policyBundle.apply": async ({ params, respond, req, owner, client }) => {
+    if (!validateConfigPolicyBundleApplyParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid config.policyBundle.apply params: ${formatValidationErrors(validateConfigPolicyBundleApplyParams.errors)}`,
+        ),
+      );
+      return;
+    }
+    const snapshot = await readConfigFileSnapshot();
+    if (!requireConfigBaseHash(params, snapshot, respond)) {
+      return;
+    }
+    if (!snapshot.valid) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid config; fix before applying policy bundle"),
+      );
+      return;
+    }
+    const bundleId = (
+      params as {
+        bundleId: "single_user" | "multi_user_isolated" | "strict_admin_control";
+      }
+    ).bundleId;
+    const bundle = resolveGatewayPolicyBundle(bundleId);
+    if (!bundle) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, `unknown policy bundle: ${bundleId}`),
+      );
+      return;
+    }
+    const patched = applyGatewayPolicyBundle({
+      config: snapshot.config,
+      bundleId,
+    });
+    const migrated = applyLegacyMigrations(patched);
+    const resolved = migrated.next ?? patched;
+    const validated = validateConfigObjectWithPlugins(resolved);
+    if (!validated.ok) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid config", {
+          details: { issues: validated.issues },
+        }),
+      );
+      return;
+    }
+    await writeConfigFile(validated.config);
+
+    const sessionKey =
+      typeof (params as { sessionKey?: unknown }).sessionKey === "string"
+        ? (params as { sessionKey?: string }).sessionKey?.trim() || undefined
+        : undefined;
+    const noteRaw =
+      typeof (params as { note?: unknown }).note === "string"
+        ? (params as { note?: string }).note?.trim() || undefined
+        : undefined;
+    const note = noteRaw ?? `policy-bundle:${bundleId}`;
+    const restartDelayMsRaw = (params as { restartDelayMs?: unknown }).restartDelayMs;
+    const restartDelayMs =
+      typeof restartDelayMsRaw === "number" && Number.isFinite(restartDelayMsRaw)
+        ? Math.max(0, Math.floor(restartDelayMsRaw))
+        : undefined;
+
+    const payload: RestartSentinelPayload = {
+      kind: "config-apply",
+      status: "ok",
+      ts: Date.now(),
+      sessionKey,
+      message: note,
+      doctorHint: formatDoctorNonInteractiveHint(),
+      stats: {
+        mode: "config.policyBundle.apply",
+        root: CONFIG_PATH,
+      },
+    };
+    let sentinelPath: string | null = null;
+    try {
+      sentinelPath = await writeRestartSentinel(payload);
+    } catch {
+      sentinelPath = null;
+    }
+    const restart = scheduleGatewaySigusr1Restart({
+      delayMs: restartDelayMs,
+      reason: "config.policyBundle.apply",
+    });
+    recordGatewayConfigChangeEvent({
+      ts: Date.now(),
+      requestId: req.id,
+      method: "config.policyBundle.apply",
+      path: CONFIG_PATH,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sessionKey: sessionKey ?? null,
+      note,
+      restartDelayMs: restartDelayMs ?? null,
+    });
+    respond(
+      true,
+      {
+        ok: true,
+        bundleId,
+        path: CONFIG_PATH,
+        config: redactConfigObject(validated.config),
+        restart,
+        sentinel: {
+          path: sentinelPath,
+          payload,
+        },
+      },
+      undefined,
+    );
+  },
+  "config.changes.list": async ({ params, respond }) => {
+    if (!validateConfigChangesListParams(params)) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          `invalid config.changes.list params: ${formatValidationErrors(validateConfigChangesListParams.errors)}`,
+        ),
+      );
+      return;
+    }
+    const raw = params as {
+      limit?: number;
+      cursor?: string;
+      order?: "desc" | "asc";
+      method?: string;
+      userId?: string;
+      principalId?: string;
+      actorRole?: string;
+      sourceRole?: string;
+      clientId?: string;
+      clientMode?: string;
+      sourceIp?: string;
+      sinceTs?: number;
+      untilTs?: number;
+    };
+    const page = listGatewayConfigChangeEventsPage({
+      limit: raw.limit,
+      cursor: typeof raw.cursor === "string" ? raw.cursor.trim() || undefined : undefined,
+      order: raw.order,
+      method: typeof raw.method === "string" ? raw.method.trim() || undefined : undefined,
+      userId: typeof raw.userId === "string" ? raw.userId.trim() || undefined : undefined,
+      principalId:
+        typeof raw.principalId === "string" ? raw.principalId.trim() || undefined : undefined,
+      actorRole: typeof raw.actorRole === "string" ? raw.actorRole.trim() || undefined : undefined,
+      sourceRole:
+        typeof raw.sourceRole === "string" ? raw.sourceRole.trim() || undefined : undefined,
+      clientId: typeof raw.clientId === "string" ? raw.clientId.trim() || undefined : undefined,
+      clientMode:
+        typeof raw.clientMode === "string" ? raw.clientMode.trim() || undefined : undefined,
+      sourceIp: typeof raw.sourceIp === "string" ? raw.sourceIp.trim() || undefined : undefined,
+      sinceTs: raw.sinceTs,
+      untilTs: raw.untilTs,
+    });
+    respond(
+      true,
+      {
+        ts: Date.now(),
+        events: page.events,
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
+      },
+      undefined,
+    );
+  },
   "config.get": async ({ params, respond }) => {
     if (!validateConfigGetParams(params)) {
       respond(
@@ -149,7 +405,7 @@ export const configHandlers: GatewayRequestHandlers = {
     });
     respond(true, schema, undefined);
   },
-  "config.set": async ({ params, respond }) => {
+  "config.set": async ({ params, respond, req, owner, client }) => {
     if (!validateConfigSetParams(params)) {
       respond(
         false,
@@ -205,6 +461,27 @@ export const configHandlers: GatewayRequestHandlers = {
       return;
     }
     await writeConfigFile(restored);
+    recordGatewayConfigChangeEvent({
+      ts: Date.now(),
+      requestId: req.id,
+      method: "config.set",
+      path: CONFIG_PATH,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sessionKey: null,
+      note: null,
+      restartDelayMs: null,
+    });
     respond(
       true,
       {
@@ -215,7 +492,7 @@ export const configHandlers: GatewayRequestHandlers = {
       undefined,
     );
   },
-  "config.patch": async ({ params, respond }) => {
+  "config.patch": async ({ params, respond, req, owner, client }) => {
     if (!validateConfigPatchParams(params)) {
       respond(
         false,
@@ -331,6 +608,27 @@ export const configHandlers: GatewayRequestHandlers = {
       delayMs: restartDelayMs,
       reason: "config.patch",
     });
+    recordGatewayConfigChangeEvent({
+      ts: Date.now(),
+      requestId: req.id,
+      method: "config.patch",
+      path: CONFIG_PATH,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sessionKey: sessionKey ?? null,
+      note: note ?? null,
+      restartDelayMs: restartDelayMs ?? null,
+    });
     respond(
       true,
       {
@@ -346,7 +644,7 @@ export const configHandlers: GatewayRequestHandlers = {
       undefined,
     );
   },
-  "config.apply": async ({ params, respond }) => {
+  "config.apply": async ({ params, respond, req, owner, client }) => {
     if (!validateConfigApplyParams(params)) {
       respond(
         false,
@@ -441,6 +739,27 @@ export const configHandlers: GatewayRequestHandlers = {
     const restart = scheduleGatewaySigusr1Restart({
       delayMs: restartDelayMs,
       reason: "config.apply",
+    });
+    recordGatewayConfigChangeEvent({
+      ts: Date.now(),
+      requestId: req.id,
+      method: "config.apply",
+      path: CONFIG_PATH,
+      userId: owner?.userId ?? null,
+      userAlias: owner?.alias ?? null,
+      principalId: owner?.principalId ?? null,
+      actorRole: owner?.role ?? null,
+      sourceRole: owner?.sourceRole ?? null,
+      clientId:
+        client && typeof client.connect?.client?.id === "string" ? client.connect.client.id : null,
+      clientMode:
+        client && typeof client.connect?.client?.mode === "string"
+          ? client.connect.client.mode
+          : null,
+      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sessionKey: sessionKey ?? null,
+      note: note ?? null,
+      restartDelayMs: restartDelayMs ?? null,
     });
     respond(
       true,

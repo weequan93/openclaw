@@ -117,6 +117,69 @@ describe("security audit", () => {
     );
   });
 
+  it("warns when multi-user identity mappings omit explicit role", async () => {
+    const cfg: OpenClawConfig = {
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          identities: {
+            "msg:discord:default:user-a": {
+              userId: "11111111-1111-1111-1111-111111111111",
+              principalId: "msg:discord:default:user-a",
+              alias: "UserA",
+            },
+            "msg:discord:default:user-b": {
+              userId: "22222222-2222-2222-2222-222222222222",
+              principalId: "msg:discord:default:user-b",
+              alias: "UserB",
+              role: "user",
+            },
+          },
+        },
+      },
+    };
+
+    const res = await runSecurityAudit({
+      config: cfg,
+      includeFilesystem: false,
+      includeChannelSecurity: false,
+    });
+
+    const finding = res.findings.find(
+      (entry) => entry.checkId === "gateway.multi_user.identity_role_missing",
+    );
+    expect(finding?.severity).toBe("warn");
+    expect(finding?.detail ?? "").toContain("msg:discord:default:user-a");
+    expect(finding?.detail ?? "").not.toContain("msg:discord:default:user-b");
+  });
+
+  it("does not warn for missing identity role when multi-user mode is off", async () => {
+    const cfg: OpenClawConfig = {
+      gateway: {
+        multiUser: {
+          mode: "off",
+          identities: {
+            "msg:discord:default:user-a": {
+              userId: "11111111-1111-1111-1111-111111111111",
+              principalId: "msg:discord:default:user-a",
+              alias: "UserA",
+            },
+          },
+        },
+      },
+    };
+
+    const res = await runSecurityAudit({
+      config: cfg,
+      includeFilesystem: false,
+      includeChannelSecurity: false,
+    });
+
+    expect(
+      res.findings.some((entry) => entry.checkId === "gateway.multi_user.identity_role_missing"),
+    ).toBe(false);
+  });
+
   it("flags logging.redactSensitive=off", async () => {
     const cfg: OpenClawConfig = {
       logging: { redactSensitive: "off" },

@@ -48,7 +48,11 @@ const CanvasToolSchema = Type.Object({
   jsonlPath: Type.Optional(Type.String()),
 });
 
-export function createCanvasTool(): AnyAgentTool {
+export function createCanvasTool(opts?: {
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
+}): AnyAgentTool {
   return {
     label: "Canvas",
     name: "canvas",
@@ -62,6 +66,9 @@ export function createCanvasTool(): AnyAgentTool {
         gatewayUrl: readStringParam(params, "gatewayUrl", { trim: false }),
         gatewayToken: readStringParam(params, "gatewayToken", { trim: false }),
         timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
+        ownerUserId: opts?.ownerUserId,
+        ownerPrincipalId: opts?.ownerPrincipalId,
+        ownerAlias: opts?.ownerAlias,
       };
 
       const nodeId = await resolveNodeId(

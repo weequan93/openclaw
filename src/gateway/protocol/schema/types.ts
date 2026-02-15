@@ -34,6 +34,17 @@ import type {
   SkillsUpdateParamsSchema,
 } from "./agents-models-skills.js";
 import type {
+  AuthzDeniedEventSchema,
+  AuthzDeniedListParamsSchema,
+  AuthzDeniedListResultSchema,
+  AuthzDeniedSummaryParamsSchema,
+  AuthzDeniedSummaryResultSchema,
+  OwnershipBackfillParamsSchema,
+  OwnershipBackfillResultSchema,
+  OwnershipGapsParamsSchema,
+  OwnershipGapsResultSchema,
+} from "./authz.js";
+import type {
   ChannelsLogoutParamsSchema,
   ChannelsStatusParamsSchema,
   ChannelsStatusResultSchema,
@@ -43,6 +54,15 @@ import type {
 } from "./channels.js";
 import type {
   ConfigApplyParamsSchema,
+  ConfigPolicyBundleApplyParamsSchema,
+  ConfigPolicyBundleResolveParamsSchema,
+  ConfigPolicyBundleResolveResultSchema,
+  ConfigPolicyBundlesListParamsSchema,
+  ConfigPolicyBundlesListResultSchema,
+  ConfigPolicyBundleSchema,
+  ConfigChangesListParamsSchema,
+  ConfigChangesListResultSchema,
+  ConfigChangeEventSchema,
   ConfigGetParamsSchema,
   ConfigPatchParamsSchema,
   ConfigSchemaParamsSchema,
@@ -168,7 +188,16 @@ export type SessionsUsageParams = Static<typeof SessionsUsageParamsSchema>;
 export type ConfigGetParams = Static<typeof ConfigGetParamsSchema>;
 export type ConfigSetParams = Static<typeof ConfigSetParamsSchema>;
 export type ConfigApplyParams = Static<typeof ConfigApplyParamsSchema>;
+export type ConfigPolicyBundleApplyParams = Static<typeof ConfigPolicyBundleApplyParamsSchema>;
+export type ConfigPolicyBundlesListParams = Static<typeof ConfigPolicyBundlesListParamsSchema>;
+export type ConfigPolicyBundleResolveParams = Static<typeof ConfigPolicyBundleResolveParamsSchema>;
+export type ConfigPolicyBundle = Static<typeof ConfigPolicyBundleSchema>;
+export type ConfigPolicyBundlesListResult = Static<typeof ConfigPolicyBundlesListResultSchema>;
+export type ConfigPolicyBundleResolveResult = Static<typeof ConfigPolicyBundleResolveResultSchema>;
 export type ConfigPatchParams = Static<typeof ConfigPatchParamsSchema>;
+export type ConfigChangesListParams = Static<typeof ConfigChangesListParamsSchema>;
+export type ConfigChangesListResult = Static<typeof ConfigChangesListResultSchema>;
+export type ConfigChangeEvent = Static<typeof ConfigChangeEventSchema>;
 export type ConfigSchemaParams = Static<typeof ConfigSchemaParamsSchema>;
 export type ConfigSchemaResponse = Static<typeof ConfigSchemaResponseSchema>;
 export type WizardStartParams = Static<typeof WizardStartParamsSchema>;
@@ -186,6 +215,15 @@ export type ChannelsLogoutParams = Static<typeof ChannelsLogoutParamsSchema>;
 export type WebLoginStartParams = Static<typeof WebLoginStartParamsSchema>;
 export type WebLoginWaitParams = Static<typeof WebLoginWaitParamsSchema>;
 export type AgentSummary = Static<typeof AgentSummarySchema>;
+export type AuthzDeniedEvent = Static<typeof AuthzDeniedEventSchema>;
+export type AuthzDeniedListParams = Static<typeof AuthzDeniedListParamsSchema>;
+export type AuthzDeniedListResult = Static<typeof AuthzDeniedListResultSchema>;
+export type AuthzDeniedSummaryParams = Static<typeof AuthzDeniedSummaryParamsSchema>;
+export type AuthzDeniedSummaryResult = Static<typeof AuthzDeniedSummaryResultSchema>;
+export type OwnershipBackfillParams = Static<typeof OwnershipBackfillParamsSchema>;
+export type OwnershipBackfillResult = Static<typeof OwnershipBackfillResultSchema>;
+export type OwnershipGapsParams = Static<typeof OwnershipGapsParamsSchema>;
+export type OwnershipGapsResult = Static<typeof OwnershipGapsResultSchema>;
 export type AgentsFileEntry = Static<typeof AgentsFileEntrySchema>;
 export type AgentsCreateParams = Static<typeof AgentsCreateParamsSchema>;
 export type AgentsCreateResult = Static<typeof AgentsCreateResultSchema>;

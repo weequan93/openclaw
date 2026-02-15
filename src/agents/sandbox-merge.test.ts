@@ -124,4 +124,34 @@ describe("sandbox config merges", () => {
     });
     expect(pruneShared).toEqual({ idleHours: 24, maxAgeDays: 7 });
   });
+
+  it("forces shared sandbox scope to agent scope in multi-user mode", async () => {
+    const { resolveSandboxConfigForAgent } = await import("./sandbox.js");
+
+    const strictResolved = resolveSandboxConfigForAgent({
+      gateway: { multiUser: { mode: "strict" } },
+      agents: {
+        defaults: {
+          sandbox: {
+            mode: "docker",
+            scope: "shared",
+          },
+        },
+      },
+    } as never);
+    expect(strictResolved.scope).toBe("agent");
+
+    const offResolved = resolveSandboxConfigForAgent({
+      gateway: { multiUser: { mode: "off" } },
+      agents: {
+        defaults: {
+          sandbox: {
+            mode: "docker",
+            scope: "shared",
+          },
+        },
+      },
+    } as never);
+    expect(offResolved.scope).toBe("shared");
+  });
 });

@@ -1,11 +1,14 @@
 import type { CommandHandler } from "./commands-types.js";
 import { callGateway } from "../../gateway/call.js";
+import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
 import { logVerbose } from "../../globals.js";
 import {
   GATEWAY_CLIENT_MODES,
   GATEWAY_CLIENT_NAMES,
   isInternalMessageChannel,
 } from "../../utils/message-channel.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
+import { resolveCommandGatewayOwnerIdentity } from "./owner-identity.js";
 
 const COMMAND = "/approve";
 
@@ -79,6 +82,13 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
     logVerbose(
       `Ignoring /approve from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
     );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.approve",
+      reasonCode: "UNKNOWN_SENDER",
+      message: "/approve denied for unauthorized sender",
+    });
     return { shouldContinue: false };
   }
 
@@ -88,9 +98,40 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
 
   if (isInternalMessageChannel(params.command.channel)) {
     const scopes = params.ctx.GatewayClientScopes ?? [];
-    const hasApprovals = scopes.includes("operator.approvals") || scopes.includes("operator.admin");
-    if (!hasApprovals) {
+    const hasApprovalsScope = scopes.includes("operator.approvals");
+    const hasAdminScope = scopes.includes("operator.admin");
+    const multiUserMode = resolveGatewayMultiUserMode(params.cfg);
+    const ownerRole =
+      typeof params.ctx.GatewayOwnerRole === "string"
+        ? params.ctx.GatewayOwnerRole.trim().toLowerCase()
+        : "";
+    const adminScopeAllowed = hasAdminScope && (multiUserMode === "off" || ownerRole === "admin");
+    const requiresAdminRole = hasAdminScope && multiUserMode !== "off" && ownerRole !== "admin";
+    if (!hasApprovalsScope && requiresAdminRole) {
+      logVerbose("Ignoring /approve from gateway client requiring admin principal role.");
+      recordCommandAuthzDeny({
+        ctx: params.ctx,
+        command: params.command,
+        method: "command.approve",
+        reasonCode: "ROLE_FORBIDDEN",
+        message: "/approve admin scope requires admin principal role",
+      });
+      return {
+        shouldContinue: false,
+        reply: {
+          text: "❌ /approve admin scope requires admin principal role.",
+        },
+      };
+    }
+    if (!hasApprovalsScope && !adminScopeAllowed) {
       logVerbose("Ignoring /approve from gateway client missing operator.approvals.");
+      recordCommandAuthzDeny({
+        ctx: params.ctx,
+        command: params.command,
+        method: "command.approve",
+        reasonCode: "SCOPE_MISSING",
+        message: "/approve requires operator.approvals for gateway clients",
+      });
       return {
         shouldContinue: false,
         reply: {
@@ -101,6 +142,7 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
   }
 
   const resolvedBy = buildResolvedByLabel(params);
+  const ownerIdentity = resolveCommandGatewayOwnerIdentity(params);
   try {
     await callGateway({
       method: "exec.approval.resolve",
@@ -108,6 +150,7 @@ export const handleApproveCommand: CommandHandler = async (params, allowTextComm
       clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
       clientDisplayName: `Chat approval (${resolvedBy})`,
       mode: GATEWAY_CLIENT_MODES.BACKEND,
+      ...(ownerIdentity ? { identity: ownerIdentity } : {}),
     });
   } catch (err) {
     return {

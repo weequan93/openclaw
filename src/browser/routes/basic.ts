@@ -2,7 +2,7 @@ import type { BrowserRouteContext } from "../server-context.js";
 import type { BrowserRouteRegistrar } from "./types.js";
 import { resolveBrowserExecutableForPlatform } from "../chrome.executables.js";
 import { createBrowserProfilesService } from "../profiles-service.js";
-import { getProfileContext, jsonError, toStringOrEmpty } from "./utils.js";
+import { getProfileContext, jsonError, toBoolean, toStringOrEmpty } from "./utils.js";
 
 export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: BrowserRouteContext) {
   // List all profiles with their status
@@ -126,6 +126,8 @@ export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: Brow
     const name = toStringOrEmpty((req.body as { name?: unknown })?.name);
     const color = toStringOrEmpty((req.body as { color?: unknown })?.color);
     const cdpUrl = toStringOrEmpty((req.body as { cdpUrl?: unknown })?.cdpUrl);
+    const ownerUserId = toStringOrEmpty((req.body as { ownerUserId?: unknown })?.ownerUserId);
+    const shared = toBoolean((req.body as { shared?: unknown })?.shared);
     const driver = toStringOrEmpty((req.body as { driver?: unknown })?.driver) as
       | "openclaw"
       | "extension"
@@ -142,6 +144,8 @@ export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: Brow
         color: color || undefined,
         cdpUrl: cdpUrl || undefined,
         driver: driver === "extension" ? "extension" : undefined,
+        ownerUserId: ownerUserId || undefined,
+        shared,
       });
       res.json(result);
     } catch (err) {
@@ -156,6 +160,9 @@ export function registerBrowserBasicRoutes(app: BrowserRouteRegistrar, ctx: Brow
         return jsonError(res, 507, msg);
       }
       if (msg.includes("cdpUrl")) {
+        return jsonError(res, 400, msg);
+      }
+      if (msg.includes("ownerUserId required")) {
         return jsonError(res, 400, msg);
       }
       jsonError(res, 500, msg);

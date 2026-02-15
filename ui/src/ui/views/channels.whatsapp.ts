@@ -81,28 +81,28 @@ export function renderWhatsAppCard(params: {
       <div class="row" style="margin-top: 14px; flex-wrap: wrap;">
         <button
           class="btn primary"
-          ?disabled=${props.whatsappBusy}
+          ?disabled=${props.whatsappBusy || !props.canManage}
           @click=${() => props.onWhatsAppStart(false)}
         >
           ${props.whatsappBusy ? "Working…" : "Show QR"}
         </button>
         <button
           class="btn"
-          ?disabled=${props.whatsappBusy}
+          ?disabled=${props.whatsappBusy || !props.canManage}
           @click=${() => props.onWhatsAppStart(true)}
         >
           Relink
         </button>
         <button
           class="btn"
-          ?disabled=${props.whatsappBusy}
+          ?disabled=${props.whatsappBusy || !props.canManage}
           @click=${() => props.onWhatsAppWait()}
         >
           Wait for scan
         </button>
         <button
           class="btn danger"
-          ?disabled=${props.whatsappBusy}
+          ?disabled=${props.whatsappBusy || !props.canManage}
           @click=${() => props.onWhatsAppLogout()}
         >
           Logout

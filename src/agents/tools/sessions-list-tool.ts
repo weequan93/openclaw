@@ -9,6 +9,7 @@ import {
   createAgentToAgentPolicy,
   classifySessionKind,
   deriveChannel,
+  type GatewayOwnerIdentity,
   resolveDisplaySessionKey,
   resolveInternalSessionKey,
   resolveMainSessionAlias,
@@ -30,6 +31,9 @@ function resolveSandboxSessionToolsVisibility(cfg: ReturnType<typeof loadConfig>
 export function createSessionsListTool(opts?: {
   agentSessionKey?: string;
   sandboxed?: boolean;
+  ownerUserId?: string;
+  ownerPrincipalId?: string;
+  ownerAlias?: string;
 }): AnyAgentTool {
   return {
     label: "Sessions",
@@ -39,6 +43,30 @@ export function createSessionsListTool(opts?: {
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
       const cfg = loadConfig();
+      const gatewayIdentity: GatewayOwnerIdentity | undefined =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? {
+              userId: opts.ownerUserId.trim(),
+              principalId:
+                typeof opts.ownerPrincipalId === "string" && opts.ownerPrincipalId.trim()
+                  ? opts.ownerPrincipalId.trim()
+                  : `user:${opts.ownerUserId.trim()}`,
+              ...(typeof opts.ownerAlias === "string" && opts.ownerAlias.trim()
+                ? { alias: opts.ownerAlias.trim() }
+                : {}),
+            }
+          : undefined;
+      const callGatewayOwned = async <T = Record<string, unknown>>(request: {
+        method: string;
+        params?: unknown;
+        timeoutMs?: number;
+      }) =>
+        await callGateway<T>({
+          method: request.method,
+          params: request.params,
+          timeoutMs: request.timeoutMs,
+          ...(gatewayIdentity ? { identity: gatewayIdentity } : {}),
+        });
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const visibility = resolveSandboxSessionToolsVisibility(cfg);
       const requesterInternalKey =
@@ -77,7 +105,7 @@ export function createSessionsListTool(opts?: {
           : 0;
       const messageLimit = Math.min(messageLimitRaw, 20);
 
-      const list = await callGateway<{ sessions: Array<SessionListRow>; path: string }>({
+      const list = await callGatewayOwned<{ sessions: Array<SessionListRow>; path: string }>({
         method: "sessions.list",
         params: {
           limit,
@@ -194,7 +222,7 @@ export function createSessionsListTool(opts?: {
             alias,
             mainKey,
           });
-          const history = await callGateway<{ messages: Array<unknown> }>({
+          const history = await callGatewayOwned<{ messages: Array<unknown> }>({
             method: "chat.history",
             params: { sessionKey: resolvedKey, limit: messageLimit },
           });

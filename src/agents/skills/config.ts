@@ -77,6 +77,91 @@ function normalizeAllowlist(input: unknown): string[] | undefined {
 
 const BUNDLED_SOURCES = new Set(["openclaw-bundled"]);
 
+type GatewayMultiUserMode = "off" | "compat" | "strict";
+
+export type SkillVisibilityViewer = {
+  role?: string;
+  userId?: string;
+  groupIds?: string[];
+};
+
+function normalizeStringToken(raw: unknown): string | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveGatewayMultiUserMode(cfg?: OpenClawConfig): GatewayMultiUserMode {
+  const raw = cfg?.gateway?.multiUser?.mode;
+  if (raw === "off" || raw === "compat" || raw === "strict") {
+    return raw;
+  }
+  return "strict";
+}
+
+function normalizeGroupIds(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const normalized = Array.from(
+    new Set(
+      raw
+        .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+        .filter((entry) => entry.length > 0),
+    ),
+  );
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveSkillVisibility(skillConfig?: SkillConfig): "shared" | "group_shared" | "user_private" {
+  if (skillConfig?.visibility === "user_private") {
+    return "user_private";
+  }
+  if (skillConfig?.visibility === "group_shared") {
+    return "group_shared";
+  }
+  return "shared";
+}
+
+export function isSkillConfigVisibleToViewer(params: {
+  config?: OpenClawConfig;
+  skillConfig?: SkillConfig;
+  viewer?: SkillVisibilityViewer;
+}): boolean {
+  const visibility = resolveSkillVisibility(params.skillConfig);
+  if (visibility === "shared") {
+    return true;
+  }
+  const mode = resolveGatewayMultiUserMode(params.config);
+  if (mode === "off") {
+    return true;
+  }
+  const viewerRole = normalizeStringToken(params.viewer?.role)?.toLowerCase();
+  if (viewerRole === "admin") {
+    return true;
+  }
+  if (visibility === "group_shared") {
+    const allowedGroupIds = normalizeGroupIds(params.skillConfig?.groupIds);
+    if (!allowedGroupIds || allowedGroupIds.length === 0) {
+      return mode !== "strict";
+    }
+    const viewerGroupIds = normalizeGroupIds(params.viewer?.groupIds);
+    if (!viewerGroupIds || viewerGroupIds.length === 0) {
+      return false;
+    }
+    const viewerGroups = new Set(viewerGroupIds);
+    return allowedGroupIds.some((groupId) => viewerGroups.has(groupId));
+  }
+  const ownerUserId = normalizeStringToken(params.skillConfig?.ownerUserId);
+  if (!ownerUserId) {
+    return mode !== "strict";
+  }
+  const viewerUserId = normalizeStringToken(params.viewer?.userId);
+  return Boolean(viewerUserId && viewerUserId === ownerUserId);
+}
+
 function isBundledSkill(entry: SkillEntry): boolean {
   return BUNDLED_SOURCES.has(entry.skill.source);
 }
@@ -115,6 +200,7 @@ export function shouldIncludeSkill(params: {
   entry: SkillEntry;
   config?: OpenClawConfig;
   eligibility?: SkillEligibilityContext;
+  viewer?: SkillVisibilityViewer;
 }): boolean {
   const { entry, config, eligibility } = params;
   const skillKey = resolveSkillKey(entry.skill, entry);
@@ -127,6 +213,9 @@ export function shouldIncludeSkill(params: {
     return false;
   }
   if (!isBundledSkillAllowed(entry, allowBundled)) {
+    return false;
+  }
+  if (!isSkillConfigVisibleToViewer({ config, skillConfig, viewer: params.viewer })) {
     return false;
   }
   if (

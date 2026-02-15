@@ -166,6 +166,27 @@
           "label": "config apply",
           "detailKeys": ["restartDelayMs"]
         },
+        "config.policyBundles.list": { "label": "policy bundles list" },
+        "config.policyBundle.resolve": {
+          "label": "policy bundle resolve",
+          "detailKeys": ["bundleId"]
+        },
+        "config.policyBundle.apply": {
+          "label": "policy bundle apply",
+          "detailKeys": ["bundleId", "restartDelayMs"]
+        },
+        "config.changes.list": {
+          "label": "config changes list",
+          "detailKeys": ["method", "userId", "principalId"]
+        },
+        "authz.denied.list": {
+          "label": "authz denied list",
+          "detailKeys": ["method", "reasonCode", "userId", "principalId"]
+        },
+        "authz.denied.summary": {
+          "label": "authz denied summary",
+          "detailKeys": ["method", "reasonCode", "errorCode", "userId", "principalId"]
+        },
         "update.run": {
           "label": "update run",
           "detailKeys": ["restartDelayMs"]
