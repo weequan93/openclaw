@@ -481,6 +481,7 @@ Scope decision:
 ## Operator rollout checklist
 
 Use this runbook for a single OpenClaw instance serving multiple users.
+For copy-paste commands only, use [Multi user deployment checklist](/gateway/multi-user-deployment).
 
 1. Baseline and backup.
    - Export current config and state backup before rollout.
@@ -507,6 +508,13 @@ Use this runbook for a single OpenClaw instance serving multiple users.
 7. Rollback procedure.
    - If strict mode causes production impact, switch to `compat` immediately.
    - Keep audit logs and ownership metadata unchanged during rollback for root-cause analysis.
+
+## Detailed references
+
+Use dedicated docs for implementation and rollout details:
+
+- [Multi user architecture](/gateway/multi-user-architecture)
+- [Multi user deployment checklist](/gateway/multi-user-deployment)
 
 ## Existing features to enhance for ownership split
 
