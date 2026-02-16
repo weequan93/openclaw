@@ -214,6 +214,9 @@ Implementation status update: February 13, 2026.
   - Validation coverage now also verifies trailing-slash auth failures emit `UNKNOWN_SENDER` deny events for OpenAI/OpenResponses/tools invoke endpoints.
   - Endpoint matching now uses shared boundary-path normalization so encoded path variants remain subject to local-admin checks and authz auditing.
   - Validation coverage now verifies encoded slash and backslash path variants including double-encoded and triple-encoded forms for OpenAI/OpenResponses/tools invoke deny and auth-failure flows.
+- Relative session store templates now resolve from the active gateway config directory instead of process cwd.
+  - This removes cross-worker collisions for owner-partitioned relative stores (for example `sessions/{ownerUserId}.json`) in parallel e2e runs.
+  - Gateway test cleanup now removes per-config-root `sessions` directories to avoid deleting other workers shared artifacts.
 - Gateway authz allow decisions are now audit-visible:
   - Successful gateway method authorization checks are recorded and queryable through admin-only methods `authz.allow.list` and `authz.allow.summary`.
   - Allow summaries include high-frequency principal and source-IP buckets for behavior baselining and anomaly detection.
