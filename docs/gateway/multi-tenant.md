@@ -478,6 +478,36 @@ Scope decision:
 7. Instance boundary policy.
    For true tenant separation, deploy separate OpenClaw instances. Do not mix tenants in one gateway.
 
+## Operator rollout checklist
+
+Use this runbook for a single OpenClaw instance serving multiple users.
+
+1. Baseline and backup.
+   - Export current config and state backup before rollout.
+   - Confirm gateway auth is enabled and admin credentials are working.
+2. Verify ownership gaps.
+   - `openclaw gateway ownership-gaps --limit 200`
+   - Review missing ownership for `agents`, `sessions`, `nodes`, `browserProfiles`, and `memory`.
+3. Backfill ownership metadata.
+   - Dry run: `openclaw gateway ownership-backfill --owner-user <user-uuid> --owner-principal <principal-id> --dry-run`
+   - Apply: `openclaw gateway ownership-backfill --owner-user <user-uuid> --owner-principal <principal-id>`
+   - Re-run gaps check until missing counts are zero or explicitly accepted.
+4. Enable staged enforcement.
+   - Stage A: set `gateway.multiUser.mode=off` with identity mappings and audit monitoring enabled.
+   - Stage B: set `gateway.multiUser.mode=compat` and observe deny and allow audit feeds.
+   - Stage C: move to `gateway.multiUser.mode=strict` after compat soak and zero unresolved ownership blockers.
+5. Validate policy boundaries in each stage.
+   - Non-admin users cannot mutate config or allowlist.
+   - Cross-user session, chat, browser, and node access is denied unless explicitly delegated.
+   - Admin panel shows denied attempts (`UNKNOWN_SENDER`, `ROLE_FORBIDDEN`, `OWNER_MISMATCH`) with source attribution.
+6. Validate regression test matrix before and after strict mode.
+   - `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.auth.e2e.test.ts`
+   - `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.roles-allowlist-update.e2e.test.ts src/gateway/server.chat.command-authz.e2e.test.ts src/gateway/server.chat.gateway-server-chat.e2e.test.ts src/gateway/server.sessions.gateway-server-sessions-a.e2e.test.ts`
+   - `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.agent.gateway-server-agent-a.e2e.test.ts src/gateway/server.agent.gateway-server-agent-b.e2e.test.ts src/gateway/server.plugins-http.e2e.test.ts src/gateway/server.hooks.e2e.test.ts src/gateway/server.canvas-auth.e2e.test.ts src/gateway/openai-http.e2e.test.ts src/gateway/openresponses-http.e2e.test.ts`
+7. Rollback procedure.
+   - If strict mode causes production impact, switch to `compat` immediately.
+   - Keep audit logs and ownership metadata unchanged during rollback for root-cause analysis.
+
 ## Existing features to enhance for ownership split
 
 These existing features should be treated as enhancement targets because they are not fully user-owner partitioned yet.
