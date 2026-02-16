@@ -20,6 +20,8 @@ import type {
   CronRunLogEntry,
   CronStatus,
   HealthSnapshot,
+  AuthzAllowEvent,
+  AuthzAllowSummary,
   AuthzDeniedEvent,
   AuthzDeniedSummary,
   ConfigChangeEvent,
@@ -316,6 +318,13 @@ export class OpenClawApp extends LitElement {
   @state() debugCallResult: string | null = null;
   @state() debugCallError: string | null = null;
   @state() securityLoading = false;
+  @state() securityAllowEvents: AuthzAllowEvent[] = [];
+  @state() securityAllowSummary: AuthzAllowSummary | null = null;
+  @state() securityAllowError: string | null = null;
+  @state() securityAllowSummaryError: string | null = null;
+  @state() securityAllowNextCursor: string | null = null;
+  @state() securityAllowHasMore = false;
+  @state() securityAllowPinnedHistory = false;
   @state() securityDeniedEvents: AuthzDeniedEvent[] = [];
   @state() securityDeniedSummary: AuthzDeniedSummary | null = null;
   @state() securityDeniedError: string | null = null;
@@ -334,6 +343,7 @@ export class OpenClawApp extends LitElement {
   @state() securityNextCursor: string | null = null;
   @state() securityHasMore = false;
   @state() securityPinnedHistory = false;
+  @state() securityAuditMode: "both" | "denied" | "allowed" = "both";
   @state() securityPreset: string | null = null;
   @state() securityTimePreset: string | null = null;
   @state() securityOrder: "desc" | "asc" = "desc";

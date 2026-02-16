@@ -34,6 +34,11 @@ import type {
   SkillsUpdateParamsSchema,
 } from "./agents-models-skills.js";
 import type {
+  AuthzAllowEventSchema,
+  AuthzAllowListParamsSchema,
+  AuthzAllowListResultSchema,
+  AuthzAllowSummaryParamsSchema,
+  AuthzAllowSummaryResultSchema,
   AuthzDeniedEventSchema,
   AuthzDeniedListParamsSchema,
   AuthzDeniedListResultSchema,
@@ -220,6 +225,11 @@ export type AuthzDeniedListParams = Static<typeof AuthzDeniedListParamsSchema>;
 export type AuthzDeniedListResult = Static<typeof AuthzDeniedListResultSchema>;
 export type AuthzDeniedSummaryParams = Static<typeof AuthzDeniedSummaryParamsSchema>;
 export type AuthzDeniedSummaryResult = Static<typeof AuthzDeniedSummaryResultSchema>;
+export type AuthzAllowEvent = Static<typeof AuthzAllowEventSchema>;
+export type AuthzAllowListParams = Static<typeof AuthzAllowListParamsSchema>;
+export type AuthzAllowListResult = Static<typeof AuthzAllowListResultSchema>;
+export type AuthzAllowSummaryParams = Static<typeof AuthzAllowSummaryParamsSchema>;
+export type AuthzAllowSummaryResult = Static<typeof AuthzAllowSummaryResultSchema>;
 export type OwnershipBackfillParams = Static<typeof OwnershipBackfillParamsSchema>;
 export type OwnershipBackfillResult = Static<typeof OwnershipBackfillResultSchema>;
 export type OwnershipGapsParams = Static<typeof OwnershipGapsParamsSchema>;

@@ -158,9 +158,9 @@ describe("gateway role enforcement", () => {
         expect(Array.isArray(binsRes.payload?.bins)).toBe(true);
       } else {
         expect(binsRes.error?.message ?? "").toContain("node owner mismatch");
-        expect(
-          (binsRes.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
-        ).toBe("OWNER_MISMATCH");
+        expect((binsRes.error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+          "OWNER_MISMATCH",
+        );
       }
 
       const statusRes = await rpcReq(nodeWs, "status", {});
@@ -529,6 +529,7 @@ describe("gateway node and browser ownership", () => {
           reasonCode?: string;
           userId?: string | null;
           userAlias?: string | null;
+          sourceIp?: string | null;
         }>;
       }>(ws, "authz.denied.list", {
         reasonCode: "OWNER_MISMATCH",
@@ -544,6 +545,10 @@ describe("gateway node and browser ownership", () => {
       expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice")).toBe(
         true,
       );
+      const browserDeniedEvent = (deniedFeed.payload?.events ?? []).find(
+        (event) => event.method === "browser.request",
+      );
+      expect(typeof browserDeniedEvent?.sourceIp).toBe("string");
     } finally {
       userWs.close();
       browserNodeClient?.stop();
@@ -602,9 +607,9 @@ describe("gateway node and browser ownership", () => {
       });
       expect(denied.ok).toBe(false);
       expect(denied.error?.message ?? "").toContain("owner mismatch");
-      expect(
-        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
-      ).toBe("OWNER_MISMATCH");
+      expect((denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+        "OWNER_MISMATCH",
+      );
 
       const deniedFeed = await rpcReq<{
         events?: Array<{ method?: string; userAlias?: string | null }>;
@@ -688,9 +693,9 @@ describe("gateway node and browser ownership", () => {
       });
       expect(denied.ok).toBe(false);
       expect(denied.error?.message ?? "").toContain("owner mismatch");
-      expect(
-        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
-      ).toBe("OWNER_MISMATCH");
+      expect((denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+        "OWNER_MISMATCH",
+      );
 
       const deniedFeed = await rpcReq<{
         events?: Array<{ method?: string; userAlias?: string | null }>;
@@ -1119,9 +1124,9 @@ describe("gateway node and browser ownership", () => {
       });
       expect(denied.ok).toBe(false);
       expect(denied.error?.message ?? "").toContain("profile/node owner mismatch");
-      expect(
-        (denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode,
-      ).toBe("OWNER_MISMATCH");
+      expect((denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+        "OWNER_MISMATCH",
+      );
     } finally {
       userWs.close();
       browserNodeClient?.stop();

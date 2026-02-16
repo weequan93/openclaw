@@ -98,5 +98,29 @@ describe("setTabFromRoute", () => {
     expect(host.securityPollInterval).toBeNull();
     expect(host.debugPollInterval).toBeNull();
     expect(host.logsPollInterval).toBeNull();
+
+    setTabFromRoute(host, "instances");
+    expect(host.tab).toBe("chat");
+
+    setTabFromRoute(host, "cron");
+    expect(host.tab).toBe("chat");
+  });
+
+  it("redirects admin-only tab routes for connected sessions missing principalRole even with operator.admin scope", () => {
+    const host = createHost("chat");
+    host.connected = true;
+    host.hello = {
+      auth: {
+        role: "operator",
+        scopes: ["operator.admin"],
+      },
+    };
+
+    setTabFromRoute(host, "security");
+
+    expect(host.tab).toBe("chat");
+    expect(host.securityPollInterval).toBeNull();
+    expect(host.debugPollInterval).toBeNull();
+    expect(host.logsPollInterval).toBeNull();
   });
 });

@@ -1,10 +1,7 @@
-export type GatewayAuthzDenyEvent = {
+export type GatewayAuthzAllowEvent = {
   ts: number;
   requestId: string;
   method: string;
-  reasonCode: string;
-  errorCode: string;
-  errorMessage: string;
   userId: string | null;
   userAlias?: string | null;
   principalId: string | null;
@@ -15,13 +12,11 @@ export type GatewayAuthzDenyEvent = {
   sourceIp?: string | null;
 };
 
-type ListAuthzDenyParams = {
+type ListAuthzAllowParams = {
   limit?: number;
   cursor?: string;
   order?: "desc" | "asc";
   method?: string;
-  reasonCode?: string;
-  errorCode?: string;
   userId?: string;
   principalId?: string;
   actorRole?: string;
@@ -33,10 +28,8 @@ type ListAuthzDenyParams = {
   untilTs?: number;
 };
 
-type SummarizeAuthzDenyParams = {
+type SummarizeAuthzAllowParams = {
   method?: string;
-  reasonCode?: string;
-  errorCode?: string;
   userId?: string;
   principalId?: string;
   actorRole?: string;
@@ -50,18 +43,18 @@ type SummarizeAuthzDenyParams = {
   alertThreshold?: number;
 };
 
-export type GatewayAuthzDenyPage = {
-  events: GatewayAuthzDenyEvent[];
+export type GatewayAuthzAllowPage = {
+  events: GatewayAuthzAllowEvent[];
   nextCursor: string | null;
   hasMore: boolean;
 };
 
-export type GatewayAuthzDenySummaryBucket = {
+export type GatewayAuthzAllowSummaryBucket = {
   key: string;
   count: number;
 };
 
-export type GatewayAuthzDenySummary = {
+export type GatewayAuthzAllowSummary = {
   total: number;
   earliestTs?: number;
   latestTs?: number;
@@ -69,24 +62,25 @@ export type GatewayAuthzDenySummary = {
     sinceTs?: number;
     untilTs?: number;
   };
-  byReasonCode: GatewayAuthzDenySummaryBucket[];
-  byMethod: GatewayAuthzDenySummaryBucket[];
-  byActorRole: GatewayAuthzDenySummaryBucket[];
-  bySourceRole: GatewayAuthzDenySummaryBucket[];
-  byErrorCode: GatewayAuthzDenySummaryBucket[];
-  byPrincipalId: GatewayAuthzDenySummaryBucket[];
-  bySourceIp: GatewayAuthzDenySummaryBucket[];
+  byMethod: GatewayAuthzAllowSummaryBucket[];
+  byActorRole: GatewayAuthzAllowSummaryBucket[];
+  bySourceRole: GatewayAuthzAllowSummaryBucket[];
+  byUserId: GatewayAuthzAllowSummaryBucket[];
+  byPrincipalId: GatewayAuthzAllowSummaryBucket[];
+  byClientId: GatewayAuthzAllowSummaryBucket[];
+  byClientMode: GatewayAuthzAllowSummaryBucket[];
+  bySourceIp: GatewayAuthzAllowSummaryBucket[];
   highFrequency: {
     threshold: number;
-    principals: GatewayAuthzDenySummaryBucket[];
-    sourceIps: GatewayAuthzDenySummaryBucket[];
+    principals: GatewayAuthzAllowSummaryBucket[];
+    sourceIps: GatewayAuthzAllowSummaryBucket[];
   };
 };
 
-const MAX_DENY_EVENTS = 2000;
-type GatewayAuthzDenyEventRecord = GatewayAuthzDenyEvent & { seq: number };
-const denyEvents: GatewayAuthzDenyEventRecord[] = [];
-let denySeq = 0;
+const MAX_ALLOW_EVENTS = 2000;
+type GatewayAuthzAllowEventRecord = GatewayAuthzAllowEvent & { seq: number };
+const allowEvents: GatewayAuthzAllowEventRecord[] = [];
+let allowSeq = 0;
 
 function normalizeToken(raw: unknown): string | undefined {
   if (typeof raw !== "string") {
@@ -96,10 +90,10 @@ function normalizeToken(raw: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function recordGatewayAuthzDenyEvent(event: GatewayAuthzDenyEvent): void {
-  denyEvents.push({ ...event, seq: ++denySeq });
-  if (denyEvents.length > MAX_DENY_EVENTS) {
-    denyEvents.splice(0, denyEvents.length - MAX_DENY_EVENTS);
+export function recordGatewayAuthzAllowEvent(event: GatewayAuthzAllowEvent): void {
+  allowEvents.push({ ...event, seq: ++allowSeq });
+  if (allowEvents.length > MAX_ALLOW_EVENTS) {
+    allowEvents.splice(0, allowEvents.length - MAX_ALLOW_EVENTS);
   }
 }
 
@@ -137,9 +131,9 @@ function normalizeAlertThreshold(raw: unknown): number {
 }
 
 function bucketizeAll(
-  entries: GatewayAuthzDenyEventRecord[],
-  selector: (entry: GatewayAuthzDenyEventRecord) => string | null | undefined,
-): GatewayAuthzDenySummaryBucket[] {
+  entries: GatewayAuthzAllowEventRecord[],
+  selector: (entry: GatewayAuthzAllowEventRecord) => string | null | undefined,
+): GatewayAuthzAllowSummaryBucket[] {
   const counts = new Map<string, number>();
   for (const entry of entries) {
     const raw = selector(entry);
@@ -152,26 +146,24 @@ function bucketizeAll(
 }
 
 function bucketize(
-  entries: GatewayAuthzDenyEventRecord[],
-  selector: (entry: GatewayAuthzDenyEventRecord) => string | null | undefined,
+  entries: GatewayAuthzAllowEventRecord[],
+  selector: (entry: GatewayAuthzAllowEventRecord) => string | null | undefined,
   topN: number,
-): GatewayAuthzDenySummaryBucket[] {
+): GatewayAuthzAllowSummaryBucket[] {
   return bucketizeAll(entries, selector).slice(0, topN);
 }
 
-export function listGatewayAuthzDenyEvents(
-  params: ListAuthzDenyParams = {},
-): GatewayAuthzDenyEvent[] {
-  return listGatewayAuthzDenyEventsPage(params).events;
+export function listGatewayAuthzAllowEvents(
+  params: ListAuthzAllowParams = {},
+): GatewayAuthzAllowEvent[] {
+  return listGatewayAuthzAllowEventsPage(params).events;
 }
 
-export function listGatewayAuthzDenyEventsPage(
-  params: ListAuthzDenyParams = {},
-): GatewayAuthzDenyPage {
+export function listGatewayAuthzAllowEventsPage(
+  params: ListAuthzAllowParams = {},
+): GatewayAuthzAllowPage {
   const order = normalizeOrder(params.order);
   const method = normalizeToken(params.method);
-  const reasonCode = normalizeToken(params.reasonCode);
-  const errorCode = normalizeToken(params.errorCode);
   const userId = normalizeToken(params.userId);
   const principalId = normalizeToken(params.principalId);
   const actorRole = normalizeToken(params.actorRole);
@@ -193,18 +185,12 @@ export function listGatewayAuthzDenyEventsPage(
       ? Math.max(1, Math.min(500, Math.floor(params.limit)))
       : 100;
 
-  let filtered = denyEvents;
+  let filtered = allowEvents;
   if (cursorSeq !== undefined) {
     filtered = filtered.filter((entry) => entry.seq < cursorSeq);
   }
   if (method) {
     filtered = filtered.filter((entry) => entry.method === method);
-  }
-  if (reasonCode) {
-    filtered = filtered.filter((entry) => entry.reasonCode === reasonCode);
-  }
-  if (errorCode) {
-    filtered = filtered.filter((entry) => entry.errorCode === errorCode);
   }
   if (userId) {
     filtered = filtered.filter((entry) => entry.userId === userId);
@@ -246,12 +232,10 @@ export function listGatewayAuthzDenyEventsPage(
   };
 }
 
-export function summarizeGatewayAuthzDenyEvents(
-  params: SummarizeAuthzDenyParams = {},
-): GatewayAuthzDenySummary {
+export function summarizeGatewayAuthzAllowEvents(
+  params: SummarizeAuthzAllowParams = {},
+): GatewayAuthzAllowSummary {
   const method = normalizeToken(params.method);
-  const reasonCode = normalizeToken(params.reasonCode);
-  const errorCode = normalizeToken(params.errorCode);
   const userId = normalizeToken(params.userId);
   const principalId = normalizeToken(params.principalId);
   const actorRole = normalizeToken(params.actorRole);
@@ -270,15 +254,9 @@ export function summarizeGatewayAuthzDenyEvents(
       ? Math.floor(params.untilTs)
       : undefined;
 
-  let filtered = denyEvents;
+  let filtered = allowEvents;
   if (method) {
     filtered = filtered.filter((entry) => entry.method === method);
-  }
-  if (reasonCode) {
-    filtered = filtered.filter((entry) => entry.reasonCode === reasonCode);
-  }
-  if (errorCode) {
-    filtered = filtered.filter((entry) => entry.errorCode === errorCode);
   }
   if (userId) {
     filtered = filtered.filter((entry) => entry.userId === userId);
@@ -328,12 +306,13 @@ export function summarizeGatewayAuthzDenyEvents(
       ...(sinceTs !== undefined ? { sinceTs } : {}),
       ...(untilTs !== undefined ? { untilTs } : {}),
     },
-    byReasonCode: bucketize(filtered, (entry) => entry.reasonCode, topN),
     byMethod: bucketize(filtered, (entry) => entry.method, topN),
     byActorRole: bucketize(filtered, (entry) => entry.actorRole, topN),
     bySourceRole: bucketize(filtered, (entry) => entry.sourceRole, topN),
-    byErrorCode: bucketize(filtered, (entry) => entry.errorCode, topN),
+    byUserId: bucketize(filtered, (entry) => entry.userId, topN),
     byPrincipalId: principalBuckets.slice(0, topN),
+    byClientId: bucketize(filtered, (entry) => entry.clientId, topN),
+    byClientMode: bucketize(filtered, (entry) => entry.clientMode, topN),
     bySourceIp: sourceIpBuckets.slice(0, topN),
     highFrequency: {
       threshold: alertThreshold,
@@ -345,7 +324,7 @@ export function summarizeGatewayAuthzDenyEvents(
 
 export const __test = {
   clear(): void {
-    denyEvents.length = 0;
-    denySeq = 0;
+    allowEvents.length = 0;
+    allowSeq = 0;
   },
 };

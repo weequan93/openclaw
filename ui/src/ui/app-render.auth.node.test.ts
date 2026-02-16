@@ -62,7 +62,7 @@ vi.mock("./views/nodes.ts", () => ({
 
 const { renderApp } = await import("./app-render.ts");
 
-function createState(tab: "channels" | "nodes", principalRole: "admin" | "user") {
+function createState(tab: "channels" | "nodes", principalRole?: "admin" | "user") {
   return {
     tab,
     onboarding: false,
@@ -75,7 +75,7 @@ function createState(tab: "channels" | "nodes", principalRole: "admin" | "user")
     chatAvatarUrl: null,
     hello: {
       auth: {
-        principalRole,
+        ...(principalRole ? { principalRole } : {}),
         role: "operator",
         scopes: ["operator.admin", "operator.read", "operator.write"],
       },
@@ -249,5 +249,16 @@ describe("renderApp callback auth gating", () => {
     expect(state.execApprovalsTarget).toBe("gateway");
     expect(state.execApprovalsTargetNodeId).toBeNull();
     expect(state.execApprovalsSelectedAgent).toBeNull();
+  });
+
+  it("keeps channels mutation callbacks no-op when principalRole is missing on connected sessions", () => {
+    const state = createState("channels");
+
+    renderApp(state as never);
+
+    const channelsCalls = mocks.renderChannels.mock.calls as unknown as Array<[any]>;
+    expect(channelsCalls).toHaveLength(1);
+    const [props] = channelsCalls[0];
+    expect(props.canManage).toBe(false);
   });
 });

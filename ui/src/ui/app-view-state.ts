@@ -23,6 +23,8 @@ import type {
   CronRunLogEntry,
   CronStatus,
   HealthSnapshot,
+  AuthzAllowEvent,
+  AuthzAllowSummary,
   AuthzDeniedEvent,
   AuthzDeniedSummary,
   OwnershipBackfillResult,
@@ -215,6 +217,13 @@ export type AppViewState = {
   debugCallResult: string | null;
   debugCallError: string | null;
   securityLoading: boolean;
+  securityAllowEvents: AuthzAllowEvent[];
+  securityAllowSummary: AuthzAllowSummary | null;
+  securityAllowError: string | null;
+  securityAllowSummaryError: string | null;
+  securityAllowNextCursor: string | null;
+  securityAllowHasMore: boolean;
+  securityAllowPinnedHistory: boolean;
   securityDeniedEvents: AuthzDeniedEvent[];
   securityDeniedSummary: AuthzDeniedSummary | null;
   securityDeniedError: string | null;
@@ -233,6 +242,7 @@ export type AppViewState = {
   securityNextCursor: string | null;
   securityHasMore: boolean;
   securityPinnedHistory: boolean;
+  securityAuditMode: "both" | "denied" | "allowed";
   securityPreset: string | null;
   securityTimePreset: string | null;
   securityOrder: "desc" | "asc";

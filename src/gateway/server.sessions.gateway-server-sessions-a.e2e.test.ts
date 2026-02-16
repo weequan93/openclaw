@@ -511,11 +511,8 @@ describe("gateway server sessions", () => {
     expect(deniedDelete.ok).toBe(false);
     expect(deniedDelete.error?.message ?? "").toContain("owner mismatch");
     expect(
-      (
-        deniedDelete.error as
-          | { details?: { reasonCode?: string } }
-          | undefined
-      )?.details?.reasonCode,
+      (deniedDelete.error as { details?: { reasonCode?: string } } | undefined)?.details
+        ?.reasonCode,
     ).toBe("OWNER_MISMATCH");
 
     const deniedCompact = await rpcReq(ws, "sessions.compact", {
@@ -525,18 +522,20 @@ describe("gateway server sessions", () => {
     expect(deniedCompact.ok).toBe(false);
     expect(deniedCompact.error?.message ?? "").toContain("owner mismatch");
     expect(
-      (
-        deniedCompact.error as
-          | { details?: { reasonCode?: string } }
-          | undefined
-      )?.details?.reasonCode,
+      (deniedCompact.error as { details?: { reasonCode?: string } } | undefined)?.details
+        ?.reasonCode,
     ).toBe("OWNER_MISMATCH");
 
-    const list = await rpcReq<{ sessions: Array<{ key: string }> }>(ws, "sessions.list", {
-      includeGlobal: false,
-      includeUnknown: false,
-    });
+    const list = await rpcReq<{ count?: number; sessions: Array<{ key: string }> }>(
+      ws,
+      "sessions.list",
+      {
+        includeGlobal: false,
+        includeUnknown: false,
+      },
+    );
     expect(list.ok).toBe(true);
+    expect(list.payload?.count).toBe(1);
     expect(list.payload?.sessions.map((session) => session.key)).toEqual(["agent:main:main"]);
 
     const { ws: adminWs } = await openClient({
@@ -559,9 +558,9 @@ describe("gateway server sessions", () => {
     const deniedMethods = (deniedFeed.payload?.events ?? []).map((event) => event.method);
     expect(deniedMethods).toContain("sessions.delete");
     expect(deniedMethods).toContain("sessions.compact");
-    expect(
-      (deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice"),
-    ).toBe(true);
+    expect((deniedFeed.payload?.events ?? []).some((event) => event.userAlias === "Alice")).toBe(
+      true,
+    );
     adminWs.close();
 
     ws.close();
@@ -616,11 +615,16 @@ describe("gateway server sessions", () => {
       },
     });
 
-    const delegatedList = await rpcReq<{ sessions: Array<{ key: string }> }>(ws, "sessions.list", {
-      includeGlobal: false,
-      includeUnknown: false,
-    });
+    const delegatedList = await rpcReq<{ count?: number; sessions: Array<{ key: string }> }>(
+      ws,
+      "sessions.list",
+      {
+        includeGlobal: false,
+        includeUnknown: false,
+      },
+    );
     expect(delegatedList.ok).toBe(true);
+    expect(delegatedList.payload?.count).toBe(2);
     const delegatedKeys = delegatedList.payload?.sessions.map((session) => session.key) ?? [];
     expect(delegatedKeys).toContain("agent:main:main");
     expect(delegatedKeys).toContain("agent:main:discord:group:delegated");
@@ -656,12 +660,14 @@ describe("gateway server sessions", () => {
     expect(resetDelegated.ok).toBe(true);
 
     const adminList = await rpcReq<{
+      count?: number;
       sessions: Array<{ key: string; ownerUserId?: string }>;
     }>(ws, "sessions.list", {
       includeGlobal: false,
       includeUnknown: false,
     });
     expect(adminList.ok).toBe(true);
+    expect(adminList.payload?.count).toBe(adminList.payload?.sessions.length ?? 0);
     const delegatedSession = adminList.payload?.sessions.find(
       (session) => session.key === "agent:main:discord:group:delegated",
     );

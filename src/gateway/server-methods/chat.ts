@@ -11,6 +11,7 @@ import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.j
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
+import { resolveGatewayAuditSourceIp } from "../audit-source-ip.js";
 import {
   abortChatRunById,
   abortChatRunsForSessionKey,
@@ -523,7 +524,7 @@ export const chatHandlers: GatewayRequestHandlers = {
         GatewayClientScopes: client?.connect?.scopes,
         GatewayClientId: clientInfo?.id,
         GatewayClientMode: clientInfo?.mode,
-        GatewaySourceIp: client?.clientIp,
+        GatewaySourceIp: resolveGatewayAuditSourceIp(client ?? {}) ?? undefined,
         GatewayOwnerUserId: owner?.userId,
         GatewayOwnerAlias: owner?.alias,
         GatewayOwnerPrincipalId: owner?.principalId,

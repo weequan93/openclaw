@@ -9,4 +9,5 @@ export type GatewayWsClient = {
   connId: string;
   presenceKey?: string;
   clientIp?: string;
+  remoteAddr?: string;
 };

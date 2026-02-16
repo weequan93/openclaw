@@ -27,6 +27,11 @@ SENSITIVE_FILE_TEST_PREFIXES = {
     "src/gateway/server-methods/nodes.ts": ("src/gateway/",),
     "src/gateway/server-methods/usage.ts": ("src/gateway/",),
     "src/gateway/server-broadcast.ts": ("src/gateway/",),
+    "src/gateway/server-http.ts": ("src/gateway/",),
+    "src/gateway/openai-http.ts": ("src/gateway/",),
+    "src/gateway/openresponses-http.ts": ("src/gateway/",),
+    "src/gateway/tools-invoke-http.ts": ("src/gateway/",),
+    "src/gateway/server/plugins-http.ts": ("src/gateway/",),
     "src/auto-reply/reply/commands-config.ts": (
         "src/auto-reply/reply/",
         "src/channels/plugins/",

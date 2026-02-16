@@ -1,6 +1,8 @@
 import type { GatewayBrowserClient } from "../gateway.ts";
 import type { GatewayHelloOk } from "../gateway.ts";
 import type {
+  AuthzAllowEvent,
+  AuthzAllowSummary,
   AuthzDeniedEvent,
   AuthzDeniedSummary,
   ConfigChangeEvent,
@@ -23,6 +25,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 type SecurityQuery = {
   limit?: number;
   cursor?: string;
+  allowCursor?: string;
   order?: "desc" | "asc";
   method?: string;
   reasonCode?: string;
@@ -54,6 +57,11 @@ type SecuritySummaryQuery = {
   sinceTs?: number;
   untilTs?: number;
 };
+
+type SecurityAllowQuery = Omit<SecurityQuery, "cursor" | "reasonCode" | "errorCode">;
+
+type SecurityAllowSummaryQuery = Omit<SecuritySummaryQuery, "reasonCode" | "errorCode">;
+type SecurityAuditMode = "both" | "denied" | "allowed";
 
 type SecurityConfigChangesQuery = {
   limit?: number;
@@ -93,6 +101,13 @@ export type SecurityState = {
   hello?: GatewayHelloOk | null;
   applySessionKey?: string;
   securityLoading: boolean;
+  securityAllowEvents?: AuthzAllowEvent[];
+  securityAllowSummary?: AuthzAllowSummary | null;
+  securityAllowError?: string | null;
+  securityAllowSummaryError?: string | null;
+  securityAllowNextCursor?: string | null;
+  securityAllowHasMore?: boolean;
+  securityAllowPinnedHistory?: boolean;
   securityDeniedEvents: AuthzDeniedEvent[];
   securityDeniedSummary?: AuthzDeniedSummary | null;
   securityDeniedError: string | null;
@@ -107,6 +122,7 @@ export type SecurityState = {
   securityNextCursor?: string | null;
   securityHasMore?: boolean;
   securityPinnedHistory?: boolean;
+  securityAuditMode?: SecurityAuditMode;
   securityOrder?: string;
   securityLimit?: string;
   securityAlertThreshold?: string;
@@ -145,7 +161,28 @@ export type SecurityPreset =
   | "scope-missing-24h"
   | "role-forbidden-24h"
   | "policy-deny-24h"
-  | "unknown-sender-24h";
+  | "unknown-sender-24h"
+  | "plugin-role-forbidden-24h"
+  | "plugin-unknown-sender-24h"
+  | "plugin-allow-24h"
+  | "openai-role-forbidden-24h"
+  | "openai-unknown-sender-24h"
+  | "openai-allow-24h"
+  | "openresponses-role-forbidden-24h"
+  | "openresponses-unknown-sender-24h"
+  | "openresponses-allow-24h"
+  | "tools-role-forbidden-24h"
+  | "tools-unknown-sender-24h"
+  | "tools-allow-24h"
+  | "hooks-role-forbidden-24h"
+  | "hooks-unknown-sender-24h"
+  | "hooks-allow-24h"
+  | "canvas-http-role-forbidden-24h"
+  | "canvas-ws-role-forbidden-24h"
+  | "canvas-http-unknown-sender-24h"
+  | "canvas-ws-unknown-sender-24h"
+  | "canvas-http-allow-24h"
+  | "canvas-ws-allow-24h";
 
 export type SecurityTimePreset = "last-1h" | "last-24h" | "last-7d" | "all-time";
 const OWNERSHIP_RESOURCE_NAMES = new Set<OwnershipResourceName>([
@@ -162,6 +199,18 @@ function parseOptionalToken(raw: unknown): string | undefined {
   }
   const trimmed = raw.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function isAllowOnlyPreset(preset: SecurityPreset): boolean {
+  return (
+    preset === "plugin-allow-24h" ||
+    preset === "openai-allow-24h" ||
+    preset === "openresponses-allow-24h" ||
+    preset === "tools-allow-24h" ||
+    preset === "hooks-allow-24h" ||
+    preset === "canvas-http-allow-24h" ||
+    preset === "canvas-ws-allow-24h"
+  );
 }
 
 function parseLimit(raw: unknown): number | undefined {
@@ -197,8 +246,28 @@ function parseEpochMs(raw: unknown): number | undefined {
   return Math.floor(parsed);
 }
 
+function isUnknownMethodError(err: unknown): boolean {
+  const message = String(err).toLowerCase();
+  return message.includes("unknown method");
+}
+
 function parseOrder(raw: unknown): "asc" | undefined {
   return raw === "asc" ? "asc" : undefined;
+}
+
+function hasAllowSurface(state: SecurityState): boolean {
+  return (
+    Object.prototype.hasOwnProperty.call(state, "securityAllowEvents") ||
+    Object.prototype.hasOwnProperty.call(state, "securityAllowSummary") ||
+    Object.prototype.hasOwnProperty.call(state, "securityAllowError") ||
+    Object.prototype.hasOwnProperty.call(state, "securityAllowSummaryError")
+  );
+}
+
+function resolveSecurityAuditMode(state: SecurityState): SecurityAuditMode {
+  return state.securityAuditMode === "denied" || state.securityAuditMode === "allowed"
+    ? state.securityAuditMode
+    : "both";
 }
 
 function hasConfigWarningSurface(state: SecurityState): boolean {
@@ -307,6 +376,44 @@ function resolveSecuritySummaryQuery(
   };
 }
 
+function resolveAllowQuery(query: SecurityQuery): SecurityAllowQuery {
+  return {
+    limit: query.limit,
+    order: query.order,
+    method: query.method,
+    userId: query.userId,
+    principalId: query.principalId,
+    actorRole: query.actorRole,
+    sourceRole: query.sourceRole,
+    clientId: query.clientId,
+    clientMode: query.clientMode,
+    sourceIp: query.sourceIp,
+    sinceTs: query.sinceTs,
+    untilTs: query.untilTs,
+  };
+}
+
+function resolveAllowSummaryQuery(
+  state: SecurityState,
+  query: SecurityAllowQuery,
+): SecurityAllowSummaryQuery {
+  return {
+    topN: DEFAULT_SECURITY_TOPN,
+    alertThreshold:
+      parseAlertThreshold(state.securityAlertThreshold) ?? DEFAULT_SECURITY_ALERT_THRESHOLD,
+    method: query.method,
+    userId: query.userId,
+    principalId: query.principalId,
+    actorRole: query.actorRole,
+    sourceRole: query.sourceRole,
+    clientId: query.clientId,
+    clientMode: query.clientMode,
+    sourceIp: query.sourceIp,
+    sinceTs: query.sinceTs,
+    untilTs: query.untilTs,
+  };
+}
+
 function resolveOwnershipGapsLimit(state: SecurityState): number {
   const parsed = parseLimit(state.securityLimit) ?? DEFAULT_SECURITY_LIMIT;
   return Math.max(1, Math.min(DEFAULT_OWNERSHIP_GAPS_LIMIT, parsed));
@@ -333,15 +440,23 @@ function resolveConfigChangesQuery(query: SecurityQuery): SecurityConfigChangesQ
 }
 
 function canManageSecurity(state: SecurityState): boolean {
-  const auth = state.hello?.auth;
-  // Backward compatibility for contexts without hello auth.
-  if (!auth) {
+  if (state.hello === undefined) {
     return true;
   }
-  const principalRole =
-    typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
+  const auth = state.hello?.auth;
+  // Keep pre-connect compatibility, but never grant admin controls for connected
+  // sessions when auth metadata is missing.
+  if (!auth) {
+    return state.connected !== true;
+  }
+  const principalRole = typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
   if (principalRole.length > 0) {
     return principalRole === "admin";
+  }
+  // Connected sessions without explicit principal role are treated as non-admin
+  // to avoid scope-only admin UI bypass.
+  if (state.connected === true) {
+    return false;
   }
   const role = typeof auth.role === "string" ? auth.role.trim() : "";
   const scopes = Array.isArray(auth.scopes)
@@ -580,6 +695,15 @@ export async function loadSecurity(state: SecurityState, opts?: SecurityQuery) {
   }
   if (!canManageSecurity(state)) {
     state.securityLoading = false;
+    if (hasAllowSurface(state)) {
+      state.securityAllowEvents = [];
+      state.securityAllowSummary = null;
+      state.securityAllowError = null;
+      state.securityAllowSummaryError = null;
+      state.securityAllowNextCursor = null;
+      state.securityAllowHasMore = false;
+      state.securityAllowPinnedHistory = false;
+    }
     state.securityDeniedEvents = [];
     state.securityDeniedSummary = null;
     state.securityDeniedError = null;
@@ -613,7 +737,20 @@ export async function loadSecurity(state: SecurityState, opts?: SecurityQuery) {
   if (state.securityLoading) {
     return;
   }
+  const auditMode = resolveSecurityAuditMode(state);
+  const includeDeniedByMode = auditMode !== "allowed";
+  const includeAllowByMode = hasAllowSurface(state) && auditMode !== "denied";
+  const pagingDenied = Boolean(opts?.cursor);
+  const pagingAllow = Boolean(opts?.allowCursor);
+  const skipDeniedForTargetedPaging = auditMode === "both" && pagingAllow && !pagingDenied;
+  const skipAllowForTargetedPaging = auditMode === "both" && pagingDenied && !pagingAllow;
+  const loadDeniedFeed = includeDeniedByMode && !skipDeniedForTargetedPaging;
+  const loadAllowFeed = includeAllowByMode && !skipAllowForTargetedPaging;
   state.securityLoading = true;
+  if (hasAllowSurface(state)) {
+    state.securityAllowError = null;
+    state.securityAllowSummaryError = null;
+  }
   state.securityDeniedError = null;
   state.securityDeniedSummaryError = null;
   state.securityConfigChangesError = null;
@@ -629,42 +766,126 @@ export async function loadSecurity(state: SecurityState, opts?: SecurityQuery) {
   ) {
     void loadSecurityPolicyBundles(state);
   }
-  try {
-    const queryRaw = resolveSecurityQuery(state, opts);
-    const summaryQueryRaw = resolveSecuritySummaryQuery(state, queryRaw);
-    const append = Boolean(opts?.cursor);
-    state.securityPinnedHistory = append;
-    const query = Object.fromEntries(
-      Object.entries(queryRaw).filter(([, value]) => value !== undefined),
-    );
-    const summaryQuery = Object.fromEntries(
-      Object.entries(summaryQueryRaw).filter(([, value]) => value !== undefined),
-    );
-    const [denied, summary] = await Promise.all([
-      state.client.request("authz.denied.list", query),
-      state.client.request("authz.denied.summary", summaryQuery),
-    ]);
-    const deniedPayload = denied as
-      | {
-          events?: unknown[];
-          nextCursor?: string | null;
-          hasMore?: boolean;
-        }
-      | undefined;
-    const page = Array.isArray(deniedPayload?.events)
-      ? (deniedPayload.events as AuthzDeniedEvent[])
-      : [];
-    state.securityDeniedEvents = append ? [...state.securityDeniedEvents, ...page] : page;
-    state.securityNextCursor =
-      typeof deniedPayload?.nextCursor === "string" && deniedPayload.nextCursor.trim()
-        ? deniedPayload.nextCursor
-        : null;
-    state.securityHasMore = Boolean(deniedPayload?.hasMore) && Boolean(state.securityNextCursor);
-    state.securityDeniedSummary = summary as AuthzDeniedSummary;
-  } catch (err) {
-    state.securityDeniedError = String(err);
-    state.securityDeniedSummaryError = String(err);
+  if (loadDeniedFeed) {
+    try {
+      const queryRaw = resolveSecurityQuery(state, opts);
+      const { allowCursor: _allowCursor, ...deniedQueryRaw } = queryRaw;
+      const summaryQueryRaw = resolveSecuritySummaryQuery(state, deniedQueryRaw);
+      const append = Boolean(opts?.cursor);
+      state.securityPinnedHistory = append;
+      const query = Object.fromEntries(
+        Object.entries(deniedQueryRaw).filter(([, value]) => value !== undefined),
+      );
+      const summaryQuery = Object.fromEntries(
+        Object.entries(summaryQueryRaw).filter(([, value]) => value !== undefined),
+      );
+      const [denied, summary] = await Promise.all([
+        state.client.request("authz.denied.list", query),
+        state.client.request("authz.denied.summary", summaryQuery),
+      ]);
+      const deniedPayload = denied as
+        | {
+            events?: unknown[];
+            nextCursor?: string | null;
+            hasMore?: boolean;
+          }
+        | undefined;
+      const page = Array.isArray(deniedPayload?.events)
+        ? (deniedPayload.events as AuthzDeniedEvent[])
+        : [];
+      state.securityDeniedEvents = append ? [...state.securityDeniedEvents, ...page] : page;
+      state.securityNextCursor =
+        typeof deniedPayload?.nextCursor === "string" && deniedPayload.nextCursor.trim()
+          ? deniedPayload.nextCursor
+          : null;
+      state.securityHasMore = Boolean(deniedPayload?.hasMore) && Boolean(state.securityNextCursor);
+      state.securityDeniedSummary = summary as AuthzDeniedSummary;
+    } catch (err) {
+      state.securityDeniedError = String(err);
+      state.securityDeniedSummaryError = String(err);
+      state.securityDeniedSummary = null;
+    }
+  } else if (!includeDeniedByMode) {
+    state.securityDeniedEvents = [];
     state.securityDeniedSummary = null;
+    state.securityDeniedError = null;
+    state.securityDeniedSummaryError = null;
+    state.securityNextCursor = null;
+    state.securityHasMore = false;
+    state.securityPinnedHistory = false;
+  }
+
+  if (loadAllowFeed) {
+    try {
+      const queryRaw = resolveSecurityQuery(state, opts);
+      const allowQueryRaw = resolveAllowQuery(queryRaw);
+      const appendAllow = Boolean(opts?.allowCursor);
+      if (hasAllowSurface(state)) {
+        state.securityAllowPinnedHistory = appendAllow;
+      }
+      const allowSummaryQueryRaw = resolveAllowSummaryQuery(state, allowQueryRaw);
+      const allowQuery = Object.fromEntries(
+        Object.entries(allowQueryRaw).filter(([, value]) => value !== undefined),
+      );
+      if (opts?.allowCursor) {
+        allowQuery.cursor = opts.allowCursor;
+      }
+      const allowSummaryQuery = Object.fromEntries(
+        Object.entries(allowSummaryQueryRaw).filter(([, value]) => value !== undefined),
+      );
+      const [allow, allowSummary] = await Promise.all([
+        state.client.request("authz.allow.list", allowQuery),
+        state.client.request("authz.allow.summary", allowSummaryQuery),
+      ]);
+      const allowPayload = allow as
+        | {
+            events?: unknown[];
+            nextCursor?: string | null;
+            hasMore?: boolean;
+          }
+        | undefined;
+      const page = Array.isArray(allowPayload?.events)
+        ? (allowPayload.events as AuthzAllowEvent[])
+        : [];
+      state.securityAllowEvents = appendAllow
+        ? [...(state.securityAllowEvents ?? []), ...page]
+        : page;
+      state.securityAllowSummary = allowSummary as AuthzAllowSummary;
+      if (hasAllowSurface(state)) {
+        state.securityAllowNextCursor =
+          typeof allowPayload?.nextCursor === "string" && allowPayload.nextCursor.trim()
+            ? allowPayload.nextCursor
+            : null;
+        state.securityAllowHasMore =
+          Boolean(allowPayload?.hasMore) && Boolean(state.securityAllowNextCursor);
+      }
+    } catch (err) {
+      if (isUnknownMethodError(err)) {
+        state.securityAllowEvents = [];
+        state.securityAllowSummary = null;
+        state.securityAllowError = null;
+        state.securityAllowSummaryError = null;
+        state.securityAllowNextCursor = null;
+        state.securityAllowHasMore = false;
+        state.securityAllowPinnedHistory = false;
+      } else {
+        state.securityAllowError = String(err);
+        state.securityAllowSummaryError = String(err);
+        state.securityAllowEvents = [];
+        state.securityAllowSummary = null;
+        state.securityAllowNextCursor = null;
+        state.securityAllowHasMore = false;
+        state.securityAllowPinnedHistory = false;
+      }
+    }
+  } else if (hasAllowSurface(state) && !includeAllowByMode) {
+    state.securityAllowEvents = [];
+    state.securityAllowSummary = null;
+    state.securityAllowError = null;
+    state.securityAllowSummaryError = null;
+    state.securityAllowNextCursor = null;
+    state.securityAllowHasMore = false;
+    state.securityAllowPinnedHistory = false;
   }
 
   try {
@@ -719,14 +940,9 @@ export async function loadSecurity(state: SecurityState, opts?: SecurityQuery) {
   state.securityLoading = false;
 }
 
-export async function loadOlderSecurity(state: SecurityState) {
-  const cursor = state.securityNextCursor;
-  if (!cursor) {
-    return;
-  }
+function buildSecurityPagingBaseQuery(state: SecurityState): SecurityQuery {
   const limit = parseLimit(state.securityLimit) ?? DEFAULT_SECURITY_LIMIT;
-  await loadSecurity(state, {
-    cursor,
+  return {
     limit,
     order: parseOrder(state.securityOrder),
     method: parseOptionalToken(state.securityFilterMethod),
@@ -741,7 +957,67 @@ export async function loadOlderSecurity(state: SecurityState) {
     sourceIp: parseOptionalToken(state.securityFilterSourceIp),
     sinceTs: parseEpochMs(state.securityFilterSinceTs),
     untilTs: parseEpochMs(state.securityFilterUntilTs),
+  };
+}
+
+export async function loadOlderDeniedSecurity(state: SecurityState) {
+  const cursor = state.securityNextCursor;
+  if (!cursor) {
+    return;
+  }
+  await loadSecurity(state, {
+    ...buildSecurityPagingBaseQuery(state),
+    cursor,
   });
+}
+
+export async function loadOlderAllowSecurity(state: SecurityState) {
+  const allowCursor = state.securityAllowNextCursor;
+  if (!allowCursor) {
+    return;
+  }
+  await loadSecurity(state, {
+    ...buildSecurityPagingBaseQuery(state),
+    allowCursor,
+  });
+}
+
+export async function loadOlderSecurityBoth(state: SecurityState) {
+  const cursor = state.securityNextCursor;
+  const allowCursor = state.securityAllowNextCursor;
+  if (!cursor || !allowCursor) {
+    return;
+  }
+  await loadSecurity(state, {
+    ...buildSecurityPagingBaseQuery(state),
+    cursor,
+    allowCursor,
+  });
+}
+
+export async function loadOlderSecurity(state: SecurityState) {
+  const mode = resolveSecurityAuditMode(state);
+  if (mode === "denied") {
+    await loadOlderDeniedSecurity(state);
+    return;
+  }
+  if (mode === "allowed") {
+    await loadOlderAllowSecurity(state);
+    return;
+  }
+  const hasDeniedCursor = Boolean(state.securityNextCursor);
+  const hasAllowCursor = Boolean(state.securityAllowNextCursor);
+  if (hasDeniedCursor && hasAllowCursor) {
+    await loadOlderSecurityBoth(state);
+    return;
+  }
+  if (hasDeniedCursor) {
+    await loadOlderDeniedSecurity(state);
+    return;
+  }
+  if (hasAllowCursor) {
+    await loadOlderAllowSecurity(state);
+  }
 }
 
 export async function applySecurityPreset(
@@ -750,6 +1026,7 @@ export async function applySecurityPreset(
   nowMs = Date.now(),
 ) {
   state.securityFilterMethod = "";
+  state.securityFilterReasonCode = "";
   state.securityFilterUserId = "";
   state.securityFilterPrincipalId = "";
   state.securityFilterErrorCode = "";
@@ -760,12 +1037,16 @@ export async function applySecurityPreset(
   state.securityFilterSourceIp = "";
   state.securityFilterSinceTs = String(Math.max(0, nowMs - DAY_MS));
   state.securityFilterUntilTs = String(nowMs);
+  state.securityAuditMode = isAllowOnlyPreset(preset) ? "allowed" : "denied";
   state.securityOrder = "desc";
   state.securityLimit = String(DEFAULT_SECURITY_LIMIT);
   state.securityAlertThreshold = String(DEFAULT_SECURITY_ALERT_THRESHOLD);
   state.securityNextCursor = null;
   state.securityHasMore = false;
   state.securityPinnedHistory = false;
+  state.securityAllowNextCursor = null;
+  state.securityAllowHasMore = false;
+  state.securityAllowPinnedHistory = false;
   switch (preset) {
     case "owner-mismatch-24h":
       state.securityFilterReasonCode = "OWNER_MISMATCH";
@@ -781,6 +1062,83 @@ export async function applySecurityPreset(
       break;
     case "unknown-sender-24h":
       state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "plugin-role-forbidden-24h":
+      state.securityFilterMethod = "http.plugin";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "plugin-unknown-sender-24h":
+      state.securityFilterMethod = "http.plugin";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "plugin-allow-24h":
+      state.securityFilterMethod = "http.plugin";
+      break;
+    case "openai-role-forbidden-24h":
+      state.securityFilterMethod = "http.openai.chat.completions";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "openai-unknown-sender-24h":
+      state.securityFilterMethod = "http.openai.chat.completions";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "openai-allow-24h":
+      state.securityFilterMethod = "http.openai.chat.completions";
+      break;
+    case "openresponses-role-forbidden-24h":
+      state.securityFilterMethod = "http.openresponses.responses";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "openresponses-unknown-sender-24h":
+      state.securityFilterMethod = "http.openresponses.responses";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "openresponses-allow-24h":
+      state.securityFilterMethod = "http.openresponses.responses";
+      break;
+    case "tools-role-forbidden-24h":
+      state.securityFilterMethod = "http.tools.invoke";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "tools-unknown-sender-24h":
+      state.securityFilterMethod = "http.tools.invoke";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "tools-allow-24h":
+      state.securityFilterMethod = "http.tools.invoke";
+      break;
+    case "hooks-role-forbidden-24h":
+      state.securityFilterMethod = "http.hooks";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "hooks-unknown-sender-24h":
+      state.securityFilterMethod = "http.hooks";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "hooks-allow-24h":
+      state.securityFilterMethod = "http.hooks";
+      break;
+    case "canvas-http-role-forbidden-24h":
+      state.securityFilterMethod = "http.canvas";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "canvas-ws-role-forbidden-24h":
+      state.securityFilterMethod = "ws.canvas";
+      state.securityFilterReasonCode = "ROLE_FORBIDDEN";
+      break;
+    case "canvas-http-unknown-sender-24h":
+      state.securityFilterMethod = "http.canvas";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "canvas-ws-unknown-sender-24h":
+      state.securityFilterMethod = "ws.canvas";
+      state.securityFilterReasonCode = "UNKNOWN_SENDER";
+      break;
+    case "canvas-http-allow-24h":
+      state.securityFilterMethod = "http.canvas";
+      break;
+    case "canvas-ws-allow-24h":
+      state.securityFilterMethod = "ws.canvas";
       break;
   }
   await loadSecurity(state);
@@ -812,6 +1170,9 @@ export async function applySecurityTimePreset(
   state.securityNextCursor = null;
   state.securityHasMore = false;
   state.securityPinnedHistory = false;
+  state.securityAllowNextCursor = null;
+  state.securityAllowHasMore = false;
+  state.securityAllowPinnedHistory = false;
   await loadSecurity(state);
 }
 

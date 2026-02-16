@@ -18,6 +18,7 @@ export type GatewayClient = {
   connId?: string;
   owner?: GatewayOwnerContext;
   clientIp?: string;
+  remoteAddr?: string;
 };
 
 export type RespondFn = (

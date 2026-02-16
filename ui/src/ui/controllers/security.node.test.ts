@@ -4,7 +4,10 @@ import {
   applySecurityPolicyBundle,
   applySecurityPreset,
   applySecurityTimePreset,
+  loadOlderAllowSecurity,
+  loadOlderDeniedSecurity,
   loadSecurityPolicyBundles,
+  loadOlderSecurityBoth,
   loadOlderSecurity,
   loadSecurity,
   resolveSecurityPolicyBundle,
@@ -40,6 +43,27 @@ function mockDeniedSummaryPayload() {
     highFrequency: {
       threshold: 5,
       principals: [],
+    },
+  };
+}
+
+function mockAllowSummaryPayload() {
+  return {
+    ts: 4,
+    total: 1,
+    window: {},
+    byMethod: [{ key: "sessions.list", count: 1 }],
+    byActorRole: [{ key: "user", count: 1 }],
+    bySourceRole: [{ key: "operator", count: 1 }],
+    byUserId: [{ key: "user-a", count: 1 }],
+    byPrincipalId: [{ key: "principal:a", count: 1 }],
+    byClientId: [{ key: "control-ui", count: 1 }],
+    byClientMode: [{ key: "webchat", count: 1 }],
+    bySourceIp: [{ key: "203.0.113.7", count: 1 }],
+    highFrequency: {
+      threshold: 5,
+      principals: [],
+      sourceIps: [],
     },
   };
 }
@@ -143,6 +167,307 @@ describe("security controller", () => {
     expect(state.securityHasMore).toBe(false);
     expect(state.securityNextCursor).toBeNull();
     expect(state.securityPinnedHistory).toBe(false);
+  });
+
+  it("loads allow access events when allow surface is enabled", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list") {
+        return {
+          events: [],
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "authz.allow.list") {
+        return {
+          events: [
+            {
+              ts: 11,
+              requestId: "allow-1",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+              clientId: "control-ui",
+              clientMode: "webchat",
+              sourceIp: "203.0.113.7",
+            },
+          ],
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityAllowError: "old",
+      securityAllowSummaryError: "old",
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: null,
+      securityHasMore: false,
+      securityPinnedHistory: false,
+    };
+
+    await loadSecurity(state);
+
+    expect(request).toHaveBeenCalledWith("authz.allow.list", { limit: 200 });
+    expect(request).toHaveBeenCalledWith("authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(state.securityAllowEvents).toHaveLength(1);
+    expect(state.securityAllowEvents?.[0]?.requestId).toBe("allow-1");
+    expect(state.securityAllowSummary?.total).toBe(1);
+    expect(state.securityAllowError).toBeNull();
+    expect(state.securityAllowSummaryError).toBeNull();
+  });
+
+  it("keeps allow panel quiet when gateway does not support allow methods", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list") {
+        return {
+          events: [],
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "authz.allow.list" || method === "authz.allow.summary") {
+        throw new Error("unknown method authz.allow.list");
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAllowEvents: [
+        {
+          ts: 1,
+          requestId: "old-allow",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowError: "old",
+      securityAllowSummaryError: "old",
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: null,
+      securityHasMore: false,
+      securityPinnedHistory: false,
+    };
+
+    await loadSecurity(state);
+
+    expect(state.securityAllowEvents).toEqual([]);
+    expect(state.securityAllowSummary).toBeNull();
+    expect(state.securityAllowError).toBeNull();
+    expect(state.securityAllowSummaryError).toBeNull();
+  });
+
+  it("skips denied feed requests when audit mode is allowed-only", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list" || method === "authz.denied.summary") {
+        throw new Error(`unexpected denied request ${method}`);
+      }
+      if (method === "authz.allow.list") {
+        return {
+          events: [
+            {
+              ts: 11,
+              requestId: "allow-1",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "allowed",
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityAllowError: "old",
+      securityAllowSummaryError: "old",
+      securityDeniedEvents: [
+        {
+          ts: 1,
+          requestId: "deny-old",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: "old",
+      securityDeniedSummaryError: "old",
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "123",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+    };
+
+    await loadSecurity(state);
+
+    expect(request).toHaveBeenCalledWith("authz.allow.list", { limit: 200 });
+    expect(request).toHaveBeenCalledWith("authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).not.toHaveBeenCalledWith("authz.denied.list", expect.anything());
+    expect(request).not.toHaveBeenCalledWith("authz.denied.summary", expect.anything());
+    expect(state.securityDeniedEvents).toEqual([]);
+    expect(state.securityDeniedSummary).toBeNull();
+    expect(state.securityDeniedError).toBeNull();
+    expect(state.securityDeniedSummaryError).toBeNull();
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityPinnedHistory).toBe(false);
+    expect(state.securityAllowEvents).toHaveLength(1);
+    expect(state.securityAllowSummary?.total).toBe(1);
+  });
+
+  it("skips allow feed requests when audit mode is denied-only", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.allow.list" || method === "authz.allow.summary") {
+        throw new Error(`unexpected allow request ${method}`);
+      }
+      if (method === "authz.denied.list") {
+        return {
+          events: [
+            {
+              ts: 10,
+              requestId: "req-1",
+              method: "sessions.list",
+              reasonCode: "OWNER_MISMATCH",
+              errorCode: "INVALID_REQUEST",
+              errorMessage: "owner mismatch",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "denied",
+      securityAllowEvents: [
+        {
+          ts: 1,
+          requestId: "allow-old",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowError: "old",
+      securityAllowSummaryError: "old",
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: null,
+      securityHasMore: false,
+      securityPinnedHistory: false,
+    };
+
+    await loadSecurity(state);
+
+    expect(request).toHaveBeenCalledWith("authz.denied.list", { limit: 200 });
+    expect(request).toHaveBeenCalledWith("authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).not.toHaveBeenCalledWith("authz.allow.list", expect.anything());
+    expect(request).not.toHaveBeenCalledWith("authz.allow.summary", expect.anything());
+    expect(state.securityAllowEvents).toEqual([]);
+    expect(state.securityAllowSummary).toBeNull();
+    expect(state.securityAllowError).toBeNull();
+    expect(state.securityAllowSummaryError).toBeNull();
+    expect(state.securityDeniedEvents).toHaveLength(1);
+    expect(state.securityDeniedSummary?.total).toBe(1);
   });
 
   it("loads config validation warnings when warning surface is enabled", async () => {
@@ -487,6 +812,699 @@ describe("security controller", () => {
     expect(state.securityPinnedHistory).toBe(true);
   });
 
+  it("does not load older denied pages in allowed-only mode", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list" || method === "authz.denied.summary") {
+        throw new Error(`unexpected denied request ${method}`);
+      }
+      if (method === "authz.allow.list") {
+        return { events: [] };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "allowed",
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "123",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+    };
+
+    await loadOlderSecurity(state);
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it("loads older allow pages in allowed-only mode when allow cursor exists", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.denied.list" || method === "authz.denied.summary") {
+        throw new Error(`unexpected denied request ${method}`);
+      }
+      if (method === "authz.allow.list" && params?.cursor === "allow-1") {
+        return {
+          events: [
+            {
+              ts: 12,
+              requestId: "allow-2",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "allowed",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: "allow-1",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: null,
+      securityHasMore: false,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.allow.list", {
+      limit: 1,
+      cursor: "allow-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 1 });
+    expect(request).not.toHaveBeenCalledWith("authz.denied.list", expect.anything());
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual([
+      "allow-1",
+      "allow-2",
+    ]);
+    expect(state.securityAllowHasMore).toBe(false);
+    expect(state.securityAllowNextCursor).toBeNull();
+    expect(state.securityAllowPinnedHistory).toBe(true);
+  });
+
+  it("loads older allow pages in both mode when only allow cursor exists", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.denied.list" || method === "authz.denied.summary") {
+        throw new Error(`unexpected denied request ${method}`);
+      }
+      if (method === "authz.allow.list" && params?.cursor === "allow-1") {
+        return {
+          events: [
+            {
+              ts: 12,
+              requestId: "allow-2",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: "allow-1",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [
+        {
+          ts: 10,
+          requestId: "req-1",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: null,
+      securityHasMore: false,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.allow.list", {
+      limit: 1,
+      cursor: "allow-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 1 });
+    expect(request).not.toHaveBeenCalledWith("authz.denied.list", expect.anything());
+    expect(state.securityDeniedEvents).toHaveLength(1);
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual([
+      "allow-1",
+      "allow-2",
+    ]);
+  });
+
+  it("loads older denied and allow pages together in both mode", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.denied.list" && params?.cursor === "denied-1") {
+        return {
+          events: [
+            {
+              ts: 9,
+              requestId: "req-2",
+              method: "sessions.list",
+              reasonCode: "OWNER_MISMATCH",
+              errorCode: "INVALID_REQUEST",
+              errorMessage: "owner mismatch",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "authz.allow.list" && params?.cursor === "allow-1") {
+        return {
+          events: [
+            {
+              ts: 12,
+              requestId: "allow-2",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: "allow-1",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [
+        {
+          ts: 10,
+          requestId: "req-1",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "denied-1",
+      securityHasMore: true,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 1,
+      cursor: "denied-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "authz.allow.list", {
+      limit: 1,
+      cursor: "allow-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(5, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(6, "ownership.gaps", { limit: 1 });
+    expect(state.securityDeniedEvents.map((entry) => entry.requestId)).toEqual(["req-1", "req-2"]);
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual([
+      "allow-1",
+      "allow-2",
+    ]);
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityPinnedHistory).toBe(true);
+    expect(state.securityAllowHasMore).toBe(false);
+    expect(state.securityAllowNextCursor).toBeNull();
+    expect(state.securityAllowPinnedHistory).toBe(true);
+  });
+
+  it("loads only denied older page in both mode when allow cursor is absent", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.allow.list" || method === "authz.allow.summary") {
+        throw new Error(`unexpected allow request ${method}`);
+      }
+      if (method === "authz.denied.list" && params?.cursor === "denied-1") {
+        return {
+          events: [
+            {
+              ts: 9,
+              requestId: "req-2",
+              method: "sessions.list",
+              reasonCode: "OWNER_MISMATCH",
+              errorCode: "INVALID_REQUEST",
+              errorMessage: "owner mismatch",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: null,
+      securityAllowHasMore: false,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [
+        {
+          ts: 10,
+          requestId: "req-1",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "denied-1",
+      securityHasMore: true,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 1,
+      cursor: "denied-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 1 });
+    expect(request).not.toHaveBeenCalledWith("authz.allow.list", expect.anything());
+    expect(state.securityDeniedEvents.map((entry) => entry.requestId)).toEqual(["req-1", "req-2"]);
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual(["allow-1"]);
+  });
+
+  it("loads older denied page via targeted denied helper", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.allow.list" || method === "authz.allow.summary") {
+        throw new Error(`unexpected allow request ${method}`);
+      }
+      if (method === "authz.denied.list" && params?.cursor === "denied-1") {
+        return {
+          events: [
+            {
+              ts: 9,
+              requestId: "req-2",
+              method: "sessions.list",
+              reasonCode: "OWNER_MISMATCH",
+              errorCode: "INVALID_REQUEST",
+              errorMessage: "owner mismatch",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: "allow-1",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [
+        {
+          ts: 10,
+          requestId: "req-1",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "denied-1",
+      securityHasMore: true,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderDeniedSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 1,
+      cursor: "denied-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 1 });
+    expect(request).not.toHaveBeenCalledWith("authz.allow.list", expect.anything());
+    expect(state.securityDeniedEvents.map((entry) => entry.requestId)).toEqual(["req-1", "req-2"]);
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual(["allow-1"]);
+  });
+
+  it("loads older allow page via targeted allow helper", async () => {
+    const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "authz.denied.list" || method === "authz.denied.summary") {
+        throw new Error(`unexpected denied request ${method}`);
+      }
+      if (method === "authz.allow.list" && params?.cursor === "allow-1") {
+        return {
+          events: [
+            {
+              ts: 12,
+              requestId: "allow-2",
+              method: "sessions.list",
+              userId: "user-a",
+              principalId: "principal:a",
+              actorRole: "user",
+              sourceRole: "operator",
+            },
+          ],
+          nextCursor: null,
+          hasMore: false,
+        };
+      }
+      if (method === "authz.allow.summary") {
+        return mockAllowSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [
+        {
+          ts: 11,
+          requestId: "allow-1",
+          method: "sessions.list",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityAllowSummary: mockAllowSummaryPayload(),
+      securityAllowNextCursor: "allow-1",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: false,
+      securityDeniedEvents: [
+        {
+          ts: 10,
+          requestId: "req-1",
+          method: "sessions.list",
+          reasonCode: "OWNER_MISMATCH",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: "owner mismatch",
+          userId: "user-a",
+          principalId: "principal:a",
+          actorRole: "user",
+          sourceRole: "operator",
+        },
+      ],
+      securityDeniedSummary: mockDeniedSummaryPayload(),
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "denied-1",
+      securityHasMore: true,
+      securityPinnedHistory: false,
+      securityLimit: "1",
+    };
+
+    await loadOlderAllowSecurity(state);
+
+    expect(request).toHaveBeenNthCalledWith(1, "authz.allow.list", {
+      limit: 1,
+      cursor: "allow-1",
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.allow.summary", {
+      topN: 5,
+      alertThreshold: 5,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", { limit: 1 });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 1 });
+    expect(request).not.toHaveBeenCalledWith("authz.denied.list", expect.anything());
+    expect((state.securityAllowEvents ?? []).map((entry) => entry.requestId)).toEqual([
+      "allow-1",
+      "allow-2",
+    ]);
+    expect(state.securityDeniedEvents.map((entry) => entry.requestId)).toEqual(["req-1"]);
+  });
+
+  it("does nothing when targeted both-helper is called without both cursors", async () => {
+    const request = vi.fn(async () => {
+      throw new Error("should not call");
+    });
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityAuditMode: "both",
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityAllowNextCursor: null,
+      securityAllowHasMore: false,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "denied-1",
+      securityHasMore: true,
+      securityPinnedHistory: false,
+    };
+
+    await loadOlderSecurityBoth(state);
+
+    expect(request).not.toHaveBeenCalled();
+  });
+
   it("applies preset filters and loads data", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "authz.denied.list") {
@@ -510,6 +1528,11 @@ describe("security controller", () => {
       } as unknown as SecurityState["client"],
       connected: true,
       securityLoading: false,
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityAllowNextCursor: "allow-old",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: true,
       securityDeniedEvents: [],
       securityDeniedError: null,
       securityOwnershipGaps: null,
@@ -540,6 +1563,9 @@ describe("security controller", () => {
     expect(state.securityHasMore).toBe(false);
     expect(state.securityNextCursor).toBeNull();
     expect(state.securityPinnedHistory).toBe(false);
+    expect(state.securityAllowHasMore).toBe(false);
+    expect(state.securityAllowNextCursor).toBeNull();
+    expect(state.securityAllowPinnedHistory).toBe(false);
     expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
       limit: 200,
       reasonCode: "SCOPE_MISSING",
@@ -635,6 +1661,495 @@ describe("security controller", () => {
     expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 50 });
   });
 
+  it("applies plugin unauthorized preset filters and loads data", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list") {
+        return { events: [], nextCursor: null, hasMore: false };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const now = 1_000_000;
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "9",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+      securityOrder: "asc",
+      securityLimit: "10",
+      securityFilterMethod: "sessions.list",
+      securityFilterReasonCode: "",
+      securityFilterUserId: "user-1",
+      securityFilterPrincipalId: "principal:1",
+      securityFilterSinceTs: "",
+      securityFilterUntilTs: "",
+    };
+
+    await applySecurityPreset(state, "plugin-unknown-sender-24h", now);
+
+    expect(state.securityFilterReasonCode).toBe("UNKNOWN_SENDER");
+    expect(state.securityFilterMethod).toBe("http.plugin");
+    expect(state.securityFilterUserId).toBe("");
+    expect(state.securityFilterPrincipalId).toBe("");
+    expect(state.securityFilterSinceTs).toBe("0");
+    expect(state.securityFilterUntilTs).toBe(String(now));
+    expect(state.securityLimit).toBe("200");
+    expect(state.securityOrder).toBe("desc");
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityPinnedHistory).toBe(false);
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 200,
+      method: "http.plugin",
+      reasonCode: "UNKNOWN_SENDER",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+      method: "http.plugin",
+      reasonCode: "UNKNOWN_SENDER",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", {
+      limit: 50,
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 50 });
+  });
+
+  it("applies plugin forbidden preset filters and loads data", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list") {
+        return { events: [], nextCursor: null, hasMore: false };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const now = 1_000_000;
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "9",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+      securityOrder: "asc",
+      securityLimit: "10",
+      securityFilterMethod: "sessions.list",
+      securityFilterReasonCode: "",
+      securityFilterUserId: "user-1",
+      securityFilterPrincipalId: "principal:1",
+      securityFilterSinceTs: "",
+      securityFilterUntilTs: "",
+    };
+
+    await applySecurityPreset(state, "plugin-role-forbidden-24h", now);
+
+    expect(state.securityFilterReasonCode).toBe("ROLE_FORBIDDEN");
+    expect(state.securityFilterMethod).toBe("http.plugin");
+    expect(state.securityFilterUserId).toBe("");
+    expect(state.securityFilterPrincipalId).toBe("");
+    expect(state.securityFilterSinceTs).toBe("0");
+    expect(state.securityFilterUntilTs).toBe(String(now));
+    expect(state.securityLimit).toBe("200");
+    expect(state.securityOrder).toBe("desc");
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityPinnedHistory).toBe(false);
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 200,
+      method: "http.plugin",
+      reasonCode: "ROLE_FORBIDDEN",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+      method: "http.plugin",
+      reasonCode: "ROLE_FORBIDDEN",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", {
+      limit: 50,
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 50 });
+  });
+
+  it("applies openai forbidden preset filters and loads data", async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === "authz.denied.list") {
+        return { events: [], nextCursor: null, hasMore: false };
+      }
+      if (method === "authz.denied.summary") {
+        return mockDeniedSummaryPayload();
+      }
+      if (method === "config.changes.list") {
+        return mockConfigChangesPayload();
+      }
+      if (method === "ownership.gaps") {
+        return mockOwnershipGapsPayload();
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+    const now = 1_000_000;
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      securityLoading: false,
+      securityDeniedEvents: [],
+      securityDeniedError: null,
+      securityOwnershipGaps: null,
+      securityOwnershipGapsError: null,
+      securityNextCursor: "9",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+      securityOrder: "asc",
+      securityLimit: "10",
+      securityFilterMethod: "sessions.list",
+      securityFilterReasonCode: "",
+      securityFilterUserId: "user-1",
+      securityFilterPrincipalId: "principal:1",
+      securityFilterSinceTs: "",
+      securityFilterUntilTs: "",
+    };
+
+    await applySecurityPreset(state, "openai-role-forbidden-24h", now);
+
+    expect(state.securityFilterReasonCode).toBe("ROLE_FORBIDDEN");
+    expect(state.securityFilterMethod).toBe("http.openai.chat.completions");
+    expect(state.securityFilterUserId).toBe("");
+    expect(state.securityFilterPrincipalId).toBe("");
+    expect(state.securityFilterSinceTs).toBe("0");
+    expect(state.securityFilterUntilTs).toBe(String(now));
+    expect(state.securityLimit).toBe("200");
+    expect(state.securityOrder).toBe("desc");
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityPinnedHistory).toBe(false);
+    expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+      limit: 200,
+      method: "http.openai.chat.completions",
+      reasonCode: "ROLE_FORBIDDEN",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+      topN: 5,
+      alertThreshold: 5,
+      method: "http.openai.chat.completions",
+      reasonCode: "ROLE_FORBIDDEN",
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(3, "config.changes.list", {
+      limit: 50,
+      sinceTs: 0,
+      untilTs: now,
+    });
+    expect(request).toHaveBeenNthCalledWith(4, "ownership.gaps", { limit: 50 });
+  });
+
+  it("applies endpoint-specific HTTP/WS presets with expected method and reason", async () => {
+    const now = 1_000_000;
+    const cases: Array<{
+      preset: Parameters<typeof applySecurityPreset>[1];
+      method: string;
+      reason: string;
+    }> = [
+      {
+        preset: "openai-unknown-sender-24h",
+        method: "http.openai.chat.completions",
+        reason: "UNKNOWN_SENDER",
+      },
+      {
+        preset: "openresponses-role-forbidden-24h",
+        method: "http.openresponses.responses",
+        reason: "ROLE_FORBIDDEN",
+      },
+      {
+        preset: "openresponses-unknown-sender-24h",
+        method: "http.openresponses.responses",
+        reason: "UNKNOWN_SENDER",
+      },
+      {
+        preset: "tools-role-forbidden-24h",
+        method: "http.tools.invoke",
+        reason: "ROLE_FORBIDDEN",
+      },
+      {
+        preset: "tools-unknown-sender-24h",
+        method: "http.tools.invoke",
+        reason: "UNKNOWN_SENDER",
+      },
+      {
+        preset: "hooks-role-forbidden-24h",
+        method: "http.hooks",
+        reason: "ROLE_FORBIDDEN",
+      },
+      {
+        preset: "hooks-unknown-sender-24h",
+        method: "http.hooks",
+        reason: "UNKNOWN_SENDER",
+      },
+      {
+        preset: "canvas-http-role-forbidden-24h",
+        method: "http.canvas",
+        reason: "ROLE_FORBIDDEN",
+      },
+      {
+        preset: "canvas-ws-role-forbidden-24h",
+        method: "ws.canvas",
+        reason: "ROLE_FORBIDDEN",
+      },
+      {
+        preset: "canvas-http-unknown-sender-24h",
+        method: "http.canvas",
+        reason: "UNKNOWN_SENDER",
+      },
+      {
+        preset: "canvas-ws-unknown-sender-24h",
+        method: "ws.canvas",
+        reason: "UNKNOWN_SENDER",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const request = vi.fn(async (method: string) => {
+        if (method === "authz.denied.list") {
+          return { events: [], nextCursor: null, hasMore: false };
+        }
+        if (method === "authz.denied.summary") {
+          return mockDeniedSummaryPayload();
+        }
+        if (method === "config.changes.list") {
+          return mockConfigChangesPayload();
+        }
+        if (method === "ownership.gaps") {
+          return mockOwnershipGapsPayload();
+        }
+        throw new Error(`unexpected method ${method}`);
+      });
+      const state: SecurityState = {
+        client: {
+          request,
+        } as unknown as SecurityState["client"],
+        connected: true,
+        securityLoading: false,
+        securityDeniedEvents: [],
+        securityDeniedError: null,
+        securityOwnershipGaps: null,
+        securityOwnershipGapsError: null,
+        securityNextCursor: "9",
+        securityHasMore: true,
+        securityPinnedHistory: true,
+        securityOrder: "asc",
+        securityLimit: "10",
+        securityFilterMethod: "sessions.list",
+        securityFilterReasonCode: "",
+        securityFilterUserId: "user-1",
+        securityFilterPrincipalId: "principal:1",
+        securityFilterSinceTs: "",
+        securityFilterUntilTs: "",
+      };
+
+      await applySecurityPreset(state, testCase.preset, now);
+
+      expect(state.securityAuditMode).toBe("denied");
+      expect(state.securityFilterMethod).toBe(testCase.method);
+      expect(state.securityFilterReasonCode).toBe(testCase.reason);
+      expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
+        limit: 200,
+        method: testCase.method,
+        reasonCode: testCase.reason,
+        sinceTs: 0,
+        untilTs: now,
+      });
+      expect(request).toHaveBeenNthCalledWith(2, "authz.denied.summary", {
+        topN: 5,
+        alertThreshold: 5,
+        method: testCase.method,
+        reasonCode: testCase.reason,
+        sinceTs: 0,
+        untilTs: now,
+      });
+    }
+  });
+
+  it("applies endpoint-specific allow presets with expected method and allow-only mode", async () => {
+    const now = 1_000_000;
+    const cases: Array<{
+      preset: Parameters<typeof applySecurityPreset>[1];
+      method: string;
+    }> = [
+      {
+        preset: "plugin-allow-24h",
+        method: "http.plugin",
+      },
+      {
+        preset: "openai-allow-24h",
+        method: "http.openai.chat.completions",
+      },
+      {
+        preset: "openresponses-allow-24h",
+        method: "http.openresponses.responses",
+      },
+      {
+        preset: "tools-allow-24h",
+        method: "http.tools.invoke",
+      },
+      {
+        preset: "hooks-allow-24h",
+        method: "http.hooks",
+      },
+      {
+        preset: "canvas-http-allow-24h",
+        method: "http.canvas",
+      },
+      {
+        preset: "canvas-ws-allow-24h",
+        method: "ws.canvas",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const request = vi.fn(async (method: string) => {
+        if (method === "authz.denied.list" || method === "authz.denied.summary") {
+          throw new Error(`unexpected denied request ${method}`);
+        }
+        if (method === "authz.allow.list") {
+          return { events: [], nextCursor: null, hasMore: false };
+        }
+        if (method === "authz.allow.summary") {
+          return mockAllowSummaryPayload();
+        }
+        if (method === "config.changes.list") {
+          return mockConfigChangesPayload();
+        }
+        if (method === "ownership.gaps") {
+          return mockOwnershipGapsPayload();
+        }
+        throw new Error(`unexpected method ${method}`);
+      });
+
+      const state: SecurityState = {
+        client: {
+          request,
+        } as unknown as SecurityState["client"],
+        connected: true,
+        securityLoading: false,
+        securityAuditMode: "both",
+        securityAllowEvents: [],
+        securityAllowSummary: null,
+        securityAllowError: null,
+        securityAllowSummaryError: null,
+        securityAllowNextCursor: "allow-old",
+        securityAllowHasMore: true,
+        securityAllowPinnedHistory: true,
+        securityDeniedEvents: [
+          {
+            ts: 1,
+            requestId: "deny-old",
+            method: "sessions.list",
+            reasonCode: "OWNER_MISMATCH",
+            errorCode: "INVALID_REQUEST",
+            errorMessage: "owner mismatch",
+            userId: "user-a",
+            principalId: "principal:a",
+            actorRole: "user",
+            sourceRole: "operator",
+          },
+        ],
+        securityDeniedSummary: mockDeniedSummaryPayload(),
+        securityDeniedError: "old",
+        securityDeniedSummaryError: "old",
+        securityOwnershipGaps: null,
+        securityOwnershipGapsError: null,
+        securityNextCursor: "9",
+        securityHasMore: true,
+        securityPinnedHistory: true,
+        securityOrder: "asc",
+        securityLimit: "10",
+        securityFilterMethod: "sessions.list",
+        securityFilterReasonCode: "OWNER_MISMATCH",
+        securityFilterUserId: "user-1",
+        securityFilterPrincipalId: "principal:1",
+        securityFilterSinceTs: "",
+        securityFilterUntilTs: "",
+      };
+
+      await applySecurityPreset(state, testCase.preset, now);
+
+      expect(state.securityAuditMode).toBe("allowed");
+      expect(state.securityFilterMethod).toBe(testCase.method);
+      expect(state.securityFilterReasonCode).toBe("");
+      expect(state.securityDeniedEvents).toEqual([]);
+      expect(state.securityDeniedSummary).toBeNull();
+      expect(state.securityDeniedError).toBeNull();
+      expect(state.securityDeniedSummaryError).toBeNull();
+      expect(state.securityHasMore).toBe(false);
+      expect(state.securityNextCursor).toBeNull();
+      expect(state.securityPinnedHistory).toBe(false);
+      expect(state.securityAllowHasMore).toBe(false);
+      expect(state.securityAllowNextCursor).toBeNull();
+      expect(state.securityAllowPinnedHistory).toBe(false);
+      expect(request).toHaveBeenNthCalledWith(1, "authz.allow.list", {
+        limit: 200,
+        method: testCase.method,
+        sinceTs: 0,
+        untilTs: now,
+      });
+      expect(request).toHaveBeenNthCalledWith(2, "authz.allow.summary", {
+        topN: 5,
+        alertThreshold: 5,
+        method: testCase.method,
+        sinceTs: 0,
+        untilTs: now,
+      });
+      expect(request).not.toHaveBeenCalledWith("authz.denied.list", expect.anything());
+      expect(request).not.toHaveBeenCalledWith("authz.denied.summary", expect.anything());
+    }
+  });
+
   it("applies time presets without changing reason filter", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "authz.denied.list") {
@@ -658,6 +2173,12 @@ describe("security controller", () => {
       } as unknown as SecurityState["client"],
       connected: true,
       securityLoading: false,
+      securityAuditMode: "denied",
+      securityAllowEvents: [],
+      securityAllowSummary: null,
+      securityAllowNextCursor: "allow-old",
+      securityAllowHasMore: true,
+      securityAllowPinnedHistory: true,
       securityDeniedEvents: [],
       securityDeniedError: null,
       securityOwnershipGaps: null,
@@ -683,6 +2204,9 @@ describe("security controller", () => {
     expect(state.securityHasMore).toBe(false);
     expect(state.securityNextCursor).toBeNull();
     expect(state.securityPinnedHistory).toBe(false);
+    expect(state.securityAllowHasMore).toBe(false);
+    expect(state.securityAllowNextCursor).toBeNull();
+    expect(state.securityAllowPinnedHistory).toBe(false);
     expect(request).toHaveBeenNthCalledWith(1, "authz.denied.list", {
       limit: 40,
       order: "asc",
@@ -966,6 +2490,68 @@ describe("security controller", () => {
     expect(state.securityPinnedHistory).toBe(false);
   });
 
+  it("skips admin security queries for connected sessions without auth metadata", async () => {
+    const request = vi.fn(async () => ({}));
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      hello: {
+        type: "hello-ok",
+        protocol: 3,
+      },
+      securityLoading: false,
+      securityDeniedEvents: [
+        {
+          ts: 1,
+          requestId: "req-1",
+          method: "m",
+          reasonCode: "R",
+          errorCode: "E",
+          errorMessage: "x",
+          userId: null,
+          principalId: null,
+          actorRole: null,
+          sourceRole: null,
+        },
+      ],
+      securityDeniedError: "old",
+      securityConfigChanges: [{ ts: 1 } as never],
+      securityConfigChangesError: "old",
+      securityConfigWarnings: [{ path: "old.path", message: "old" }],
+      securityConfigWarningsError: "old",
+      securityIdentityRoleWarnings: [
+        {
+          principalId: "old",
+          path: "gateway.multiUser.identities.old.role",
+          message: "old",
+        },
+      ],
+      securityOwnershipGaps: mockOwnershipGapsPayload(),
+      securityOwnershipGapsError: "old",
+      securityNextCursor: "1",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+    };
+
+    await loadSecurity(state);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(state.securityDeniedEvents).toEqual([]);
+    expect(state.securityDeniedError).toBeNull();
+    expect(state.securityConfigChanges).toEqual([]);
+    expect(state.securityConfigChangesError).toBeNull();
+    expect(state.securityConfigWarnings).toEqual([]);
+    expect(state.securityConfigWarningsError).toBeNull();
+    expect(state.securityIdentityRoleWarnings).toEqual([]);
+    expect(state.securityOwnershipGaps).toBeNull();
+    expect(state.securityOwnershipGapsError).toBeNull();
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityPinnedHistory).toBe(false);
+  });
+
   it("treats principalRole=user as non-admin even when operator.admin scope is present", async () => {
     const request = vi.fn(async () => ({}));
     const state: SecurityState = {
@@ -979,6 +2565,72 @@ describe("security controller", () => {
         auth: {
           role: "operator",
           principalRole: "user",
+          scopes: ["operator.admin"],
+        },
+      },
+      securityLoading: false,
+      securityDeniedEvents: [
+        {
+          ts: 1,
+          requestId: "req-1",
+          method: "m",
+          reasonCode: "R",
+          errorCode: "E",
+          errorMessage: "x",
+          userId: null,
+          principalId: null,
+          actorRole: null,
+          sourceRole: null,
+        },
+      ],
+      securityDeniedError: "old",
+      securityConfigChanges: [{ ts: 1 } as never],
+      securityConfigChangesError: "old",
+      securityConfigWarnings: [{ path: "old.path", message: "old" }],
+      securityConfigWarningsError: "old",
+      securityIdentityRoleWarnings: [
+        {
+          principalId: "old",
+          path: "gateway.multiUser.identities.old.role",
+          message: "old",
+        },
+      ],
+      securityOwnershipGaps: mockOwnershipGapsPayload(),
+      securityOwnershipGapsError: "old",
+      securityNextCursor: "1",
+      securityHasMore: true,
+      securityPinnedHistory: true,
+    };
+
+    await loadSecurity(state);
+
+    expect(request).not.toHaveBeenCalled();
+    expect(state.securityDeniedEvents).toEqual([]);
+    expect(state.securityDeniedError).toBeNull();
+    expect(state.securityConfigChanges).toEqual([]);
+    expect(state.securityConfigChangesError).toBeNull();
+    expect(state.securityConfigWarnings).toEqual([]);
+    expect(state.securityConfigWarningsError).toBeNull();
+    expect(state.securityIdentityRoleWarnings).toEqual([]);
+    expect(state.securityOwnershipGaps).toBeNull();
+    expect(state.securityOwnershipGapsError).toBeNull();
+    expect(state.securityNextCursor).toBeNull();
+    expect(state.securityHasMore).toBe(false);
+    expect(state.securityPinnedHistory).toBe(false);
+  });
+
+  it("treats connected sessions without principalRole as non-admin even with operator.admin scope", async () => {
+    const request = vi.fn(async () => ({}));
+    const state: SecurityState = {
+      client: {
+        request,
+      } as unknown as SecurityState["client"],
+      connected: true,
+      hello: {
+        type: "hello-ok",
+        protocol: 3,
+        auth: {
+          role: "operator",
           scopes: ["operator.admin"],
         },
       },

@@ -46,6 +46,8 @@ import {
   applySecurityPolicyBundle,
   applySecurityPreset,
   applySecurityTimePreset,
+  loadOlderAllowSecurity,
+  loadOlderDeniedSecurity,
   loadOlderSecurity,
   loadSecurity,
   loadSecurityPolicyBundles,
@@ -168,6 +170,191 @@ function authzDeniedEventsToCsvLines(
         .join(","),
     );
   }
+  return lines;
+}
+
+function authzAllowEventsToCsvLines(
+  events: ReadonlyArray<{
+    ts: number;
+    requestId: string;
+    method: string;
+    userId: string | null;
+    userAlias?: string | null;
+    principalId: string | null;
+    actorRole: string | null;
+    sourceRole: string | null;
+    clientId?: string | null;
+    clientMode?: string | null;
+    sourceIp?: string | null;
+  }>,
+): string[] {
+  const lines = [
+    "ts_iso,ts_ms,request_id,method,user_id,user_alias,principal_id,actor_role,source_role,client_id,client_mode,source_ip",
+  ];
+  for (const event of events) {
+    const tsIso =
+      Number.isFinite(event.ts) && !Number.isNaN(new Date(event.ts).getTime())
+        ? new Date(event.ts).toISOString()
+        : "";
+    lines.push(
+      [
+        tsIso,
+        event.ts,
+        event.requestId,
+        event.method,
+        event.userId,
+        event.userAlias ?? null,
+        event.principalId,
+        event.actorRole,
+        event.sourceRole,
+        event.clientId ?? null,
+        event.clientMode ?? null,
+        event.sourceIp ?? null,
+      ]
+        .map((cell) => escapeCsvCell(cell))
+        .join(","),
+    );
+  }
+  return lines;
+}
+
+function authzDeniedSummaryToCsvLines(summary: {
+  ts: number;
+  total: number;
+  earliestTs?: number;
+  latestTs?: number;
+  window: {
+    sinceTs?: number;
+    untilTs?: number;
+  };
+  byReasonCode: Array<{ key: string; count: number }>;
+  byMethod: Array<{ key: string; count: number }>;
+  byActorRole: Array<{ key: string; count: number }>;
+  bySourceRole: Array<{ key: string; count: number }>;
+  byErrorCode: Array<{ key: string; count: number }>;
+  byPrincipalId: Array<{ key: string; count: number }>;
+  bySourceIp?: Array<{ key: string; count: number }>;
+  highFrequency: {
+    threshold: number;
+    principals: Array<{ key: string; count: number }>;
+    sourceIps?: Array<{ key: string; count: number }>;
+  };
+}): string[] {
+  const lines = [
+    "section,key,count,ts_iso,total,earliest_ts,latest_ts,window_since_ts,window_until_ts,threshold",
+  ];
+  const tsIso =
+    Number.isFinite(summary.ts) && !Number.isNaN(new Date(summary.ts).getTime())
+      ? new Date(summary.ts).toISOString()
+      : "";
+  lines.push(
+    [
+      "summary",
+      "",
+      "",
+      tsIso,
+      summary.total,
+      summary.earliestTs ?? null,
+      summary.latestTs ?? null,
+      summary.window.sinceTs ?? null,
+      summary.window.untilTs ?? null,
+      summary.highFrequency.threshold,
+    ]
+      .map((cell) => escapeCsvCell(cell))
+      .join(","),
+  );
+  const appendBuckets = (
+    section: string,
+    buckets: ReadonlyArray<{ key: string; count: number }>,
+  ) => {
+    for (const bucket of buckets) {
+      lines.push(
+        [section, bucket.key, bucket.count, "", "", "", "", "", "", summary.highFrequency.threshold]
+          .map((cell) => escapeCsvCell(cell))
+          .join(","),
+      );
+    }
+  };
+  appendBuckets("by_reason_code", summary.byReasonCode);
+  appendBuckets("by_method", summary.byMethod);
+  appendBuckets("by_actor_role", summary.byActorRole);
+  appendBuckets("by_source_role", summary.bySourceRole);
+  appendBuckets("by_error_code", summary.byErrorCode);
+  appendBuckets("by_principal_id", summary.byPrincipalId);
+  appendBuckets("by_source_ip", summary.bySourceIp ?? []);
+  appendBuckets("high_frequency_principal", summary.highFrequency.principals);
+  appendBuckets("high_frequency_source_ip", summary.highFrequency.sourceIps ?? []);
+  return lines;
+}
+
+function authzAllowSummaryToCsvLines(summary: {
+  ts: number;
+  total: number;
+  earliestTs?: number;
+  latestTs?: number;
+  window: {
+    sinceTs?: number;
+    untilTs?: number;
+  };
+  byMethod: Array<{ key: string; count: number }>;
+  byActorRole: Array<{ key: string; count: number }>;
+  bySourceRole: Array<{ key: string; count: number }>;
+  byUserId: Array<{ key: string; count: number }>;
+  byPrincipalId: Array<{ key: string; count: number }>;
+  byClientId: Array<{ key: string; count: number }>;
+  byClientMode: Array<{ key: string; count: number }>;
+  bySourceIp: Array<{ key: string; count: number }>;
+  highFrequency: {
+    threshold: number;
+    principals: Array<{ key: string; count: number }>;
+    sourceIps: Array<{ key: string; count: number }>;
+  };
+}): string[] {
+  const lines = [
+    "section,key,count,ts_iso,total,earliest_ts,latest_ts,window_since_ts,window_until_ts,threshold",
+  ];
+  const tsIso =
+    Number.isFinite(summary.ts) && !Number.isNaN(new Date(summary.ts).getTime())
+      ? new Date(summary.ts).toISOString()
+      : "";
+  lines.push(
+    [
+      "summary",
+      "",
+      "",
+      tsIso,
+      summary.total,
+      summary.earliestTs ?? null,
+      summary.latestTs ?? null,
+      summary.window.sinceTs ?? null,
+      summary.window.untilTs ?? null,
+      summary.highFrequency.threshold,
+    ]
+      .map((cell) => escapeCsvCell(cell))
+      .join(","),
+  );
+  const appendBuckets = (
+    section: string,
+    buckets: ReadonlyArray<{ key: string; count: number }>,
+  ) => {
+    for (const bucket of buckets) {
+      lines.push(
+        [section, bucket.key, bucket.count, "", "", "", "", "", "", summary.highFrequency.threshold]
+          .map((cell) => escapeCsvCell(cell))
+          .join(","),
+      );
+    }
+  };
+  appendBuckets("by_method", summary.byMethod);
+  appendBuckets("by_actor_role", summary.byActorRole);
+  appendBuckets("by_source_role", summary.bySourceRole);
+  appendBuckets("by_user_id", summary.byUserId);
+  appendBuckets("by_principal_id", summary.byPrincipalId);
+  appendBuckets("by_client_id", summary.byClientId);
+  appendBuckets("by_client_mode", summary.byClientMode);
+  appendBuckets("by_source_ip", summary.bySourceIp);
+  appendBuckets("high_frequency_principal", summary.highFrequency.principals);
+  appendBuckets("high_frequency_source_ip", summary.highFrequency.sourceIps);
   return lines;
 }
 
@@ -369,16 +556,16 @@ export function renderApp(state: AppViewState) {
     : [];
   const canManageBackfill = authPrincipalRole
     ? authPrincipalRole === "admin"
-    : Boolean(authRole === "admin" || authScopes.includes("operator.admin"));
+    : state.connected
+      ? false
+      : Boolean(authRole === "admin" || authScopes.includes("operator.admin"));
   const canManageConfig = canManageBackfill;
-  const adminOnlyTabs = new Set(["security", "config", "debug", "logs"]);
+  const adminOnlyTabs = new Set(["security", "config", "debug", "logs", "instances", "cron"]);
   const canAccessTab = (tab: string) => !adminOnlyTabs.has(tab) || canManageConfig;
-  const visibleTabGroups = TAB_GROUPS
-    .map((group) => ({
-      ...group,
-      tabs: group.tabs.filter((tab) => canAccessTab(tab)),
-    }))
-    .filter((group) => group.tabs.length > 0);
+  const visibleTabGroups = TAB_GROUPS.map((group) => ({
+    ...group,
+    tabs: group.tabs.filter((tab) => canAccessTab(tab)),
+  })).filter((group) => group.tabs.length > 0);
 
   return html`
     <div class="shell ${isChat ? "shell--chat" : ""} ${chatFocus ? "shell--chat-focus" : ""} ${state.settings.navCollapsed ? "shell--nav-collapsed" : ""} ${state.onboarding ? "shell--onboarding" : ""}">
@@ -1424,6 +1611,12 @@ export function renderApp(state: AppViewState) {
                 authRole,
                 authPrincipalRole,
                 authScopes,
+                allowEvents: state.securityAllowEvents,
+                allowSummary: state.securityAllowSummary,
+                allowError: state.securityAllowError,
+                allowSummaryError: state.securityAllowSummaryError,
+                allowHasMore: state.securityAllowHasMore,
+                allowNextCursor: state.securityAllowNextCursor,
                 deniedEvents: state.securityDeniedEvents,
                 deniedSummary: state.securityDeniedSummary,
                 deniedError: state.securityDeniedError,
@@ -1456,6 +1649,7 @@ export function renderApp(state: AppViewState) {
                 policyBundleApplyMessage: state.securityPolicyBundleApplyMessage,
                 hasMore: state.securityHasMore,
                 nextCursor: state.securityNextCursor,
+                auditMode: state.securityAuditMode,
                 activePreset: state.securityPreset,
                 activeTimePreset: state.securityTimePreset,
                 filters: {
@@ -1505,6 +1699,16 @@ export function renderApp(state: AppViewState) {
                   state.securityTimePreset = preset;
                   void applySecurityTimePreset(state, preset);
                 },
+                onAuditModeChange: (mode) => {
+                  state.securityAuditMode = mode;
+                  state.securityNextCursor = null;
+                  state.securityHasMore = false;
+                  state.securityPinnedHistory = false;
+                  state.securityAllowNextCursor = null;
+                  state.securityAllowHasMore = false;
+                  state.securityAllowPinnedHistory = false;
+                  void loadSecurity(state);
+                },
                 onResetFilters: () => {
                   state.securityPreset = null;
                   state.securityTimePreset = null;
@@ -1526,10 +1730,15 @@ export function renderApp(state: AppViewState) {
                   state.securityNextCursor = null;
                   state.securityHasMore = false;
                   state.securityPinnedHistory = false;
+                  state.securityAllowNextCursor = null;
+                  state.securityAllowHasMore = false;
+                  state.securityAllowPinnedHistory = false;
                   void loadSecurity(state);
                 },
                 onRefresh: () => loadSecurity(state),
                 onLoadOlder: () => loadOlderSecurity(state),
+                onLoadOlderDenied: () => loadOlderDeniedSecurity(state),
+                onLoadOlderAllow: () => loadOlderAllowSecurity(state),
                 onBackfillChange: (next: SecurityBackfillState) => {
                   state.securityBackfillOwnerUserId = next.ownerUserId;
                   state.securityBackfillOwnerPrincipalId = next.ownerPrincipalId;
@@ -1598,6 +1807,12 @@ export function renderApp(state: AppViewState) {
                 },
                 onExport: (events, label) =>
                   state.exportLogs(authzDeniedEventsToCsvLines(events), `${label}-csv`),
+                onExportDeniedSummary: (summary, label) =>
+                  state.exportLogs(authzDeniedSummaryToCsvLines(summary), `${label}-csv`),
+                onExportAllow: (events, label) =>
+                  state.exportLogs(authzAllowEventsToCsvLines(events), `${label}-csv`),
+                onExportAllowSummary: (summary, label) =>
+                  state.exportLogs(authzAllowSummaryToCsvLines(summary), `${label}-csv`),
                 onExportConfigChanges: (events, label) =>
                   state.exportLogs(configChangesToCsvLines(events), `${label}-csv`),
                 onExportOwnershipGaps: (gaps, label) =>

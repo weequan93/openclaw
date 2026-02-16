@@ -3,6 +3,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
+import {
+  __test as authzAllowEventsTest,
+  listGatewayAuthzAllowEvents,
+} from "./authz-allow-events.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "./authz-denied-events.js";
 import { resetTestPluginRegistry, setTestPluginRegistry, testState } from "./test-helpers.mocks.js";
 import { installGatewayTestHooks, getFreePort, startGatewayServer } from "./test-helpers.server.js";
 
@@ -152,6 +160,498 @@ describe("POST /tools/invoke", () => {
     await server.close();
   });
 
+  it("denies non-local invoke in multi-user mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const sourceIp = "203.0.113.55";
+    const res = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.type).toBe("forbidden");
+
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "ROLE_FORBIDDEN",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    const resDoubleEncoded = await fetch(`http://127.0.0.1:${port}/tools%252Finvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resDoubleEncoded.status).toBe(403);
+    const bodyDoubleEncoded = await resDoubleEncoded.json();
+    expect(bodyDoubleEncoded?.ok).toBe(false);
+    expect(bodyDoubleEncoded?.error?.type).toBe("forbidden");
+
+    const resDoubleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/tools%255Cinvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resDoubleEncodedBackslash.status).toBe(403);
+    const bodyDoubleEncodedBackslash = await resDoubleEncodedBackslash.json();
+    expect(bodyDoubleEncodedBackslash?.ok).toBe(false);
+    expect(bodyDoubleEncodedBackslash?.error?.type).toBe("forbidden");
+
+    const resTripleEncoded = await fetch(`http://127.0.0.1:${port}/tools%25252Finvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resTripleEncoded.status).toBe(403);
+    const bodyTripleEncoded = await resTripleEncoded.json();
+    expect(bodyTripleEncoded?.ok).toBe(false);
+    expect(bodyTripleEncoded?.error?.type).toBe("forbidden");
+
+    const resTripleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/tools%25255Cinvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resTripleEncodedBackslash.status).toBe(403);
+    const bodyTripleEncodedBackslash = await resTripleEncodedBackslash.json();
+    expect(bodyTripleEncodedBackslash?.ok).toBe(false);
+    expect(bodyTripleEncodedBackslash?.error?.type).toBe("forbidden");
+
+    await server.close();
+  });
+
+  it("denies non-local trailing-slash invoke path in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const sourceIp = "203.0.113.59";
+    const res = await fetch(`http://127.0.0.1:${port}/tools/invoke/`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.type).toBe("forbidden");
+
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "ROLE_FORBIDDEN",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    await server.close();
+  });
+
+  it("denies non-local encoded-separator invoke path in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const sourceIp = "203.0.113.60";
+    const res = await fetch(`http://127.0.0.1:${port}/tools%2Finvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.type).toBe("forbidden");
+
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "ROLE_FORBIDDEN",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    await server.close();
+  });
+
+  it("denies non-local encoded-backslash invoke path in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const sourceIp = "203.0.113.74";
+    const res = await fetch(`http://127.0.0.1:${port}/tools%5Cinvoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.type).toBe("forbidden");
+
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "ROLE_FORBIDDEN",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    await server.close();
+  });
+
+  it("denies non-local invoke in compat mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "compat",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const sourceIp = "203.0.113.57";
+    const res = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+        "x-forwarded-for": sourceIp,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(403);
+    const body = await res.json();
+    expect(body?.ok).toBe(false);
+    expect(body?.error?.type).toBe("forbidden");
+
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "ROLE_FORBIDDEN",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    await server.close();
+  });
+
+  it("records allow events for local invoke in strict mode", async () => {
+    authzDeniedEventsTest.clear();
+    authzAllowEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+
+    const res = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body?.ok).toBe(true);
+
+    const events = listGatewayAuthzAllowEvents({
+      method: "http.tools.invoke",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.clientMode).toBe("http");
+    expect(typeof events[0]?.sourceIp).toBe("string");
+
+    await server.close();
+  });
+
+  it("applies strict/off/strict mode changes without restart for non-local invoke", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, { bind: "loopback" });
+    const token = resolveGatewayToken();
+    const sourceIp = "203.0.113.56";
+    try {
+      const deniedStrict = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+      });
+      expect(deniedStrict.status).toBe(403);
+      const deniedStrictBody = await deniedStrict.json();
+      expect(deniedStrictBody?.error?.type).toBe("forbidden");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const allowedOff = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+      });
+      expect(allowedOff.status).toBe(200);
+      const allowedOffBody = await allowedOff.json();
+      expect(allowedOffBody?.ok).toBe(true);
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const deniedStrictAgain = await fetch(`http://127.0.0.1:${port}/tools/invoke`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+      });
+      expect(deniedStrictAgain.status).toBe(403);
+      const deniedStrictAgainBody = await deniedStrictAgain.json();
+      expect(deniedStrictAgainBody?.error?.type).toBe("forbidden");
+
+      const denyEvents = listGatewayAuthzDenyEvents({
+        method: "http.tools.invoke",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 20,
+      });
+      expect(denyEvents.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("routes tools invoke before plugin HTTP handlers", async () => {
     const pluginHandler = vi.fn(async (_req: IncomingMessage, res: ServerResponse) => {
       res.statusCode = 418;
@@ -207,6 +707,7 @@ describe("POST /tools/invoke", () => {
   });
 
   it("rejects unauthorized when auth mode is token and header is missing", async () => {
+    authzDeniedEventsTest.clear();
     testState.agentsConfig = {
       list: [
         {
@@ -232,6 +733,159 @@ describe("POST /tools/invoke", () => {
     });
 
     expect(res.status).toBe(401);
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "UNKNOWN_SENDER",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+
+    const resDoubleEncoded = await fetch(`http://127.0.0.1:${port}/tools%252Finvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resDoubleEncoded.status).toBe(401);
+
+    const resDoubleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/tools%255Cinvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resDoubleEncodedBackslash.status).toBe(401);
+
+    const resTripleEncoded = await fetch(`http://127.0.0.1:${port}/tools%25252Finvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resTripleEncoded.status).toBe(401);
+
+    const resTripleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/tools%25255Cinvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+    expect(resTripleEncodedBackslash.status).toBe(401);
+
+    await server.close();
+  });
+
+  it("rejects unauthorized on trailing-slash path when auth header is missing", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, {
+      bind: "loopback",
+      auth: { mode: "token", token: "t" },
+    });
+
+    const res = await fetch(`http://127.0.0.1:${port}/tools/invoke/`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(401);
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "UNKNOWN_SENDER",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+
+    await server.close();
+  });
+
+  it("rejects unauthorized on encoded-separator path when auth header is missing", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, {
+      bind: "loopback",
+      auth: { mode: "token", token: "t" },
+    });
+
+    const res = await fetch(`http://127.0.0.1:${port}/tools%2Finvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(401);
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "UNKNOWN_SENDER",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+
+    await server.close();
+  });
+
+  it("rejects unauthorized on encoded-backslash path when auth header is missing", async () => {
+    authzDeniedEventsTest.clear();
+    testState.agentsConfig = {
+      list: [
+        {
+          id: "main",
+          tools: {
+            allow: ["agents_list"],
+          },
+        },
+      ],
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any;
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port, {
+      bind: "loopback",
+      auth: { mode: "token", token: "t" },
+    });
+
+    const res = await fetch(`http://127.0.0.1:${port}/tools%5Cinvoke`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "agents_list", action: "json", args: {}, sessionKey: "main" }),
+    });
+
+    expect(res.status).toBe(401);
+    const events = listGatewayAuthzDenyEvents({
+      method: "http.tools.invoke",
+      reasonCode: "UNKNOWN_SENDER",
+      limit: 10,
+    });
+    expect(events.length).toBeGreaterThan(0);
+    expect(events[0]?.method).toBe("http.tools.invoke");
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
 
     await server.close();
   });

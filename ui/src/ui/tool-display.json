@@ -185,7 +185,15 @@
         },
         "authz.denied.summary": {
           "label": "authz denied summary",
-          "detailKeys": ["method", "reasonCode", "errorCode", "userId", "principalId"]
+          "detailKeys": ["method", "reasonCode", "errorCode", "userId", "principalId", "sourceIp"]
+        },
+        "authz.allow.list": {
+          "label": "authz allow list",
+          "detailKeys": ["method", "userId", "principalId", "sourceIp"]
+        },
+        "authz.allow.summary": {
+          "label": "authz allow summary",
+          "detailKeys": ["method", "userId", "principalId", "sourceIp"]
         },
         "update.run": {
           "label": "update run",

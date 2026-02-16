@@ -29,14 +29,14 @@ import {
   isGatewayCliClient,
   isWebchatClient,
 } from "../../../utils/message-channel.js";
-import { recordGatewayAuthzDenyEvent } from "../../authz-denied-events.js";
-import { resolveGatewayMultiUserMode } from "../../multi-user-mode.js";
 import { authorizeGatewayConnect, isLocalDirectRequest } from "../../auth.js";
+import { recordGatewayAuthzDenyEvent } from "../../authz-denied-events.js";
 import { buildDeviceAuthPayload } from "../../device-auth.js";
+import { resolveGatewayMultiUserMode } from "../../multi-user-mode.js";
 import { isLoopbackAddress, isTrustedProxyAddress, resolveGatewayClientIp } from "../../net.js";
 import { resolveNodeCommandAllowlist } from "../../node-command-policy.js";
-import { checkBrowserOrigin } from "../../origin-check.js";
 import { OPERATOR_ADMIN_SCOPE } from "../../operator-scopes.js";
+import { checkBrowserOrigin } from "../../origin-check.js";
 import { hasConnectSenderIdentity, resolveConnectOwnerContext } from "../../owner-context.js";
 import { GATEWAY_CLIENT_IDS } from "../../protocol/client-info.js";
 import {
@@ -222,6 +222,14 @@ export function attachGatewayWsMessageHandler(params: {
       : clientIp && !isLoopbackAddress(clientIp)
         ? clientIp
         : undefined;
+  const auditSourceIp =
+    (typeof reportedClientIp === "string" && reportedClientIp.trim().length > 0
+      ? reportedClientIp.trim()
+      : undefined) ??
+    (typeof remoteAddr === "string" && remoteAddr.trim().length > 0
+      ? remoteAddr.trim()
+      : undefined) ??
+    null;
 
   if (hasUntrustedProxyHeaders) {
     logWsControl.warn(
@@ -480,7 +488,7 @@ export function attachGatewayWsMessageHandler(params: {
             sourceRole: role,
             clientId: connectParams.client.id,
             clientMode: connectParams.client.mode,
-            sourceIp: reportedClientIp ?? null,
+            sourceIp: auditSourceIp,
           });
           send({
             type: "res",
@@ -548,7 +556,7 @@ export function attachGatewayWsMessageHandler(params: {
                 sourceRole: role,
                 clientId: connectParams.client.id,
                 clientMode: connectParams.client.mode,
-                sourceIp: reportedClientIp ?? null,
+                sourceIp: auditSourceIp,
               });
               send({
                 type: "res",
@@ -933,13 +941,13 @@ export function attachGatewayWsMessageHandler(params: {
           snapshot,
           canvasHostUrl,
           auth: deviceToken
-              ? {
-                  deviceToken: deviceToken.token,
-                  role: deviceToken.role,
-                  scopes: deviceToken.scopes,
-                  issuedAtMs: deviceToken.rotatedAtMs ?? deviceToken.createdAtMs,
-                }
-              : undefined,
+            ? {
+                deviceToken: deviceToken.token,
+                role: deviceToken.role,
+                scopes: deviceToken.scopes,
+                issuedAtMs: deviceToken.rotatedAtMs ?? deviceToken.createdAtMs,
+              }
+            : undefined,
           policy: {
             maxPayload: MAX_PAYLOAD_BYTES,
             maxBufferedBytes: MAX_BUFFERED_BYTES,
@@ -948,6 +956,8 @@ export function attachGatewayWsMessageHandler(params: {
         };
 
         const hasAdminScope = scopes.includes(OPERATOR_ADMIN_SCOPE);
+        const sharedAuthAdminLocalBypass =
+          sharedAuthOk && hasAdminScope && isLocalClient && role === "operator";
         const trustedLocalIdentityClient =
           isLocalClient &&
           Boolean(device) &&
@@ -955,14 +965,13 @@ export function attachGatewayWsMessageHandler(params: {
             isGatewayCliClient(connectParams.client) ||
             connectParams.client.mode === GATEWAY_CLIENT_MODES.BACKEND ||
             connectParams.client.mode === GATEWAY_CLIENT_MODES.TEST);
-        const allowExplicitSenderIdentity =
-          !sharedAuthOk || hasAdminScope || trustedLocalIdentityClient;
+        const allowExplicitSenderIdentity = !sharedAuthOk || trustedLocalIdentityClient;
         const senderIdentityKnown =
           hasConnectSenderIdentity(connectParams, {
             connId,
             mappings: configSnapshot.gateway?.multiUser?.identities,
             allowExplicitIdentity: allowExplicitSenderIdentity,
-          }) || (sharedAuthOk && hasAdminScope);
+          }) || sharedAuthAdminLocalBypass;
         if (multiUserMode === "strict" && !senderIdentityKnown) {
           setHandshakeState("failed");
           setCloseCause("unknown-sender", {
@@ -989,7 +998,7 @@ export function attachGatewayWsMessageHandler(params: {
             sourceRole: role,
             clientId: connectParams.client.id,
             clientMode: connectParams.client.mode,
-            sourceIp: reportedClientIp ?? null,
+            sourceIp: auditSourceIp,
           });
           send({
             type: "res",
@@ -1041,6 +1050,7 @@ export function attachGatewayWsMessageHandler(params: {
           connId,
           presenceKey,
           clientIp: reportedClientIp,
+          remoteAddr: typeof remoteAddr === "string" ? remoteAddr : undefined,
         };
         setClient(nextClient);
         setHandshakeState("connected");

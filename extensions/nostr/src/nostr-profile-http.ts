@@ -24,6 +24,8 @@ export interface NostrProfileHttpContext {
   updateConfigProfile: (accountId: string, profile: NostrProfile) => Promise<void>;
   /** Get account's public key and relays */
   getAccountInfo: (accountId: string) => { pubkey: string; relays: string[] } | null;
+  /** Verify request is authorized to read/write profile endpoints */
+  authorizeRequest?: (req: IncomingMessage) => boolean;
   /** Logger */
   log?: {
     info: (msg: string) => void;
@@ -315,6 +317,11 @@ export function createNostrProfileHttpHandler(
 
     if (!isProfilePath) {
       return false;
+    }
+
+    if (ctx.authorizeRequest && !ctx.authorizeRequest(req)) {
+      sendJson(res, 401, { ok: false, error: "Unauthorized" });
+      return true;
     }
 
     // Handle different HTTP methods

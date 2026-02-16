@@ -117,8 +117,10 @@ function resolveMappingLookupKeyCandidates(raw: unknown): string[] {
 function resolveMappingCandidatePrincipals(params: {
   connect: ConnectParams;
   connId?: string;
+  allowExplicitIdentity?: boolean;
 }): string[] {
   const rawIdentity = resolveRawIdentity(params.connect);
+  const allowExplicitIdentity = params.allowExplicitIdentity !== false;
   const candidates: string[] = [];
   const push = (raw: unknown) => {
     const value = normalizeKeyForLookup(raw);
@@ -126,7 +128,9 @@ function resolveMappingCandidatePrincipals(params: {
       candidates.push(value);
     }
   };
-  push(rawIdentity.principalId);
+  if (allowExplicitIdentity) {
+    push(rawIdentity.principalId);
+  }
   if (params.connect.device?.id) {
     push(`device:${params.connect.device.id}`);
   }
@@ -148,6 +152,7 @@ function resolveMappedIdentity(params: {
   connect: ConnectParams;
   connId?: string;
   mappings?: GatewayIdentityMappings;
+  allowExplicitIdentity?: boolean;
 }): ResolvedMappedIdentity | null {
   const mappings = params.mappings;
   if (!mappings || typeof mappings !== "object") {
@@ -157,6 +162,7 @@ function resolveMappedIdentity(params: {
   const candidatePrincipals = resolveMappingCandidatePrincipals({
     connect: params.connect,
     connId: params.connId,
+    allowExplicitIdentity: params.allowExplicitIdentity,
   });
   for (const principalCandidate of candidatePrincipals) {
     const candidateKeys = resolveMappingLookupKeyCandidates(principalCandidate);
@@ -203,6 +209,7 @@ export function hasConnectSenderIdentity(
     connect,
     connId: params?.connId,
     mappings: params?.mappings,
+    allowExplicitIdentity,
   });
   if (mapped) {
     return true;
@@ -225,6 +232,7 @@ export function resolveConnectOwnerContext(params: {
     connect,
     connId: params.connId,
     mappings: params.mappings,
+    allowExplicitIdentity,
   });
   let effectiveRole: GatewayPrincipalRole = sourceRole === "node" ? "node" : "user";
   if (sourceRole !== "node") {
@@ -259,9 +267,7 @@ export function resolveConnectOwnerContext(params: {
     explicitPrincipalId ??
     (deviceId ? `device:${deviceId}` : `client:${clientId}:${instanceId ?? "default"}`);
   const alias =
-    mappedIdentity?.alias ??
-    explicitAlias ??
-    normalizeAlias(connect.client?.displayName);
+    mappedIdentity?.alias ?? explicitAlias ?? normalizeAlias(connect.client?.displayName);
   const groupIds = mappedIdentity?.groupIds;
   return {
     userId,

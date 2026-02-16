@@ -800,9 +800,54 @@ export type AuthzDeniedSummary = {
   bySourceRole: AuthzDeniedSummaryBucket[];
   byErrorCode: AuthzDeniedSummaryBucket[];
   byPrincipalId: AuthzDeniedSummaryBucket[];
+  bySourceIp?: AuthzDeniedSummaryBucket[];
   highFrequency: {
     threshold: number;
     principals: AuthzDeniedSummaryBucket[];
+    sourceIps?: AuthzDeniedSummaryBucket[];
+  };
+};
+
+export type AuthzAllowEvent = {
+  ts: number;
+  requestId: string;
+  method: string;
+  userId: string | null;
+  userAlias?: string | null;
+  principalId: string | null;
+  actorRole: string | null;
+  sourceRole: string | null;
+  clientId?: string | null;
+  clientMode?: string | null;
+  sourceIp?: string | null;
+};
+
+export type AuthzAllowSummaryBucket = {
+  key: string;
+  count: number;
+};
+
+export type AuthzAllowSummary = {
+  ts: number;
+  total: number;
+  earliestTs?: number;
+  latestTs?: number;
+  window: {
+    sinceTs?: number;
+    untilTs?: number;
+  };
+  byMethod: AuthzAllowSummaryBucket[];
+  byActorRole: AuthzAllowSummaryBucket[];
+  bySourceRole: AuthzAllowSummaryBucket[];
+  byUserId: AuthzAllowSummaryBucket[];
+  byPrincipalId: AuthzAllowSummaryBucket[];
+  byClientId: AuthzAllowSummaryBucket[];
+  byClientMode: AuthzAllowSummaryBucket[];
+  bySourceIp: AuthzAllowSummaryBucket[];
+  highFrequency: {
+    threshold: number;
+    principals: AuthzAllowSummaryBucket[];
+    sourceIps: AuthzAllowSummaryBucket[];
   };
 };
 
@@ -833,12 +878,7 @@ export type ConfigPolicyBundle = {
   patch: Record<string, unknown>;
 };
 
-export type OwnershipResourceName =
-  | "agents"
-  | "sessions"
-  | "nodes"
-  | "browserProfiles"
-  | "memory";
+export type OwnershipResourceName = "agents" | "sessions" | "nodes" | "browserProfiles" | "memory";
 
 type OwnershipGapStats = {
   scanned: number;

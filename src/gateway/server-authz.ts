@@ -1,6 +1,7 @@
 import type { GatewayClient } from "./server-methods/types.js";
+import { resolveGatewayAuditSourceIp } from "./audit-source-ip.js";
+import { recordGatewayAuthzAllowEvent } from "./authz-allow-events.js";
 import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
-import { resolveConnectOwnerContext, type GatewayOwnerContext } from "./owner-context.js";
 import {
   classifyGatewayMethodAccess,
   OPERATOR_ADMIN_SCOPE,
@@ -9,6 +10,7 @@ import {
   OPERATOR_READ_SCOPE,
   OPERATOR_WRITE_SCOPE,
 } from "./operator-scopes.js";
+import { resolveConnectOwnerContext, type GatewayOwnerContext } from "./owner-context.js";
 import { ErrorCodes, errorShape, type ErrorShape } from "./protocol/index.js";
 
 const GatewayDenyReasonCodes = {
@@ -136,7 +138,10 @@ export function authorizeGatewayMethod(params: {
       details: { requiredScope: OPERATOR_PAIRING_SCOPE },
     });
   }
-  if (accessClass === "read" && !(scopes.includes(OPERATOR_READ_SCOPE) || scopes.includes(OPERATOR_WRITE_SCOPE))) {
+  if (
+    accessClass === "read" &&
+    !(scopes.includes(OPERATOR_READ_SCOPE) || scopes.includes(OPERATOR_WRITE_SCOPE))
+  ) {
     return deny({
       owner,
       reasonCode: GatewayDenyReasonCodes.SCOPE_MISSING,
@@ -211,6 +216,20 @@ export function auditGatewayAuthorization(params: {
         sourceRole: null,
       };
   if (params.decision.allow) {
+    const clientMeta = params.client?.connect?.client;
+    recordGatewayAuthzAllowEvent({
+      ts: Date.now(),
+      requestId: params.requestId,
+      method: params.method,
+      userId: ownerMeta.userId,
+      userAlias: ownerMeta.userAlias,
+      principalId: ownerMeta.principalId,
+      actorRole: ownerMeta.actorRole,
+      sourceRole: ownerMeta.sourceRole,
+      clientId: typeof clientMeta?.id === "string" ? clientMeta.id : null,
+      clientMode: typeof clientMeta?.mode === "string" ? clientMeta.mode : null,
+      sourceIp: resolveGatewayAuditSourceIp(params.client ?? {}),
+    });
     params.logger.debug?.("gateway authz allow", {
       requestId: params.requestId,
       method: params.method,
@@ -243,6 +262,6 @@ export function auditGatewayAuthorization(params: {
     sourceRole: ownerMeta.sourceRole,
     clientId: typeof clientMeta?.id === "string" ? clientMeta.id : null,
     clientMode: typeof clientMeta?.mode === "string" ? clientMeta.mode : null,
-    sourceIp: typeof params.client?.clientIp === "string" ? params.client.clientIp : null,
+    sourceIp: resolveGatewayAuditSourceIp(params.client ?? {}),
   });
 }

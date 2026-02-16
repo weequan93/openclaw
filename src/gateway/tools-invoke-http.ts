@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { createOpenClawTools } from "../agents/openclaw-tools.js";
 import {
   filterToolsByPolicy,
@@ -21,7 +22,10 @@ import { isTestDefaultMemorySlotDisabled } from "../plugins/config-state.js";
 import { getPluginToolMeta } from "../plugins/tools.js";
 import { isSubagentSessionKey } from "../routing/session-key.js";
 import { normalizeMessageChannel } from "../utils/message-channel.js";
-import { authorizeGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
+import { resolveGatewayRequestSourceIp } from "./audit-source-ip.js";
+import { authorizeGatewayConnect, isLocalDirectRequest, type ResolvedGatewayAuth } from "./auth.js";
+import { recordGatewayAuthzAllowEvent } from "./authz-allow-events.js";
+import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
 import {
   readJsonBodyOrError,
   sendInvalidRequest,
@@ -30,6 +34,8 @@ import {
   sendUnauthorized,
 } from "./http-common.js";
 import { getBearerToken, getHeader } from "./http-utils.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
+import { normalizeGatewayBoundaryPath } from "./path-normalize.js";
 
 const DEFAULT_BODY_BYTES = 2 * 1024 * 1024;
 const MEMORY_TOOL_NAMES = new Set(["memory_search", "memory_get"]);
@@ -99,13 +105,39 @@ function mergeActionIntoArgsIfSupported(params: {
   return { ...args, action };
 }
 
+function recordToolsInvokePolicyDeny(params: {
+  req: IncomingMessage;
+  trustedProxies?: string[];
+  message: string;
+  reasonCode: "ROLE_FORBIDDEN" | "POLICY_DENY" | "UNKNOWN_SENDER";
+}): void {
+  recordGatewayAuthzDenyEvent({
+    ts: Date.now(),
+    requestId: randomUUID(),
+    method: "http.tools.invoke",
+    reasonCode: params.reasonCode,
+    errorCode: "INVALID_REQUEST",
+    errorMessage: params.message,
+    userId: null,
+    principalId: null,
+    actorRole: null,
+    sourceRole: null,
+    clientId: "http.tools.invoke",
+    clientMode: "http",
+    sourceIp: resolveGatewayRequestSourceIp({
+      req: params.req,
+      trustedProxies: params.trustedProxies,
+    }),
+  });
+}
+
 export async function handleToolsInvokeHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   opts: { auth: ResolvedGatewayAuth; maxBodyBytes?: number; trustedProxies?: string[] },
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
-  if (url.pathname !== "/tools/invoke") {
+  if (normalizeGatewayBoundaryPath(url.pathname) !== "/tools/invoke") {
     return false;
   }
 
@@ -115,16 +147,53 @@ export async function handleToolsInvokeHttpRequest(
   }
 
   const cfg = loadConfig();
+  const trustedProxies = opts.trustedProxies ?? cfg.gateway?.trustedProxies;
   const token = getBearerToken(req);
   const authResult = await authorizeGatewayConnect({
     auth: opts.auth,
     connectAuth: token ? { token, password: token } : null,
     req,
-    trustedProxies: opts.trustedProxies ?? cfg.gateway?.trustedProxies,
+    trustedProxies,
   });
   if (!authResult.ok) {
+    recordToolsInvokePolicyDeny({
+      req,
+      trustedProxies,
+      message: "tools.invoke endpoint token missing or invalid",
+      reasonCode: "UNKNOWN_SENDER",
+    });
     sendUnauthorized(res);
     return true;
+  }
+
+  const multiUserMode = resolveGatewayMultiUserMode(cfg);
+  if (multiUserMode !== "off") {
+    if (!isLocalDirectRequest(req, trustedProxies)) {
+      const message = "tools.invoke is local-admin only while gateway.multiUser.mode is enabled";
+      recordToolsInvokePolicyDeny({
+        req,
+        trustedProxies,
+        message,
+        reasonCode: "ROLE_FORBIDDEN",
+      });
+      sendJson(res, 403, {
+        ok: false,
+        error: { type: "forbidden", message },
+      });
+      return true;
+    }
+    recordGatewayAuthzAllowEvent({
+      ts: Date.now(),
+      requestId: randomUUID(),
+      method: "http.tools.invoke",
+      userId: null,
+      principalId: null,
+      actorRole: null,
+      sourceRole: null,
+      clientId: "http.tools.invoke",
+      clientMode: "http",
+      sourceIp: resolveGatewayRequestSourceIp({ req, trustedProxies }),
+    });
   }
 
   const bodyUnknown = await readJsonBodyOrError(req, res, opts.maxBodyBytes ?? DEFAULT_BODY_BYTES);

@@ -163,14 +163,47 @@ Common options:
 - `--limit <n>`: max events to return (default `100`)
 - `--cursor <cursor>`: pagination cursor
 - `--order <order>`: `desc|asc` (default `desc`)
+- `--preset <name>`: shortcut filters (24h window)
+  - `owner-mismatch-24h`
+  - `scope-missing-24h`
+  - `role-forbidden-24h`
+  - `policy-deny-24h`
+  - `unknown-sender-24h`
+  - `plugin-role-forbidden-24h`
+  - `plugin-unknown-sender-24h`
+  - `openai-role-forbidden-24h`
+  - `openresponses-role-forbidden-24h`
+  - `tools-role-forbidden-24h`
+  - `hooks-role-forbidden-24h`
+  - `hooks-unknown-sender-24h`
+  - `canvas-http-role-forbidden-24h`
+  - `canvas-ws-role-forbidden-24h`
 - `--method <method>`: filter by method
 - `--reason <reasonCode>`: filter by deny reason
 - `--user-id <userId>` / `--principal-id <principalId>`: actor filters
 - `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
 
+### `gateway authz-allow`
+
+List allowed gateway authorization events (admin scope required):
+
+```bash
+openclaw gateway authz-allow
+openclaw gateway authz-allow --method health --user-id user-a --json
+```
+
+Common options:
+
+- `--limit <n>`: max events to return (default `100`)
+- `--cursor <cursor>`: pagination cursor
+- `--order <order>`: `desc|asc` (default `desc`)
+- `--method <method>`: filter by method
+- `--user-id <userId>` / `--principal-id <principalId>`: actor filters
+- `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
 ### `gateway authz-denied-summary`
 
-Show aggregate deny patterns and high-frequency principals (admin scope required):
+Show aggregate deny patterns and high-frequency principals and source IPs (admin scope required):
 
 ```bash
 openclaw gateway authz-denied-summary
@@ -180,12 +213,60 @@ openclaw gateway authz-denied-summary --top-n 10 --alert-threshold 3 --json
 Common options:
 
 - `--top-n <n>`: max buckets per summary group (default `5`)
-- `--alert-threshold <n>`: high-frequency principal threshold (default `5`)
+- `--alert-threshold <n>`: high-frequency threshold for principals and source IPs (default `5`)
+- `--preset <name>`: same preset list as `gateway authz-denied`
 - `--method <method>`: filter by method
 - `--reason <reasonCode>`: filter by deny reason
 - `--error-code <errorCode>`: filter by error code
 - `--user-id <userId>` / `--principal-id <principalId>`: actor filters
 - `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
+### `gateway authz-allow-summary`
+
+Show aggregate allow patterns and high-frequency principals/source IPs (admin scope required):
+
+```bash
+openclaw gateway authz-allow-summary
+openclaw gateway authz-allow-summary --top-n 10 --alert-threshold 3 --json
+```
+
+Common options:
+
+- `--top-n <n>`: max buckets per summary group (default `5`)
+- `--alert-threshold <n>`: high-frequency threshold for principals and source IPs (default `5`)
+- `--method <method>`: filter by method
+- `--user-id <userId>` / `--principal-id <principalId>`: actor filters
+- `--since <ms>` / `--until <ms>`: timestamp window (epoch ms)
+
+### `gateway ownership-gaps`
+
+List resources missing ownership metadata (admin scope required):
+
+```bash
+openclaw gateway ownership-gaps
+openclaw gateway ownership-gaps --resource sessions --resource memory --limit 100 --json
+```
+
+Common options:
+
+- `--resource <name>` (repeatable): `agents|sessions|nodes|browserProfiles|memory`
+- `--limit <n>`: max sample entries per resource (default `50`)
+
+### `gateway ownership-backfill`
+
+Backfill missing ownership metadata (admin scope required):
+
+```bash
+openclaw gateway ownership-backfill --owner-user 550e8400-e29b-41d4-a716-446655440000 --dry-run
+openclaw gateway ownership-backfill --owner-user 550e8400-e29b-41d4-a716-446655440000 --owner-principal principal:admin --resource sessions --resource memory
+```
+
+Common options:
+
+- `--owner-user <userId>`: target owner UUID (required)
+- `--owner-principal <principalId>`: optional principal owner stamp
+- `--resource <name>` (repeatable): `agents|sessions|nodes|browserProfiles|memory`
+- `--dry-run`: preview only; do not persist changes
 
 ### `gateway config-changes`
 

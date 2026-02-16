@@ -2,6 +2,14 @@ import { describe, expect, test } from "vitest";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
 import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import {
+  __test as authzAllowEventsTest,
+  listGatewayAuthzAllowEvents,
+} from "./authz-allow-events.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "./authz-denied-events.js";
+import {
   cronIsolatedRun,
   getFreePort,
   installGatewayTestHooks,
@@ -15,7 +23,329 @@ installGatewayTestHooks({ scope: "suite" });
 const resolveMainKey = () => resolveMainSessionKeyFromConfig();
 
 describe("gateway server hooks", () => {
+  test("denies non-local requests in multi-user mode and records deny events", async () => {
+    authzDeniedEventsTest.clear();
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        trustedProxies: ["127.0.0.1"],
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": "203.0.113.99",
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.hooks");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("denies non-local encoded hook paths in strict mode and records deny events", async () => {
+    authzDeniedEventsTest.clear();
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const sourceIp = "203.0.113.102";
+      const res = await fetch(`http://127.0.0.1:${port}/hooks%2Fwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const resBackslash = await fetch(`http://127.0.0.1:${port}/hooks%5Cwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(resBackslash.status).toBe(403);
+      const bodyBackslash = (await resBackslash.json()) as { error?: { type?: string } };
+      expect(bodyBackslash.error?.type).toBe("forbidden");
+
+      const resDoubleEncoded = await fetch(`http://127.0.0.1:${port}/hooks%252Fwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(resDoubleEncoded.status).toBe(403);
+      const bodyDoubleEncoded = (await resDoubleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyDoubleEncoded.error?.type).toBe("forbidden");
+
+      const resDoubleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/hooks%255Cwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(resDoubleEncodedBackslash.status).toBe(403);
+      const bodyDoubleEncodedBackslash = (await resDoubleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyDoubleEncodedBackslash.error?.type).toBe("forbidden");
+
+      const resTripleEncoded = await fetch(`http://127.0.0.1:${port}/hooks%25252Fwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(resTripleEncoded.status).toBe(403);
+      const bodyTripleEncoded = (await resTripleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyTripleEncoded.error?.type).toBe("forbidden");
+
+      const resTripleEncodedBackslash = await fetch(`http://127.0.0.1:${port}/hooks%25255Cwake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": sourceIp,
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(resTripleEncodedBackslash.status).toBe(403);
+      const bodyTripleEncodedBackslash = (await resTripleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyTripleEncodedBackslash.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.hooks");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("denies non-local requests in compat mode and records deny events", async () => {
+    authzDeniedEventsTest.clear();
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "compat",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": "203.0.113.101",
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.hooks");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("applies strict/off/strict mode changes without restart for non-local hook requests", async () => {
+    authzDeniedEventsTest.clear();
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: "Bearer hook-secret",
+      "x-forwarded-for": "203.0.113.100",
+    };
+    try {
+      const deniedStrict = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "blocked" }),
+      });
+      expect(deniedStrict.status).toBe(403);
+      const deniedStrictBody = (await deniedStrict.json()) as { error?: { type?: string } };
+      expect(deniedStrictBody.error?.type).toBe("forbidden");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const allowedOff = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "allowed" }),
+      });
+      expect(allowedOff.status).toBe(200);
+      const allowedOffBody = (await allowedOff.json()) as { ok?: boolean };
+      expect(allowedOffBody.ok).toBe(true);
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const deniedStrictAgain = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ text: "blocked-again" }),
+      });
+      expect(deniedStrictAgain.status).toBe(403);
+      const deniedStrictAgainBody = (await deniedStrictAgain.json()) as {
+        error?: { type?: string };
+      };
+      expect(deniedStrictAgainBody.error?.type).toBe("forbidden");
+
+      const denyEvents = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 20,
+      });
+      expect(denyEvents.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("records allow events for local hook requests in strict mode", async () => {
+    authzDeniedEventsTest.clear();
+    authzAllowEventsTest.clear();
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+        },
+        body: JSON.stringify({ text: "allow-local" }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { ok?: boolean };
+      expect(body.ok).toBe(true);
+
+      const events = listGatewayAuthzAllowEvents({
+        method: "http.hooks",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.hooks");
+      expect(events[0]?.clientMode).toBe("http");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close();
+    }
+  });
+
   test("handles auth, wake, and agent flows", async () => {
+    authzDeniedEventsTest.clear();
     testState.hooksConfig = { enabled: true, token: "hook-secret" };
     testState.agentsConfig = {
       list: [{ id: "main", default: true }, { id: "hooks" }],
@@ -29,6 +359,12 @@ describe("gateway server hooks", () => {
         body: JSON.stringify({ text: "Ping" }),
       });
       expect(resNoAuth.status).toBe(401);
+      const deniedNoAuthEvents = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniedNoAuthEvents.length).toBeGreaterThan(0);
 
       const resWake = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
         method: "POST",
@@ -134,6 +470,16 @@ describe("gateway server hooks", () => {
         body: JSON.stringify({ text: "Query auth" }),
       });
       expect(resQuery.status).toBe(400);
+      const queryTokenDenies = listGatewayAuthzDenyEvents({
+        method: "http.hooks",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 20,
+      });
+      expect(
+        queryTokenDenies.some((event) =>
+          String(event.errorMessage ?? "").includes("query token is not allowed"),
+        ),
+      ).toBe(true);
 
       const resBadChannel = await fetch(`http://127.0.0.1:${port}/hooks/agent`, {
         method: "POST",

@@ -15,8 +15,8 @@ import { CANVAS_HOST_PATH } from "../canvas-host/a2ui.js";
 import { type CanvasHostHandler, createCanvasHostHandler } from "../canvas-host/server.js";
 import { loadConfig } from "../config/config.js";
 import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
-import { resolveGatewayListenHosts } from "./net.js";
 import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
+import { resolveGatewayListenHosts } from "./net.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import {
   type ChatRunEntry,
@@ -116,6 +116,7 @@ export async function createGatewayRuntimeState(params: {
   const { broadcast, broadcastToConnIds } = createGatewayBroadcaster({
     clients,
     multiUserMode,
+    getMultiUserMode: () => resolveGatewayMultiUserMode(loadConfig()),
     resolveOwnerUserIdForSessionKey: (sessionKey) => {
       try {
         const ownerUserId = loadSessionEntry(sessionKey).entry?.ownerUserId;
@@ -143,6 +144,7 @@ export async function createGatewayRuntimeState(params: {
 
   const handlePluginRequest = createGatewayPluginRequestHandler({
     registry: params.pluginRegistry,
+    auth: params.resolvedAuth,
     log: params.logPlugins,
   });
 

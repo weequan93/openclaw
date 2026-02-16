@@ -14,7 +14,6 @@ import {
   updateSessionStore,
 } from "../../config/sessions.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import {
   ErrorCodes,
   errorShape,
@@ -71,28 +70,9 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       store,
       opts: {
         ...p,
+        ...(ownerUserId ? { ownerUserId } : {}),
       },
     });
-    if (ownerUserId) {
-      const filtered = result.sessions.filter((session) => {
-        const sessionOwnerUserId =
-          typeof session.ownerUserId === "string" ? session.ownerUserId.trim() : "";
-        if (!sessionOwnerUserId) {
-          return false;
-        }
-        if (sessionOwnerUserId === ownerUserId) {
-          return true;
-        }
-        return hasGatewayDelegatedAccess({
-          cfg,
-          fromUserId: ownerUserId,
-          ownerUserId: sessionOwnerUserId,
-          resource: "sessions",
-        });
-      });
-      respond(true, { ...result, sessions: filtered }, undefined);
-      return;
-    }
     respond(true, result, undefined);
   },
   "sessions.preview": ({ params, respond, owner }) => {

@@ -2,6 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HISTORY_CONTEXT_MARKER } from "../auto-reply/reply/history.js";
 import { CURRENT_MESSAGE_MARKER } from "../auto-reply/reply/mentions.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  __test as authzAllowEventsTest,
+  listGatewayAuthzAllowEvents,
+} from "./authz-allow-events.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "./authz-denied-events.js";
 import { agentCommand, getFreePort, installGatewayTestHooks } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
@@ -38,8 +46,13 @@ async function startServer(port: number, opts?: { openAiChatCompletionsEnabled?:
   });
 }
 
-async function postChatCompletions(port: number, body: unknown, headers?: Record<string, string>) {
-  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+async function postChatCompletions(
+  port: number,
+  body: unknown,
+  headers?: Record<string, string>,
+  path = "/v1/chat/completions",
+) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -92,8 +105,402 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
     }
   });
 
+  it("denies non-local requests in multi-user mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.61" },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+
+      const resDoubleEncoded = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.70" },
+        "/v1%252Fchat%252Fcompletions",
+      );
+      expect(resDoubleEncoded.status).toBe(403);
+      const bodyDoubleEncoded = (await resDoubleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyDoubleEncoded.error?.type).toBe("forbidden");
+
+      const resDoubleEncodedBackslash = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.71" },
+        "/v1%255Cchat%255Ccompletions",
+      );
+      expect(resDoubleEncodedBackslash.status).toBe(403);
+      const bodyDoubleEncodedBackslash = (await resDoubleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyDoubleEncodedBackslash.error?.type).toBe("forbidden");
+
+      const resTripleEncoded = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.72" },
+        "/v1%25252Fchat%25252Fcompletions",
+      );
+      expect(resTripleEncoded.status).toBe(403);
+      const bodyTripleEncoded = (await resTripleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyTripleEncoded.error?.type).toBe("forbidden");
+
+      const resTripleEncodedBackslash = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.73" },
+        "/v1%25255Cchat%25255Ccompletions",
+      );
+      expect(resTripleEncodedBackslash.status).toBe(403);
+      const bodyTripleEncodedBackslash = (await resTripleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyTripleEncodedBackslash.error?.type).toBe("forbidden");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local trailing-slash endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.68" },
+        "/v1/chat/completions/",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local encoded-separator endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.70" },
+        "/v1%2Fchat%2Fcompletions",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local encoded-backslash endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.72" },
+        "/v1%5Cchat%5Ccompletions",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local requests in compat mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "compat",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        { "x-forwarded-for": "203.0.113.65" },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("records allow events for local requests in strict mode", async () => {
+    authzDeniedEventsTest.clear();
+    authzAllowEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+
+      const res = await postChatCompletions(port, {
+        model: "openclaw",
+        messages: [{ role: "user", content: "hi" }],
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      expect(body.choices?.[0]?.message?.content).toBe("hello");
+
+      const events = listGatewayAuthzAllowEvents({
+        method: "http.openai.chat.completions",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openai.chat.completions");
+      expect(events[0]?.clientMode).toBe("http");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("applies strict/off/strict mode changes without restart for non-local requests", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    const headers = { "x-forwarded-for": "203.0.113.63" };
+    try {
+      const deniedStrict = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        headers,
+      );
+      expect(deniedStrict.status).toBe(403);
+      const deniedStrictBody = (await deniedStrict.json()) as { error?: { type?: string } };
+      expect(deniedStrictBody.error?.type).toBe("forbidden");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const allowedOff = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        headers,
+      );
+      expect(allowedOff.status).toBe(200);
+      const allowedOffBody = (await allowedOff.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      expect(allowedOffBody.choices?.[0]?.message?.content).toBe("hello");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const deniedStrictAgain = await postChatCompletions(
+        port,
+        {
+          model: "openclaw",
+          messages: [{ role: "user", content: "hi" }],
+        },
+        headers,
+      );
+      expect(deniedStrictAgain.status).toBe(403);
+      const deniedStrictAgainBody = (await deniedStrictAgain.json()) as {
+        error?: { type?: string };
+      };
+      expect(deniedStrictAgainBody.error?.type).toBe("forbidden");
+
+      const denyEvents = listGatewayAuthzDenyEvents({
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 20,
+      });
+      expect(denyEvents.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
   it("handles request validation and routing", async () => {
     const port = enabledPort;
+    authzDeniedEventsTest.clear();
     const mockAgentOnce = (payloads: Array<{ text: string }>) => {
       agentCommand.mockReset();
       agentCommand.mockResolvedValueOnce({ payloads } as never);
@@ -117,6 +524,132 @@ describe("OpenAI-compatible HTTP API (e2e)", () => {
         });
         expect(res.status).toBe(401);
         await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions/`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%2Fchat%2Fcompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%252Fchat%252Fcompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%5Cchat%5Ccompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%255Cchat%255Ccompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%25252Fchat%25252Fcompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
+      }
+
+      {
+        const res = await fetch(`http://127.0.0.1:${port}/v1%25255Cchat%25255Ccompletions`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        });
+        expect(res.status).toBe(401);
+        await res.text();
+
+        const denies = listGatewayAuthzDenyEvents({
+          method: "http.openai.chat.completions",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 10,
+        });
+        expect(denies.length).toBeGreaterThan(0);
       }
 
       {

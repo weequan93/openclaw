@@ -2,6 +2,14 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { HISTORY_CONTEXT_MARKER } from "../auto-reply/reply/history.js";
 import { CURRENT_MESSAGE_MARKER } from "../auto-reply/reply/mentions.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import {
+  __test as authzAllowEventsTest,
+  listGatewayAuthzAllowEvents,
+} from "./authz-allow-events.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "./authz-denied-events.js";
 import { agentCommand, getFreePort, installGatewayTestHooks } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
@@ -37,8 +45,13 @@ async function startServer(port: number, opts?: { openResponsesEnabled?: boolean
   });
 }
 
-async function postResponses(port: number, body: unknown, headers?: Record<string, string>) {
-  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+async function postResponses(
+  port: number,
+  body: unknown,
+  headers?: Record<string, string>,
+  path = "/v1/responses",
+) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -113,8 +126,412 @@ describe("OpenResponses HTTP API (e2e)", () => {
     }
   });
 
+  it("denies non-local requests in multi-user mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.62" },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+
+      const resDoubleEncoded = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.71" },
+        "/v1%252Fresponses",
+      );
+      expect(resDoubleEncoded.status).toBe(403);
+      const bodyDoubleEncoded = (await resDoubleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyDoubleEncoded.error?.type).toBe("forbidden");
+      await ensureResponseConsumed(resDoubleEncoded);
+
+      const resDoubleEncodedBackslash = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.72" },
+        "/v1%255Cresponses",
+      );
+      expect(resDoubleEncodedBackslash.status).toBe(403);
+      const bodyDoubleEncodedBackslash = (await resDoubleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyDoubleEncodedBackslash.error?.type).toBe("forbidden");
+      await ensureResponseConsumed(resDoubleEncodedBackslash);
+
+      const resTripleEncoded = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.73" },
+        "/v1%25252Fresponses",
+      );
+      expect(resTripleEncoded.status).toBe(403);
+      const bodyTripleEncoded = (await resTripleEncoded.json()) as { error?: { type?: string } };
+      expect(bodyTripleEncoded.error?.type).toBe("forbidden");
+      await ensureResponseConsumed(resTripleEncoded);
+
+      const resTripleEncodedBackslash = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.74" },
+        "/v1%25255Cresponses",
+      );
+      expect(resTripleEncodedBackslash.status).toBe(403);
+      const bodyTripleEncodedBackslash = (await resTripleEncodedBackslash.json()) as {
+        error?: { type?: string };
+      };
+      expect(bodyTripleEncodedBackslash.error?.type).toBe("forbidden");
+      await ensureResponseConsumed(resTripleEncodedBackslash);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local trailing-slash endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.69" },
+        "/v1/responses/",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local encoded-separator endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.71" },
+        "/v1%2Fresponses",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local encoded-backslash endpoint requests in strict mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.73" },
+        "/v1%5Cresponses",
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("denies non-local requests in compat mode and records deny event", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "compat",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.66" },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+
+      const events = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("records allow events for local requests in strict mode", async () => {
+    authzDeniedEventsTest.clear();
+    authzAllowEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+
+      const res = await postResponses(port, {
+        model: "openclaw",
+        input: "hi",
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        output?: Array<{ content?: Array<{ text?: string }> }>;
+      };
+      expect(body.output?.[0]?.content?.[0]?.text).toBe("hello");
+
+      const events = listGatewayAuthzAllowEvents({
+        method: "http.openresponses.responses",
+        limit: 10,
+      });
+      expect(events.length).toBeGreaterThan(0);
+      expect(events[0]?.method).toBe("http.openresponses.responses");
+      expect(events[0]?.clientMode).toBe("http");
+      expect(typeof events[0]?.sourceIp).toBe("string");
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
+  it("applies strict/off/strict mode changes without restart for non-local requests", async () => {
+    authzDeniedEventsTest.clear();
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    const headers = { "x-forwarded-for": "203.0.113.64" };
+    try {
+      const deniedStrict = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        headers,
+      );
+      expect(deniedStrict.status).toBe(403);
+      const deniedStrictBody = (await deniedStrict.json()) as { error?: { type?: string } };
+      expect(deniedStrictBody.error?.type).toBe("forbidden");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      agentCommand.mockReset();
+      agentCommand.mockResolvedValueOnce({ payloads: [{ text: "hello" }] } as never);
+      const allowedOff = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        headers,
+      );
+      expect(allowedOff.status).toBe(200);
+      const allowedOffBody = (await allowedOff.json()) as {
+        output?: Array<{ content?: Array<{ text?: string }> }>;
+      };
+      expect(allowedOffBody.output?.[0]?.content?.[0]?.text).toBe("hello");
+
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+        // oxlint-disable-next-line typescript/no-explicit-any
+      } as any);
+
+      const deniedStrictAgain = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        headers,
+      );
+      expect(deniedStrictAgain.status).toBe(403);
+      const deniedStrictAgainBody = (await deniedStrictAgain.json()) as {
+        error?: { type?: string };
+      };
+      expect(deniedStrictAgainBody.error?.type).toBe("forbidden");
+
+      const denyEvents = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 20,
+      });
+      expect(denyEvents.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await server.close({ reason: "test done" });
+    }
+  });
+
   it("handles OpenResponses request parsing and validation", async () => {
     const port = enabledPort;
+    authzDeniedEventsTest.clear();
     const mockAgentOnce = (payloads: Array<{ text: string }>, meta?: unknown) => {
       agentCommand.mockReset();
       agentCommand.mockResolvedValueOnce({ payloads, meta } as never);
@@ -135,6 +552,122 @@ describe("OpenResponses HTTP API (e2e)", () => {
       });
       expect(resMissingAuth.status).toBe(401);
       await ensureResponseConsumed(resMissingAuth);
+      const denies = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(denies.length).toBeGreaterThan(0);
+
+      const resMissingAuthTrailing = await fetch(`http://127.0.0.1:${port}/v1/responses/`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "openclaw", input: "hi" }),
+      });
+      expect(resMissingAuthTrailing.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthTrailing);
+      const deniesTrailing = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesTrailing.length).toBeGreaterThan(0);
+
+      const resMissingAuthEncoded = await fetch(`http://127.0.0.1:${port}/v1%2Fresponses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "openclaw", input: "hi" }),
+      });
+      expect(resMissingAuthEncoded.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthEncoded);
+      const deniesEncoded = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesEncoded.length).toBeGreaterThan(0);
+
+      const resMissingAuthDoubleEncoded = await fetch(`http://127.0.0.1:${port}/v1%252Fresponses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model: "openclaw", input: "hi" }),
+      });
+      expect(resMissingAuthDoubleEncoded.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthDoubleEncoded);
+      const deniesDoubleEncoded = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesDoubleEncoded.length).toBeGreaterThan(0);
+
+      const resMissingAuthEncodedBackslash = await fetch(
+        `http://127.0.0.1:${port}/v1%5Cresponses`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "openclaw", input: "hi" }),
+        },
+      );
+      expect(resMissingAuthEncodedBackslash.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthEncodedBackslash);
+      const deniesEncodedBackslash = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesEncodedBackslash.length).toBeGreaterThan(0);
+
+      const resMissingAuthDoubleEncodedBackslash = await fetch(
+        `http://127.0.0.1:${port}/v1%255Cresponses`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "openclaw", input: "hi" }),
+        },
+      );
+      expect(resMissingAuthDoubleEncodedBackslash.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthDoubleEncodedBackslash);
+      const deniesDoubleEncodedBackslash = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesDoubleEncodedBackslash.length).toBeGreaterThan(0);
+
+      const resMissingAuthTripleEncoded = await fetch(
+        `http://127.0.0.1:${port}/v1%25252Fresponses`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "openclaw", input: "hi" }),
+        },
+      );
+      expect(resMissingAuthTripleEncoded.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthTripleEncoded);
+      const deniesTripleEncoded = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesTripleEncoded.length).toBeGreaterThan(0);
+
+      const resMissingAuthTripleEncodedBackslash = await fetch(
+        `http://127.0.0.1:${port}/v1%25255Cresponses`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ model: "openclaw", input: "hi" }),
+        },
+      );
+      expect(resMissingAuthTripleEncodedBackslash.status).toBe(401);
+      await ensureResponseConsumed(resMissingAuthTripleEncodedBackslash);
+      const deniesTripleEncodedBackslash = listGatewayAuthzDenyEvents({
+        method: "http.openresponses.responses",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 10,
+      });
+      expect(deniesTripleEncodedBackslash.length).toBeGreaterThan(0);
 
       const resMissingModel = await postResponses(port, { input: "hi" });
       expect(resMissingModel.status).toBe(400);

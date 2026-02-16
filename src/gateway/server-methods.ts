@@ -1,4 +1,5 @@
 import type { GatewayRequestHandlers, GatewayRequestOptions } from "./server-methods/types.js";
+import { resolveGatewayAuditSourceIp } from "./audit-source-ip.js";
 import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
 import { ErrorCodes, errorShape, type ErrorShape } from "./protocol/index.js";
 import { auditGatewayAuthorization, authorizeGatewayMethod } from "./server-authz.js";
@@ -121,7 +122,7 @@ export async function handleGatewayRequest(
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
     });
     recordGatewayAuthzDenyEvent({
       ts: Date.now(),
@@ -141,7 +142,7 @@ export async function handleGatewayRequest(
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
     });
   };
   await handler({

@@ -25,6 +25,7 @@ import {
 } from "../../infra/restart-sentinel.js";
 import { scheduleGatewaySigusr1Restart } from "../../infra/restart.js";
 import { loadOpenClawPlugins } from "../../plugins/loader.js";
+import { resolveGatewayAuditSourceIp } from "../audit-source-ip.js";
 import {
   listGatewayConfigChangeEventsPage,
   recordGatewayConfigChangeEvent,
@@ -271,7 +272,7 @@ export const configHandlers: GatewayRequestHandlers = {
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
       sessionKey: sessionKey ?? null,
       note,
       restartDelayMs: restartDelayMs ?? null,
@@ -477,7 +478,7 @@ export const configHandlers: GatewayRequestHandlers = {
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
       sessionKey: null,
       note: null,
       restartDelayMs: null,
@@ -624,7 +625,7 @@ export const configHandlers: GatewayRequestHandlers = {
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
       sessionKey: sessionKey ?? null,
       note: note ?? null,
       restartDelayMs: restartDelayMs ?? null,
@@ -756,7 +757,7 @@ export const configHandlers: GatewayRequestHandlers = {
         client && typeof client.connect?.client?.mode === "string"
           ? client.connect.client.mode
           : null,
-      sourceIp: typeof client?.clientIp === "string" ? client.clientIp : null,
+      sourceIp: resolveGatewayAuditSourceIp(client ?? {}),
       sessionKey: sessionKey ?? null,
       note: note ?? null,
       restartDelayMs: restartDelayMs ?? null,

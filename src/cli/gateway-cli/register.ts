@@ -114,7 +114,91 @@ function parsePositiveIntOption(raw: unknown, fallback: number, label: string): 
   return Math.floor(parsed);
 }
 
-const OWNERSHIP_BACKFILL_RESOURCES = new Set(["agents", "sessions", "nodes", "browserProfiles"]);
+const AUTHZ_DENIED_PRESETS = new Set([
+  "owner-mismatch-24h",
+  "scope-missing-24h",
+  "role-forbidden-24h",
+  "policy-deny-24h",
+  "unknown-sender-24h",
+  "plugin-role-forbidden-24h",
+  "plugin-unknown-sender-24h",
+  "openai-role-forbidden-24h",
+  "openresponses-role-forbidden-24h",
+  "tools-role-forbidden-24h",
+  "hooks-role-forbidden-24h",
+  "hooks-unknown-sender-24h",
+  "canvas-http-role-forbidden-24h",
+  "canvas-ws-role-forbidden-24h",
+]);
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function parseAuthzDeniedPreset(raw: unknown): {
+  method?: string;
+  reasonCode?: string;
+  sinceTs?: number;
+  untilTs?: number;
+} {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    return {};
+  }
+  const preset = raw.trim();
+  if (!AUTHZ_DENIED_PRESETS.has(preset)) {
+    throw new Error(`preset must be one of: ${Array.from(AUTHZ_DENIED_PRESETS).join(", ")}`);
+  }
+  const nowMs = Date.now();
+  const sinceTs = Math.max(0, nowMs - DAY_MS);
+  const untilTs = nowMs;
+  switch (preset) {
+    case "owner-mismatch-24h":
+      return { reasonCode: "OWNER_MISMATCH", sinceTs, untilTs };
+    case "scope-missing-24h":
+      return { reasonCode: "SCOPE_MISSING", sinceTs, untilTs };
+    case "role-forbidden-24h":
+      return { reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    case "policy-deny-24h":
+      return { reasonCode: "POLICY_DENY", sinceTs, untilTs };
+    case "unknown-sender-24h":
+      return { reasonCode: "UNKNOWN_SENDER", sinceTs, untilTs };
+    case "plugin-role-forbidden-24h":
+      return { method: "http.plugin", reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    case "plugin-unknown-sender-24h":
+      return { method: "http.plugin", reasonCode: "UNKNOWN_SENDER", sinceTs, untilTs };
+    case "openai-role-forbidden-24h":
+      return {
+        method: "http.openai.chat.completions",
+        reasonCode: "ROLE_FORBIDDEN",
+        sinceTs,
+        untilTs,
+      };
+    case "openresponses-role-forbidden-24h":
+      return {
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        sinceTs,
+        untilTs,
+      };
+    case "tools-role-forbidden-24h":
+      return { method: "http.tools.invoke", reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    case "hooks-role-forbidden-24h":
+      return { method: "http.hooks", reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    case "hooks-unknown-sender-24h":
+      return { method: "http.hooks", reasonCode: "UNKNOWN_SENDER", sinceTs, untilTs };
+    case "canvas-http-role-forbidden-24h":
+      return { method: "http.canvas", reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    case "canvas-ws-role-forbidden-24h":
+      return { method: "ws.canvas", reasonCode: "ROLE_FORBIDDEN", sinceTs, untilTs };
+    default:
+      return {};
+  }
+}
+
+const OWNERSHIP_BACKFILL_RESOURCES = new Set([
+  "agents",
+  "sessions",
+  "nodes",
+  "browserProfiles",
+  "memory",
+]);
 const GATEWAY_POLICY_BUNDLE_IDS = new Set([
   "single_user",
   "multi_user_isolated",
@@ -313,6 +397,10 @@ export function registerGatewayCli(program: Command) {
       .option("--limit <n>", "Max events to return", "100")
       .option("--cursor <cursor>", "Pagination cursor from a previous result")
       .option("--order <order>", "Sort order for the returned page (desc|asc)", "desc")
+      .option(
+        "--preset <preset>",
+        "Shortcut filter preset (owner-mismatch-24h|scope-missing-24h|role-forbidden-24h|policy-deny-24h|unknown-sender-24h|plugin-role-forbidden-24h|plugin-unknown-sender-24h|openai-role-forbidden-24h|openresponses-role-forbidden-24h|tools-role-forbidden-24h|hooks-role-forbidden-24h|hooks-unknown-sender-24h|canvas-http-role-forbidden-24h|canvas-ws-role-forbidden-24h)",
+      )
       .option("--method <method>", "Filter by method")
       .option("--reason <reasonCode>", "Filter by deny reason code")
       .option("--user-id <userId>", "Filter by user ID")
@@ -329,13 +417,18 @@ export function registerGatewayCli(program: Command) {
           if (orderRaw !== "asc" && orderRaw !== "desc") {
             throw new Error("order must be either desc or asc");
           }
+          const presetFilters = parseAuthzDeniedPreset(opts.preset);
           const order = orderRaw as "asc" | "desc";
-          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
-          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since") ?? presetFilters.sinceTs;
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until") ?? presetFilters.untilTs;
           const method =
-            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+            (typeof opts.method === "string" && opts.method.trim()
+              ? opts.method.trim()
+              : undefined) ?? presetFilters.method;
           const reasonCode =
-            typeof opts.reason === "string" && opts.reason.trim() ? opts.reason.trim() : undefined;
+            (typeof opts.reason === "string" && opts.reason.trim()
+              ? opts.reason.trim()
+              : undefined) ?? presetFilters.reasonCode;
           const userId =
             typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
           const principalId =
@@ -400,6 +493,10 @@ export function registerGatewayCli(program: Command) {
       .description("Summarize gateway authorization deny events (admin)")
       .option("--top-n <n>", "Max buckets per summary group", "5")
       .option("--alert-threshold <n>", "Count threshold for high-frequency principals", "5")
+      .option(
+        "--preset <preset>",
+        "Shortcut filter preset (owner-mismatch-24h|scope-missing-24h|role-forbidden-24h|policy-deny-24h|unknown-sender-24h|plugin-role-forbidden-24h|plugin-unknown-sender-24h|openai-role-forbidden-24h|openresponses-role-forbidden-24h|tools-role-forbidden-24h|hooks-role-forbidden-24h|hooks-unknown-sender-24h|canvas-http-role-forbidden-24h|canvas-ws-role-forbidden-24h)",
+      )
       .option("--method <method>", "Filter by method")
       .option("--reason <reasonCode>", "Filter by deny reason code")
       .option("--error-code <errorCode>", "Filter by error code")
@@ -411,12 +508,17 @@ export function registerGatewayCli(program: Command) {
         await runGatewayCommand(async () => {
           const topN = parsePositiveIntOption(opts.topN, 5, "top-n");
           const alertThreshold = parsePositiveIntOption(opts.alertThreshold, 5, "alert-threshold");
-          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
-          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const presetFilters = parseAuthzDeniedPreset(opts.preset);
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since") ?? presetFilters.sinceTs;
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until") ?? presetFilters.untilTs;
           const method =
-            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+            (typeof opts.method === "string" && opts.method.trim()
+              ? opts.method.trim()
+              : undefined) ?? presetFilters.method;
           const reasonCode =
-            typeof opts.reason === "string" && opts.reason.trim() ? opts.reason.trim() : undefined;
+            (typeof opts.reason === "string" && opts.reason.trim()
+              ? opts.reason.trim()
+              : undefined) ?? presetFilters.reasonCode;
           const errorCode =
             typeof opts.errorCode === "string" && opts.errorCode.trim()
               ? opts.errorCode.trim()
@@ -444,9 +546,11 @@ export function registerGatewayCli(program: Command) {
             byReasonCode?: Array<{ key?: string; count?: number }>;
             byMethod?: Array<{ key?: string; count?: number }>;
             byPrincipalId?: Array<{ key?: string; count?: number }>;
+            bySourceIp?: Array<{ key?: string; count?: number }>;
             highFrequency?: {
               threshold?: number;
               principals?: Array<{ key?: string; count?: number }>;
+              sourceIps?: Array<{ key?: string; count?: number }>;
             };
           };
 
@@ -474,11 +578,188 @@ export function registerGatewayCli(program: Command) {
           renderBuckets("Top reasons", result.byReasonCode);
           renderBuckets("Top methods", result.byMethod);
           renderBuckets("Top principals", result.byPrincipalId);
+          renderBuckets("Top source IPs", result.bySourceIp);
           renderBuckets(
-            `High frequency (>=${result.highFrequency?.threshold ?? alertThreshold})`,
+            `High frequency principals (>=${result.highFrequency?.threshold ?? alertThreshold})`,
             result.highFrequency?.principals,
           );
+          renderBuckets(
+            `High frequency source IPs (>=${result.highFrequency?.threshold ?? alertThreshold})`,
+            result.highFrequency?.sourceIps,
+          );
         }, "Gateway authz denied summary failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("authz-allow")
+      .description("List recent gateway authorization allow events (admin)")
+      .option("--limit <n>", "Max events to return", "100")
+      .option("--cursor <cursor>", "Pagination cursor from a previous result")
+      .option("--order <order>", "Sort order for the returned page (desc|asc)", "desc")
+      .option("--method <method>", "Filter by method")
+      .option("--user-id <userId>", "Filter by user ID")
+      .option("--principal-id <principalId>", "Filter by principal ID")
+      .option("--since <ms>", "Filter events after timestamp (epoch ms)")
+      .option("--until <ms>", "Filter events before timestamp (epoch ms)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const limit = parsePositiveIntOption(opts.limit, 100, "limit");
+          const cursor =
+            typeof opts.cursor === "string" && opts.cursor.trim() ? opts.cursor.trim() : undefined;
+          const orderRaw =
+            typeof opts.order === "string" && opts.order.trim() ? opts.order.trim() : "desc";
+          if (orderRaw !== "asc" && orderRaw !== "desc") {
+            throw new Error("order must be either desc or asc");
+          }
+          const order = orderRaw as "asc" | "desc";
+          const method =
+            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+          const userId =
+            typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
+          const principalId =
+            typeof opts.principalId === "string" && opts.principalId.trim()
+              ? opts.principalId.trim()
+              : undefined;
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const result = (await callGatewayCli("authz.allow.list", opts, {
+            limit,
+            ...(cursor ? { cursor } : {}),
+            ...(order !== "desc" ? { order } : {}),
+            ...(method ? { method } : {}),
+            ...(userId ? { userId } : {}),
+            ...(principalId ? { principalId } : {}),
+            ...(sinceTs !== undefined ? { sinceTs } : {}),
+            ...(untilTs !== undefined ? { untilTs } : {}),
+          })) as {
+            ts?: number;
+            nextCursor?: string | null;
+            hasMore?: boolean;
+            events?: Array<{
+              ts?: number;
+              method?: string;
+              requestId?: string;
+              userId?: string | null;
+              userAlias?: string | null;
+              principalId?: string | null;
+              actorRole?: string | null;
+              clientId?: string | null;
+              clientMode?: string | null;
+              sourceIp?: string | null;
+            }>;
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Gateway Authz Allow Events"));
+          const events = Array.isArray(result.events) ? result.events : [];
+          if (events.length === 0) {
+            defaultRuntime.log(colorize(rich, theme.muted, "No allow events found."));
+          } else {
+            for (const event of events) {
+              const tsLabel =
+                typeof event.ts === "number" && Number.isFinite(event.ts)
+                  ? new Date(event.ts).toISOString()
+                  : "unknown-time";
+              const actor = event.userAlias || event.principalId || event.userId || "unknown";
+              const methodLabel = event.method || "unknown";
+              defaultRuntime.log(
+                `${tsLabel} ${methodLabel} actor=${actor} role=${event.actorRole || "unknown"} ` +
+                  `client=${event.clientId || "unknown"} mode=${event.clientMode || "unknown"} ` +
+                  `ip=${event.sourceIp || "unknown"} req=${event.requestId || "unknown"}`,
+              );
+            }
+          }
+          defaultRuntime.log(
+            `${colorize(rich, theme.muted, "Next cursor:")} ${result.nextCursor ?? "(none)"}`,
+          );
+        }, "Gateway authz allow list failed");
+      }),
+  );
+
+  gatewayCallOpts(
+    gateway
+      .command("authz-allow-summary")
+      .description("Summarize gateway authorization allow events (admin)")
+      .option("--top-n <n>", "Bucket size for grouped summary output", "5")
+      .option("--alert-threshold <n>", "Count threshold for high-frequency principals", "5")
+      .option("--method <method>", "Filter by method")
+      .option("--user-id <userId>", "Filter by user ID")
+      .option("--principal-id <principalId>", "Filter by principal ID")
+      .option("--since <ms>", "Filter events after timestamp (epoch ms)")
+      .option("--until <ms>", "Filter events before timestamp (epoch ms)")
+      .action(async (opts) => {
+        await runGatewayCommand(async () => {
+          const topN = parsePositiveIntOption(opts.topN, 5, "top-n");
+          const alertThreshold = parsePositiveIntOption(opts.alertThreshold, 5, "alert-threshold");
+          const method =
+            typeof opts.method === "string" && opts.method.trim() ? opts.method.trim() : undefined;
+          const userId =
+            typeof opts.userId === "string" && opts.userId.trim() ? opts.userId.trim() : undefined;
+          const principalId =
+            typeof opts.principalId === "string" && opts.principalId.trim()
+              ? opts.principalId.trim()
+              : undefined;
+          const sinceTs = parseOptionalNonNegativeInt(opts.since, "since");
+          const untilTs = parseOptionalNonNegativeInt(opts.until, "until");
+          const result = (await callGatewayCli("authz.allow.summary", opts, {
+            topN,
+            alertThreshold,
+            ...(method ? { method } : {}),
+            ...(userId ? { userId } : {}),
+            ...(principalId ? { principalId } : {}),
+            ...(sinceTs !== undefined ? { sinceTs } : {}),
+            ...(untilTs !== undefined ? { untilTs } : {}),
+          })) as {
+            ts?: number;
+            total?: number;
+            byMethod?: Array<{ key?: string; count?: number }>;
+            byUserId?: Array<{ key?: string; count?: number }>;
+            byPrincipalId?: Array<{ key?: string; count?: number }>;
+            bySourceIp?: Array<{ key?: string; count?: number }>;
+            highFrequency?: {
+              threshold?: number;
+              principals?: Array<{ key?: string; count?: number }>;
+              sourceIps?: Array<{ key?: string; count?: number }>;
+            };
+          };
+          if (opts.json) {
+            defaultRuntime.log(JSON.stringify(result, null, 2));
+            return;
+          }
+          const rich = isRich();
+          defaultRuntime.log(colorize(rich, theme.heading, "Authz Allow Summary"));
+          defaultRuntime.log(`${colorize(rich, theme.muted, "Total:")} ${result.total ?? 0}`);
+
+          const renderBuckets = (label: string, rows?: Array<{ key?: string; count?: number }>) => {
+            const items = Array.isArray(rows) ? rows : [];
+            if (items.length === 0) {
+              defaultRuntime.log(`${colorize(rich, theme.muted, `${label}:`)} none`);
+              return;
+            }
+            const formatted = items
+              .map((row) => `${row.key ?? "unknown"}=${row.count ?? 0}`)
+              .join(", ");
+            defaultRuntime.log(`${colorize(rich, theme.muted, `${label}:`)} ${formatted}`);
+          };
+
+          renderBuckets("Top methods", result.byMethod);
+          renderBuckets("Top users", result.byUserId);
+          renderBuckets("Top principals", result.byPrincipalId);
+          renderBuckets("Top source IPs", result.bySourceIp);
+          renderBuckets(
+            `High frequency principals (>=${result.highFrequency?.threshold ?? alertThreshold})`,
+            result.highFrequency?.principals,
+          );
+          renderBuckets(
+            `High frequency source IPs (>=${result.highFrequency?.threshold ?? alertThreshold})`,
+            result.highFrequency?.sourceIps,
+          );
+        }, "Gateway authz allow summary failed");
       }),
   );
 
@@ -746,7 +1027,7 @@ export function registerGatewayCli(program: Command) {
       .description("List resources missing owner metadata (admin)")
       .option(
         "--resource <name>",
-        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles",
+        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles|memory",
         (value, prev: string[]) => [...prev, value],
         [],
       )
@@ -793,7 +1074,7 @@ export function registerGatewayCli(program: Command) {
       .option("--owner-principal <principalId>", "Owner principal ID for session ownership stamp")
       .option(
         "--resource <name>",
-        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles",
+        "Resource filter (repeatable): agents|sessions|nodes|browserProfiles|memory",
         (value, prev: string[]) => [...prev, value],
         [],
       )

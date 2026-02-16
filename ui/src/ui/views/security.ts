@@ -1,5 +1,7 @@
 import { html, nothing } from "lit";
 import type {
+  AuthzAllowEvent,
+  AuthzAllowSummary,
   AuthzDeniedEvent,
   AuthzDeniedSummary,
   ConfigPolicyBundle,
@@ -63,9 +65,31 @@ type SecurityPresetKey =
   | "scope-missing-24h"
   | "role-forbidden-24h"
   | "policy-deny-24h"
-  | "unknown-sender-24h";
+  | "unknown-sender-24h"
+  | "plugin-role-forbidden-24h"
+  | "plugin-unknown-sender-24h"
+  | "plugin-allow-24h"
+  | "openai-role-forbidden-24h"
+  | "openai-unknown-sender-24h"
+  | "openai-allow-24h"
+  | "openresponses-role-forbidden-24h"
+  | "openresponses-unknown-sender-24h"
+  | "openresponses-allow-24h"
+  | "tools-role-forbidden-24h"
+  | "tools-unknown-sender-24h"
+  | "tools-allow-24h"
+  | "hooks-role-forbidden-24h"
+  | "hooks-unknown-sender-24h"
+  | "hooks-allow-24h"
+  | "canvas-http-role-forbidden-24h"
+  | "canvas-ws-role-forbidden-24h"
+  | "canvas-http-unknown-sender-24h"
+  | "canvas-ws-unknown-sender-24h"
+  | "canvas-http-allow-24h"
+  | "canvas-ws-allow-24h";
 
 type SecurityTimePresetKey = "last-1h" | "last-24h" | "last-7d" | "all-time";
+type SecurityAuditModeKey = "both" | "denied" | "allowed";
 
 export type SecurityProps = {
   loading: boolean;
@@ -73,6 +97,12 @@ export type SecurityProps = {
   authRole: string | null;
   authPrincipalRole: string | null;
   authScopes: string[];
+  allowEvents: AuthzAllowEvent[];
+  allowSummary: AuthzAllowSummary | null;
+  allowError: string | null;
+  allowSummaryError: string | null;
+  allowHasMore: boolean;
+  allowNextCursor: string | null;
   deniedEvents: AuthzDeniedEvent[];
   deniedSummary: AuthzDeniedSummary | null;
   deniedError: string | null;
@@ -100,21 +130,28 @@ export type SecurityProps = {
   policyBundleApplyMessage: string | null;
   hasMore: boolean;
   nextCursor: string | null;
+  auditMode: SecurityAuditModeKey;
   activePreset: string | null;
   activeTimePreset: string | null;
   filters: SecurityFilterState;
   onFiltersChange: (next: SecurityFilterState) => void;
   onApplyPreset: (preset: SecurityPresetKey) => void;
   onApplyTimePreset: (preset: SecurityTimePresetKey) => void;
+  onAuditModeChange: (mode: SecurityAuditModeKey) => void;
   onResetFilters: () => void;
   onRefresh: () => void;
   onLoadOlder: () => void;
+  onLoadOlderDenied: () => void;
+  onLoadOlderAllow: () => void;
   onBackfillChange: (next: SecurityBackfillState) => void;
   onRunBackfill: (opts: { dryRun: boolean; resources?: string }) => void;
   onPolicyBundlesRefresh: () => void;
   onPolicyBundleSelect: (bundleId: ConfigPolicyBundleId | "") => void;
   onPolicyBundleApply: (bundleId: ConfigPolicyBundleId) => void;
   onExport: (events: AuthzDeniedEvent[], label: string) => void;
+  onExportDeniedSummary: (summary: AuthzDeniedSummary, label: string) => void;
+  onExportAllow: (events: AuthzAllowEvent[], label: string) => void;
+  onExportAllowSummary: (summary: AuthzAllowSummary, label: string) => void;
   onExportConfigChanges: (events: SecurityConfigChangeEntry[], label: string) => void;
   onExportOwnershipGaps: (gaps: OwnershipGapsResult, label: string) => void;
 };
@@ -165,11 +202,23 @@ export function renderSecurity(props: SecurityProps) {
   const topReasons = reasonCounts.slice(0, 4);
   const topMethods = methodCounts.slice(0, 3);
   const topPrincipals = props.deniedSummary?.byPrincipalId.slice(0, 3) ?? [];
+  const topSourceIps = props.deniedSummary?.bySourceIp?.slice(0, 3) ?? [];
   const highFrequencyThreshold = props.deniedSummary?.highFrequency.threshold;
   const highFrequencyPrincipals = props.deniedSummary?.highFrequency.principals ?? [];
+  const highFrequencySourceIps = props.deniedSummary?.highFrequency.sourceIps ?? [];
   const summaryTotal = props.deniedSummary?.total ?? props.deniedEvents.length;
   const summaryEarliestTs = props.deniedSummary?.earliestTs;
   const summaryLatestTs = props.deniedSummary?.latestTs;
+  const allowMethodCounts = props.allowSummary?.byMethod ?? [];
+  const allowTopMethods = allowMethodCounts.slice(0, 3);
+  const allowTopPrincipals = props.allowSummary?.byPrincipalId.slice(0, 3) ?? [];
+  const allowTopSourceIps = props.allowSummary?.bySourceIp.slice(0, 3) ?? [];
+  const allowHighFrequencyThreshold = props.allowSummary?.highFrequency.threshold;
+  const allowHighFrequencyPrincipals = props.allowSummary?.highFrequency.principals ?? [];
+  const allowHighFrequencySourceIps = props.allowSummary?.highFrequency.sourceIps ?? [];
+  const allowSummaryTotal = props.allowSummary?.total ?? props.allowEvents.length;
+  const allowSummaryEarliestTs = props.allowSummary?.earliestTs;
+  const allowSummaryLatestTs = props.allowSummary?.latestTs;
   const ownershipSummary = props.ownershipGaps?.summary;
   const ownershipResources = props.ownershipGaps?.resourcesSummary;
   const hasBackfillOwnerUserId = props.backfill.ownerUserId.trim().length > 0;
@@ -180,13 +229,44 @@ export function renderSecurity(props: SecurityProps) {
   const authRoleLabel = props.authRole ?? "unknown";
   const authPrincipalRoleLabel = props.authPrincipalRole ?? "unknown";
   const policyBundlePatch = formatPolicyBundlePatch(props.policyBundleResolved);
+  const showDenied = props.auditMode !== "allowed";
+  const showAllowed = props.auditMode !== "denied";
+  const hasMoreForMode =
+    props.auditMode === "allowed"
+      ? props.allowHasMore
+      : props.auditMode === "denied"
+        ? props.hasMore
+        : props.hasMore || props.allowHasMore;
+  const nextCursorEntries =
+    props.auditMode === "allowed"
+      ? props.allowHasMore && props.allowNextCursor
+        ? [{ label: "allow", cursor: props.allowNextCursor }]
+        : []
+      : props.auditMode === "denied"
+        ? props.hasMore && props.nextCursor
+          ? [{ label: "denied", cursor: props.nextCursor }]
+          : []
+        : [
+            ...(props.hasMore && props.nextCursor
+              ? [{ label: "denied", cursor: props.nextCursor }]
+              : []),
+            ...(props.allowHasMore && props.allowNextCursor
+              ? [{ label: "allow", cursor: props.allowNextCursor }]
+              : []),
+          ];
+  const deniedFeedStatus = showDenied
+    ? `denied: ${props.deniedEvents.length} loaded${props.hasMore ? " · more" : " · end"}`
+    : "denied: hidden";
+  const allowFeedStatus = showAllowed
+    ? `allow: ${props.allowEvents.length} loaded${props.allowHasMore ? " · more" : " · end"}`
+    : "allow: hidden";
 
   return html`
     <section class="card">
       <div class="row" style="justify-content: space-between;">
         <div>
-          <div class="card-title">Denied Access Events</div>
-          <div class="card-sub">Recent authorization denies from authz.denied.list.</div>
+          <div class="card-title">Access Audit Events</div>
+          <div class="card-sub">Filter controls for denied and allowed authorization audit feeds.</div>
         </div>
         <div class="row" style="gap: 8px;">
           <div class="pill ${props.canManageBackfill ? "" : "warn"}">
@@ -236,6 +316,20 @@ export function renderSecurity(props: SecurityProps) {
               })}
             placeholder="5"
           />
+        </label>
+        <label class="field" style="min-width: 160px;">
+          <span>Audit feed</span>
+          <select
+            .value=${props.auditMode}
+            @change=${(e: Event) =>
+              props.onAuditModeChange(
+                (e.target as HTMLSelectElement).value as SecurityAuditModeKey,
+              )}
+          >
+            <option value="both">Both</option>
+            <option value="denied">Denied only</option>
+            <option value="allowed">Allowed only</option>
+          </select>
         </label>
         <label class="field" style="min-width: 180px;">
           <span>Method</span>
@@ -410,6 +504,27 @@ export function renderSecurity(props: SecurityProps) {
             { key: "role-forbidden-24h", label: "Role forbidden 24h" },
             { key: "policy-deny-24h", label: "Policy deny 24h" },
             { key: "unknown-sender-24h", label: "Unknown sender 24h" },
+            { key: "plugin-role-forbidden-24h", label: "Plugin forbidden 24h" },
+            { key: "plugin-unknown-sender-24h", label: "Plugin unauthorized 24h" },
+            { key: "plugin-allow-24h", label: "Plugin allow 24h" },
+            { key: "openai-role-forbidden-24h", label: "OpenAI forbidden 24h" },
+            { key: "openai-unknown-sender-24h", label: "OpenAI unauthorized 24h" },
+            { key: "openai-allow-24h", label: "OpenAI allow 24h" },
+            { key: "openresponses-role-forbidden-24h", label: "Responses forbidden 24h" },
+            { key: "openresponses-unknown-sender-24h", label: "Responses unauthorized 24h" },
+            { key: "openresponses-allow-24h", label: "Responses allow 24h" },
+            { key: "tools-role-forbidden-24h", label: "Tools forbidden 24h" },
+            { key: "tools-unknown-sender-24h", label: "Tools unauthorized 24h" },
+            { key: "tools-allow-24h", label: "Tools allow 24h" },
+            { key: "hooks-role-forbidden-24h", label: "Hooks forbidden 24h" },
+            { key: "hooks-unknown-sender-24h", label: "Hooks unauthorized 24h" },
+            { key: "hooks-allow-24h", label: "Hooks allow 24h" },
+            { key: "canvas-http-role-forbidden-24h", label: "Canvas HTTP forbidden 24h" },
+            { key: "canvas-ws-role-forbidden-24h", label: "Canvas WS forbidden 24h" },
+            { key: "canvas-http-unknown-sender-24h", label: "Canvas HTTP unauthorized 24h" },
+            { key: "canvas-ws-unknown-sender-24h", label: "Canvas WS unauthorized 24h" },
+            { key: "canvas-http-allow-24h", label: "Canvas HTTP allow 24h" },
+            { key: "canvas-ws-allow-24h", label: "Canvas WS allow 24h" },
           ] as Array<{ key: SecurityPresetKey; label: string }>
         ).map(
           (preset) => html`
@@ -428,53 +543,297 @@ export function renderSecurity(props: SecurityProps) {
         <button class="btn" ?disabled=${props.loading || !hasFilters} @click=${props.onResetFilters}>
           Clear filters
         </button>
-        <button class="btn" ?disabled=${props.loading || !props.hasMore} @click=${props.onLoadOlder}>
-          Load older
-        </button>
         <button
           class="btn"
-          ?disabled=${props.deniedEvents.length === 0}
+          ?disabled=${props.loading || !hasMoreForMode}
+          @click=${props.onLoadOlder}
+        >
+          Load older
+        </button>
+        ${
+          props.auditMode === "both"
+            ? html`
+                <button
+                  class="btn"
+                  ?disabled=${props.loading || !props.hasMore}
+                  @click=${props.onLoadOlderDenied}
+                >
+                  Load older denied
+                </button>
+                <button
+                  class="btn"
+                  ?disabled=${props.loading || !props.allowHasMore}
+                  @click=${props.onLoadOlderAllow}
+                >
+                  Load older allow
+                </button>
+              `
+            : nothing
+        }
+        <button
+          class="btn"
+          ?disabled=${!showDenied || props.deniedEvents.length === 0}
           @click=${() =>
             props.onExport(props.deniedEvents, hasFilters ? "security-filtered" : "security")}
         >
-          Export CSV
+          Export denied CSV
+        </button>
+        <button
+          class="btn"
+          ?disabled=${!showDenied || !props.deniedSummary}
+          @click=${() =>
+            props.deniedSummary
+              ? props.onExportDeniedSummary(
+                  props.deniedSummary,
+                  hasFilters ? "security-denied-summary-filtered" : "security-denied-summary",
+                )
+              : null}
+        >
+          Export denied summary CSV
         </button>
       </div>
       ${
-        props.hasMore && props.nextCursor
-          ? html`<div class="muted" style="margin-top: 6px;">Next cursor: ${props.nextCursor}</div>`
+        nextCursorEntries.length > 0
+          ? html`
+              <div class="row" style="margin-top: 6px; gap: 8px; flex-wrap: wrap;">
+                ${nextCursorEntries.map(
+                  (entry) =>
+                    html`<div class="pill"><span>${entry.label}</span><span class="mono">${entry.cursor}</span></div>`,
+                )}
+              </div>
+            `
+          : nothing
+      }
+      <div class="row" style="margin-top: 6px; gap: 8px; flex-wrap: wrap;">
+        <div class="pill">
+          <span>${deniedFeedStatus}</span>
+        </div>
+        <div class="pill">
+          <span>${allowFeedStatus}</span>
+        </div>
+      </div>
+      ${
+        showDenied
+          ? html`
+              ${
+                props.deniedError
+                  ? html`<div class="callout danger" style="margin-top: 12px;">${props.deniedError}</div>`
+                  : nothing
+              }
+              ${
+                props.deniedSummaryError
+                  ? html`<div class="callout danger" style="margin-top: 12px;">${props.deniedSummaryError}</div>`
+                  : nothing
+              }
+              <div class="row" style="margin-top: 12px; gap: 8px;">
+                <div class="pill">
+                  <span>Matched denies</span>
+                  <span class="mono">${summaryTotal}</span>
+                </div>
+                ${topReasons.map(
+                  ({ key, count }) => html`
+                    <div class="pill warn">
+                      <span>${key}</span>
+                      <span class="mono">${count}</span>
+                    </div>
+                  `,
+                )}
+                ${
+                  summaryEarliestTs != null && summaryLatestTs != null
+                    ? html`
+                        <div class="pill">
+                          <span>Window</span>
+                          <span class="mono"
+                            >${formatDenyEventTs(summaryEarliestTs)} →
+                            ${formatDenyEventTs(summaryLatestTs)}</span
+                          >
+                        </div>
+                      `
+                    : nothing
+                }
+              </div>
+              ${
+                topMethods.length > 0
+                  ? html`
+                      <div class="row" style="margin-top: 8px; gap: 8px;">
+                        ${topMethods.map(
+                          ({ key, count }) => html`
+                            <div class="pill">
+                              <span>${key}</span>
+                              <span class="mono">${count}</span>
+                            </div>
+                          `,
+                        )}
+                      </div>
+                    `
+                  : nothing
+              }
+              ${
+                topPrincipals.length > 0
+                  ? html`
+                      <div class="row" style="margin-top: 8px; gap: 8px;">
+                        ${topPrincipals.map(
+                          ({ key, count }) => html`
+                            <div class="pill">
+                              <span>principal=${key}</span>
+                              <span class="mono">${count}</span>
+                            </div>
+                          `,
+                        )}
+                      </div>
+                    `
+                  : nothing
+              }
+              ${
+                topSourceIps.length > 0
+                  ? html`
+                      <div class="row" style="margin-top: 8px; gap: 8px;">
+                        ${topSourceIps.map(
+                          ({ key, count }) => html`
+                            <div class="pill">
+                              <span>sourceIp=${key}</span>
+                              <span class="mono">${count}</span>
+                            </div>
+                          `,
+                        )}
+                      </div>
+                    `
+                  : nothing
+              }
+              ${
+                highFrequencyThreshold != null
+                  ? highFrequencyPrincipals.length > 0
+                    ? html`
+                        <div class="callout warn" style="margin-top: 12px;">
+                          High-frequency denied principals (threshold ≥ ${highFrequencyThreshold}):
+                          ${highFrequencyPrincipals
+                            .map((entry) => `${entry.key} (${entry.count})`)
+                            .join(", ")}
+                        </div>
+                      `
+                    : html`
+                        <div class="muted" style="margin-top: 12px;">
+                          No principals above deny threshold (${highFrequencyThreshold}).
+                        </div>
+                      `
+                  : nothing
+              }
+              ${
+                highFrequencyThreshold != null
+                  ? highFrequencySourceIps.length > 0
+                    ? html`
+                        <div class="callout warn" style="margin-top: 8px;">
+                          High-frequency denied source IPs (threshold ≥ ${highFrequencyThreshold}):
+                          ${highFrequencySourceIps
+                            .map((entry) => `${entry.key} (${entry.count})`)
+                            .join(", ")}
+                        </div>
+                      `
+                    : html`
+                        <div class="muted" style="margin-top: 8px;">
+                          No source IPs above deny threshold (${highFrequencyThreshold}).
+                        </div>
+                      `
+                  : nothing
+              }
+              ${
+                props.deniedEvents.length === 0
+                  ? html`
+                      <div class="muted" style="margin-top: 12px">No deny events yet.</div>
+                    `
+                  : html`
+                      <div class="list" style="margin-top: 12px;">
+                        ${props.deniedEvents.map(
+                          (event) => html`
+                            <div class="list-item">
+                              <div class="list-main">
+                                <div class="list-title">${event.reasonCode} · ${event.method}</div>
+                                <div class="list-sub">
+                                  ${formatDenyEventTs(event.ts)} · req=${event.requestId}
+                                </div>
+                              </div>
+                              <div class="list-meta">
+                                <div class="muted">
+                                  actor=${event.userAlias ?? event.principalId ?? event.userId ?? "unknown"} · role=${event.actorRole ?? "unknown"}
+                                </div>
+                                <div class="muted">
+                                  client=${event.clientId ?? "unknown"} · mode=${event.clientMode ?? "unknown"} · ip=${event.sourceIp ?? "unknown"}
+                                </div>
+                                <div>${event.errorMessage}</div>
+                              </div>
+                            </div>
+                          `,
+                        )}
+                      </div>
+                    `
+              }
+            `
+          : html`
+              <div class="muted" style="margin-top: 12px">
+                Denied feed hidden while "Allowed only" mode is active.
+              </div>
+            `
+      }
+    </section>
+    ${
+      showAllowed
+        ? html`
+            <section class="card" style="margin-top: 12px;">
+      <div class="row" style="justify-content: space-between;">
+        <div>
+          <div class="card-title">Allowed Access Events</div>
+          <div class="card-sub">Recent authorization allows from authz.allow.list.</div>
+        </div>
+        <div class="row" style="gap: 8px;">
+          <button
+            class="btn"
+            ?disabled=${props.allowEvents.length === 0}
+            @click=${() =>
+              props.onExportAllow(
+                props.allowEvents,
+                hasFilters ? "security-allow-filtered" : "security-allow",
+              )}
+          >
+            Export allow CSV
+          </button>
+          <button
+            class="btn"
+            ?disabled=${!props.allowSummary}
+            @click=${() =>
+              props.allowSummary
+                ? props.onExportAllowSummary(
+                    props.allowSummary,
+                    hasFilters ? "security-allow-summary-filtered" : "security-allow-summary",
+                  )
+                : null}
+          >
+            Export allow summary CSV
+          </button>
+        </div>
+      </div>
+      ${
+        props.allowError
+          ? html`<div class="callout danger" style="margin-top: 12px;">${props.allowError}</div>`
           : nothing
       }
       ${
-        props.deniedError
-          ? html`<div class="callout danger" style="margin-top: 12px;">${props.deniedError}</div>`
-          : nothing
-      }
-      ${
-        props.deniedSummaryError
-          ? html`<div class="callout danger" style="margin-top: 12px;">${props.deniedSummaryError}</div>`
+        props.allowSummaryError
+          ? html`<div class="callout danger" style="margin-top: 12px;">${props.allowSummaryError}</div>`
           : nothing
       }
       <div class="row" style="margin-top: 12px; gap: 8px;">
         <div class="pill">
-          <span>Matched denies</span>
-          <span class="mono">${summaryTotal}</span>
+          <span>Matched allows</span>
+          <span class="mono">${allowSummaryTotal}</span>
         </div>
-        ${topReasons.map(
-          ({ key, count }) => html`
-            <div class="pill warn">
-              <span>${key}</span>
-              <span class="mono">${count}</span>
-            </div>
-          `,
-        )}
         ${
-          summaryEarliestTs != null && summaryLatestTs != null
+          allowSummaryEarliestTs != null && allowSummaryLatestTs != null
             ? html`
                 <div class="pill">
                   <span>Window</span>
                   <span class="mono"
-                    >${formatDenyEventTs(summaryEarliestTs)} → ${formatDenyEventTs(summaryLatestTs)}</span
+                    >${formatDenyEventTs(allowSummaryEarliestTs)} →
+                    ${formatDenyEventTs(allowSummaryLatestTs)}</span
                   >
                 </div>
               `
@@ -482,10 +841,10 @@ export function renderSecurity(props: SecurityProps) {
         }
       </div>
       ${
-        topMethods.length > 0
+        allowTopMethods.length > 0
           ? html`
               <div class="row" style="margin-top: 8px; gap: 8px;">
-                ${topMethods.map(
+                ${allowTopMethods.map(
                   ({ key, count }) => html`
                     <div class="pill">
                       <span>${key}</span>
@@ -498,10 +857,10 @@ export function renderSecurity(props: SecurityProps) {
           : nothing
       }
       ${
-        topPrincipals.length > 0
+        allowTopPrincipals.length > 0
           ? html`
               <div class="row" style="margin-top: 8px; gap: 8px;">
-                ${topPrincipals.map(
+                ${allowTopPrincipals.map(
                   ({ key, count }) => html`
                     <div class="pill">
                       <span>principal=${key}</span>
@@ -514,35 +873,69 @@ export function renderSecurity(props: SecurityProps) {
           : nothing
       }
       ${
-        highFrequencyThreshold != null
-          ? highFrequencyPrincipals.length > 0
+        allowTopSourceIps.length > 0
+          ? html`
+              <div class="row" style="margin-top: 8px; gap: 8px;">
+                ${allowTopSourceIps.map(
+                  ({ key, count }) => html`
+                    <div class="pill">
+                      <span>sourceIp=${key}</span>
+                      <span class="mono">${count}</span>
+                    </div>
+                  `,
+                )}
+              </div>
+            `
+          : nothing
+      }
+      ${
+        allowHighFrequencyThreshold != null
+          ? allowHighFrequencyPrincipals.length > 0
             ? html`
-                <div class="callout warn" style="margin-top: 12px;">
-                  High-frequency denied principals (threshold ≥ ${highFrequencyThreshold}):
-                  ${highFrequencyPrincipals
+                <div class="callout" style="margin-top: 12px;">
+                  High-frequency allowed principals (threshold ≥ ${allowHighFrequencyThreshold}):
+                  ${allowHighFrequencyPrincipals
                     .map((entry) => `${entry.key} (${entry.count})`)
                     .join(", ")}
                 </div>
               `
             : html`
                 <div class="muted" style="margin-top: 12px;">
-                  No principals above deny threshold (${highFrequencyThreshold}).
+                  No principals above allow threshold (${allowHighFrequencyThreshold}).
                 </div>
               `
           : nothing
       }
       ${
-        props.deniedEvents.length === 0
+        allowHighFrequencyThreshold != null
+          ? allowHighFrequencySourceIps.length > 0
+            ? html`
+                <div class="callout" style="margin-top: 8px;">
+                  High-frequency allowed source IPs (threshold ≥ ${allowHighFrequencyThreshold}):
+                  ${allowHighFrequencySourceIps
+                    .map((entry) => `${entry.key} (${entry.count})`)
+                    .join(", ")}
+                </div>
+              `
+            : html`
+                <div class="muted" style="margin-top: 8px;">
+                  No source IPs above allow threshold (${allowHighFrequencyThreshold}).
+                </div>
+              `
+          : nothing
+      }
+      ${
+        props.allowEvents.length === 0
           ? html`
-              <div class="muted" style="margin-top: 12px">No deny events yet.</div>
+              <div class="muted" style="margin-top: 12px">No allow events yet.</div>
             `
           : html`
               <div class="list" style="margin-top: 12px;">
-                ${props.deniedEvents.map(
+                ${props.allowEvents.map(
                   (event) => html`
                     <div class="list-item">
                       <div class="list-main">
-                        <div class="list-title">${event.reasonCode} · ${event.method}</div>
+                        <div class="list-title">${event.method}</div>
                         <div class="list-sub">
                           ${formatDenyEventTs(event.ts)} · req=${event.requestId}
                         </div>
@@ -554,7 +947,6 @@ export function renderSecurity(props: SecurityProps) {
                         <div class="muted">
                           client=${event.clientId ?? "unknown"} · mode=${event.clientMode ?? "unknown"} · ip=${event.sourceIp ?? "unknown"}
                         </div>
-                        <div>${event.errorMessage}</div>
                       </div>
                     </div>
                   `,
@@ -563,6 +955,9 @@ export function renderSecurity(props: SecurityProps) {
             `
       }
     </section>
+          `
+        : nothing
+    }
     <section class="card" style="margin-top: 12px;">
       <div class="row" style="justify-content: space-between;">
         <div>

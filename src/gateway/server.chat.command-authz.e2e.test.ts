@@ -4,8 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
-import { PROTOCOL_VERSION } from "./protocol/index.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
+import { PROTOCOL_VERSION } from "./protocol/index.js";
 
 type ResFrame<T = unknown> = {
   type: "res";
@@ -142,6 +142,7 @@ async function connectReq(params: {
   token: string;
   scopes: string[];
   identity: { userId: string; principalId: string; alias?: string };
+  clientInstanceId?: string;
 }): Promise<ResFrame<{ type?: string }>> {
   const id = `connect-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   params.ws.send(
@@ -157,6 +158,7 @@ async function connectReq(params: {
           version: "test",
           platform: "node",
           mode: GATEWAY_CLIENT_MODES.BACKEND,
+          ...(params.clientInstanceId ? { instanceId: params.clientInstanceId } : {}),
         },
         role: "operator",
         scopes: params.scopes,
@@ -206,6 +208,7 @@ describe("gateway chat command authz (real reply path)", () => {
     const stateDir = path.join(tempRoot, "state");
     const token = "test-gateway-token-chat-command-authz";
     const userPrincipalId = "msg:test:user-a";
+    const userClientInstanceId = "mapped-user-a";
     const proxiedSourceIp = "203.0.113.42";
 
     let server:
@@ -250,7 +253,7 @@ describe("gateway chat command authz (real reply path)", () => {
               multiUser: {
                 mode: "strict",
                 identities: {
-                  [userPrincipalId]: {
+                  [`client:${GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT}:${userClientInstanceId}`]: {
                     userId: "user-a",
                     principalId: userPrincipalId,
                     alias: "UserA",
@@ -282,6 +285,7 @@ describe("gateway chat command authz (real reply path)", () => {
         ws: wsUser,
         token,
         scopes: ["operator.admin", "operator.write"],
+        clientInstanceId: userClientInstanceId,
         identity: {
           userId: "user-a",
           principalId: userPrincipalId,
@@ -343,12 +347,16 @@ describe("gateway chat command authz (real reply path)", () => {
         const deadline = Date.now() + 4_000;
         let found = false;
         while (Date.now() < deadline) {
-          const denied = await rpcReq<{ events?: AuthzDeniedEvent[] }>(wsAdmin, "authz.denied.list", {
-            method: commandCase.method,
-            reasonCode: "ROLE_FORBIDDEN",
-            userId: "user-a",
-            limit: 20,
-          });
+          const denied = await rpcReq<{ events?: AuthzDeniedEvent[] }>(
+            wsAdmin,
+            "authz.denied.list",
+            {
+              method: commandCase.method,
+              reasonCode: "ROLE_FORBIDDEN",
+              userId: "user-a",
+              limit: 20,
+            },
+          );
           expect(denied.ok).toBe(true);
 
           found = (denied.payload?.events ?? []).some(
@@ -391,6 +399,7 @@ describe("gateway chat command authz (real reply path)", () => {
     const stateDir = path.join(tempRoot, "state");
     const token = "test-gateway-token-chat-command-authz-no-role";
     const userPrincipalId = "msg:test:user-b";
+    const userClientInstanceId = "mapped-user-b";
 
     let server:
       | {
@@ -432,7 +441,7 @@ describe("gateway chat command authz (real reply path)", () => {
               multiUser: {
                 mode: "strict",
                 identities: {
-                  [userPrincipalId]: {
+                  [`client:${GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT}:${userClientInstanceId}`]: {
                     userId: "user-b",
                     principalId: userPrincipalId,
                     alias: "UserB",
@@ -461,6 +470,7 @@ describe("gateway chat command authz (real reply path)", () => {
         ws: wsUser,
         token,
         scopes: ["operator.admin", "operator.write"],
+        clientInstanceId: userClientInstanceId,
         identity: {
           userId: "user-b",
           principalId: userPrincipalId,
@@ -507,7 +517,8 @@ describe("gateway chat command authz (real reply path)", () => {
             event.reasonCode === "ROLE_FORBIDDEN" &&
             event.userId === "user-b" &&
             event.principalId === userPrincipalId &&
-            event.actorRole === "user",
+            event.actorRole === "user" &&
+            event.sourceIp === "127.0.0.1",
         );
         if (found) {
           break;
@@ -528,5 +539,4 @@ describe("gateway chat command authz (real reply path)", () => {
       restoreEnv(restore);
     }
   });
-
 });

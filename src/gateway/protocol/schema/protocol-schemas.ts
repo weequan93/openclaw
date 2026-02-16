@@ -36,6 +36,11 @@ import {
   SkillsUpdateParamsSchema,
 } from "./agents-models-skills.js";
 import {
+  AuthzAllowEventSchema,
+  AuthzAllowListParamsSchema,
+  AuthzAllowListResultSchema,
+  AuthzAllowSummaryParamsSchema,
+  AuthzAllowSummaryResultSchema,
   AuthzDeniedEventSchema,
   AuthzDeniedListParamsSchema,
   AuthzDeniedListResultSchema,
@@ -231,6 +236,11 @@ export const ProtocolSchemas: Record<string, TSchema> = {
   AuthzDeniedListResult: AuthzDeniedListResultSchema,
   AuthzDeniedSummaryParams: AuthzDeniedSummaryParamsSchema,
   AuthzDeniedSummaryResult: AuthzDeniedSummaryResultSchema,
+  AuthzAllowEvent: AuthzAllowEventSchema,
+  AuthzAllowListParams: AuthzAllowListParamsSchema,
+  AuthzAllowListResult: AuthzAllowListResultSchema,
+  AuthzAllowSummaryParams: AuthzAllowSummaryParamsSchema,
+  AuthzAllowSummaryResult: AuthzAllowSummaryResultSchema,
   OwnershipBackfillParams: OwnershipBackfillParamsSchema,
   OwnershipBackfillResult: OwnershipBackfillResultSchema,
   OwnershipGapsParams: OwnershipGapsParamsSchema,

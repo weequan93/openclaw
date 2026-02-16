@@ -610,6 +610,12 @@ describe("callGateway scope resolution", () => {
     await callGateway({ method: "ownership.backfill" });
     expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
 
+    await callGateway({ method: "authz.allow.list" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
+    await callGateway({ method: "authz.allow.summary" });
+    expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
+
     await callGateway({ method: "authz.denied.list" });
     expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
 

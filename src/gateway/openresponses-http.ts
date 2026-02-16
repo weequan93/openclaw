@@ -14,6 +14,7 @@ import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
 import { buildHistoryContextFromEntries, type HistoryEntry } from "../auto-reply/reply/history.js";
 import { createDefaultDeps } from "../cli/deps.js";
 import { agentCommand } from "../commands/agent.js";
+import { loadConfig } from "../config/config.js";
 import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
 import {
   DEFAULT_INPUT_FILE_MAX_BYTES,
@@ -34,7 +35,10 @@ import {
   type InputImageSource,
 } from "../media/input-files.js";
 import { defaultRuntime } from "../runtime.js";
-import { authorizeGatewayConnect, type ResolvedGatewayAuth } from "./auth.js";
+import { resolveGatewayRequestSourceIp } from "./audit-source-ip.js";
+import { authorizeGatewayConnect, isLocalDirectRequest, type ResolvedGatewayAuth } from "./auth.js";
+import { recordGatewayAuthzAllowEvent } from "./authz-allow-events.js";
+import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
 import {
   readJsonBodyOrError,
   sendJson,
@@ -43,7 +47,13 @@ import {
   setSseHeaders,
   writeDone,
 } from "./http-common.js";
-import { getBearerToken, resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
+import {
+  getBearerToken,
+  getHeader,
+  resolveAgentIdForRequest,
+  resolveSessionKey,
+} from "./http-utils.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import {
   CreateResponseBodySchema,
   type ContentPart,
@@ -54,6 +64,7 @@ import {
   type StreamingEvent,
   type Usage,
 } from "./open-responses.schema.js";
+import { normalizeGatewayBoundaryPath } from "./path-normalize.js";
 
 type OpenResponsesHttpOptions = {
   auth: ResolvedGatewayAuth;
@@ -333,7 +344,7 @@ export async function handleOpenResponsesHttpRequest(
   opts: OpenResponsesHttpOptions,
 ): Promise<boolean> {
   const url = new URL(req.url ?? "/", `http://${req.headers.host || "localhost"}`);
-  if (url.pathname !== "/v1/responses") {
+  if (normalizeGatewayBoundaryPath(url.pathname) !== "/v1/responses") {
     return false;
   }
 
@@ -342,16 +353,72 @@ export async function handleOpenResponsesHttpRequest(
     return true;
   }
 
+  const cfg = loadConfig();
+  const trustedProxies = opts.trustedProxies ?? cfg.gateway?.trustedProxies;
   const token = getBearerToken(req);
   const authResult = await authorizeGatewayConnect({
     auth: opts.auth,
     connectAuth: { token, password: token },
     req,
-    trustedProxies: opts.trustedProxies,
+    trustedProxies,
   });
   if (!authResult.ok) {
+    recordGatewayAuthzDenyEvent({
+      ts: Date.now(),
+      requestId: randomUUID(),
+      method: "http.openresponses.responses",
+      reasonCode: "UNKNOWN_SENDER",
+      errorCode: "INVALID_REQUEST",
+      errorMessage: "openresponses endpoint token missing or invalid",
+      userId: null,
+      principalId: null,
+      actorRole: null,
+      sourceRole: null,
+      clientId: "http.openresponses.responses",
+      clientMode: "http",
+      sourceIp: resolveGatewayRequestSourceIp({ req, trustedProxies }),
+    });
     sendUnauthorized(res);
     return true;
+  }
+
+  const multiUserMode = resolveGatewayMultiUserMode(cfg);
+  if (multiUserMode !== "off") {
+    if (!isLocalDirectRequest(req, trustedProxies)) {
+      const message =
+        "openresponses endpoint is local-admin only while gateway.multiUser.mode is enabled";
+      recordGatewayAuthzDenyEvent({
+        ts: Date.now(),
+        requestId: randomUUID(),
+        method: "http.openresponses.responses",
+        reasonCode: "ROLE_FORBIDDEN",
+        errorCode: "INVALID_REQUEST",
+        errorMessage: message,
+        userId: null,
+        principalId: null,
+        actorRole: null,
+        sourceRole: null,
+        clientId: "http.openresponses.responses",
+        clientMode: "http",
+        sourceIp: resolveGatewayRequestSourceIp({ req, trustedProxies }),
+      });
+      sendJson(res, 403, {
+        error: { message, type: "forbidden" },
+      });
+      return true;
+    }
+    recordGatewayAuthzAllowEvent({
+      ts: Date.now(),
+      requestId: randomUUID(),
+      method: "http.openresponses.responses",
+      userId: null,
+      principalId: null,
+      actorRole: null,
+      sourceRole: null,
+      clientId: "http.openresponses.responses",
+      clientMode: "http",
+      sourceIp: resolveGatewayRequestSourceIp({ req, trustedProxies }),
+    });
   }
 
   const limits = resolveResponsesLimits(opts.config);

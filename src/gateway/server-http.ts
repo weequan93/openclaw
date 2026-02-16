@@ -1,5 +1,6 @@
 import type { TlsOptions } from "node:tls";
 import type { WebSocketServer } from "ws";
+import { randomUUID } from "node:crypto";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -19,7 +20,10 @@ import {
 } from "../canvas-host/a2ui.js";
 import { loadConfig } from "../config/config.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
+import { resolveGatewayRequestSourceIp } from "./audit-source-ip.js";
 import { authorizeGatewayConnect, isLocalDirectRequest, type ResolvedGatewayAuth } from "./auth.js";
+import { recordGatewayAuthzAllowEvent } from "./authz-allow-events.js";
+import { recordGatewayAuthzDenyEvent } from "./authz-denied-events.js";
 import {
   handleControlUiAvatarRequest,
   handleControlUiHttpRequest,
@@ -42,10 +46,11 @@ import {
   resolveHookDeliver,
 } from "./hooks.js";
 import { sendUnauthorized } from "./http-common.js";
-import { getBearerToken, getHeader } from "./http-utils.js";
-import { resolveGatewayClientIp } from "./net.js";
+import { getBearerToken } from "./http-utils.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import { handleOpenAiHttpRequest } from "./openai-http.js";
 import { handleOpenResponsesHttpRequest } from "./openresponses-http.js";
+import { normalizeGatewayBoundaryPath } from "./path-normalize.js";
 import { handleToolsInvokeHttpRequest } from "./tools-invoke-http.js";
 
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
@@ -75,12 +80,14 @@ function sendJson(res: ServerResponse, status: number, body: unknown) {
 }
 
 function isCanvasPath(pathname: string): boolean {
+  const normalizedPath = normalizeGatewayBoundaryPath(pathname);
   return (
-    pathname === A2UI_PATH ||
-    pathname.startsWith(`${A2UI_PATH}/`) ||
-    pathname === CANVAS_HOST_PATH ||
-    pathname.startsWith(`${CANVAS_HOST_PATH}/`) ||
-    pathname === CANVAS_WS_PATH
+    normalizedPath === A2UI_PATH ||
+    normalizedPath.startsWith(`${A2UI_PATH}/`) ||
+    normalizedPath === CANVAS_HOST_PATH ||
+    normalizedPath.startsWith(`${CANVAS_HOST_PATH}/`) ||
+    normalizedPath === CANVAS_WS_PATH ||
+    normalizedPath.startsWith(`${CANVAS_WS_PATH}/`)
   );
 }
 
@@ -95,16 +102,55 @@ function hasAuthorizedWsClientForIp(clients: Set<GatewayWsClient>, clientIp: str
 
 async function authorizeCanvasRequest(params: {
   req: IncomingMessage;
+  config: ReturnType<typeof loadConfig>;
   auth: ResolvedGatewayAuth;
   trustedProxies: string[];
   clients: Set<GatewayWsClient>;
+  denyMethod: "http.canvas" | "ws.canvas";
 }): Promise<boolean> {
-  const { req, auth, trustedProxies, clients } = params;
-  if (isLocalDirectRequest(req, trustedProxies)) {
+  const { req, config, auth, trustedProxies, clients } = params;
+  const localDirect = isLocalDirectRequest(req, trustedProxies);
+  const sourceIp = resolveGatewayRequestSourceIp({ req, trustedProxies });
+  const multiUserMode = resolveGatewayMultiUserMode(config);
+  if (localDirect) {
+    if (multiUserMode !== "off") {
+      recordGatewayAuthzAllowEvent({
+        ts: Date.now(),
+        requestId: randomUUID(),
+        method: params.denyMethod,
+        userId: null,
+        principalId: null,
+        actorRole: null,
+        sourceRole: null,
+        clientId: params.denyMethod,
+        clientMode: "http",
+        sourceIp,
+      });
+    }
     return true;
+  }
+  if (multiUserMode !== "off") {
+    const message = "canvas endpoints are local-admin only while gateway.multiUser.mode is enabled";
+    recordGatewayAuthzDenyEvent({
+      ts: Date.now(),
+      requestId: randomUUID(),
+      method: params.denyMethod,
+      reasonCode: "ROLE_FORBIDDEN",
+      errorCode: "INVALID_REQUEST",
+      errorMessage: message,
+      userId: null,
+      principalId: null,
+      actorRole: null,
+      sourceRole: null,
+      clientId: params.denyMethod,
+      clientMode: "http",
+      sourceIp,
+    });
+    return false;
   }
 
   const token = getBearerToken(req);
+  let tokenFailed = false;
   if (token) {
     const authResult = await authorizeGatewayConnect({
       auth: { ...auth, allowTailscale: false },
@@ -115,18 +161,32 @@ async function authorizeCanvasRequest(params: {
     if (authResult.ok) {
       return true;
     }
+    tokenFailed = true;
   }
 
-  const clientIp = resolveGatewayClientIp({
-    remoteAddr: req.socket?.remoteAddress ?? "",
-    forwardedFor: getHeader(req, "x-forwarded-for"),
-    realIp: getHeader(req, "x-real-ip"),
-    trustedProxies,
-  });
-  if (!clientIp) {
-    return false;
+  const clientIp = sourceIp;
+  if (clientIp && hasAuthorizedWsClientForIp(clients, clientIp)) {
+    return true;
   }
-  return hasAuthorizedWsClientForIp(clients, clientIp);
+  const message = tokenFailed
+    ? "canvas endpoint token invalid and no authorized gateway websocket client for source IP"
+    : "canvas endpoint token missing and no authorized gateway websocket client for source IP";
+  recordGatewayAuthzDenyEvent({
+    ts: Date.now(),
+    requestId: randomUUID(),
+    method: params.denyMethod,
+    reasonCode: "UNKNOWN_SENDER",
+    errorCode: "INVALID_REQUEST",
+    errorMessage: message,
+    userId: null,
+    principalId: null,
+    actorRole: null,
+    sourceRole: null,
+    clientId: params.denyMethod,
+    clientMode: "http",
+    sourceIp,
+  });
+  return false;
 }
 
 export type HooksRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
@@ -147,11 +207,65 @@ export function createHooksRequestHandler(
     }
     const url = new URL(req.url ?? "/", `http://${bindHost}:${port}`);
     const basePath = hooksConfig.basePath;
-    if (url.pathname !== basePath && !url.pathname.startsWith(`${basePath}/`)) {
+    const normalizedBasePath = normalizeGatewayBoundaryPath(basePath);
+    const normalizedPath = normalizeGatewayBoundaryPath(url.pathname);
+    if (
+      normalizedPath !== normalizedBasePath &&
+      !normalizedPath.startsWith(`${normalizedBasePath}/`)
+    ) {
       return false;
     }
 
+    const cfg = loadConfig();
+    const trustedProxies = cfg.gateway?.trustedProxies ?? [];
+    const multiUserMode = resolveGatewayMultiUserMode(cfg);
+    const sourceIp = resolveGatewayRequestSourceIp({ req, trustedProxies });
+    if (multiUserMode !== "off") {
+      if (!isLocalDirectRequest(req, trustedProxies)) {
+        const message =
+          "hooks endpoint is local-admin only while gateway.multiUser.mode is enabled";
+        recordGatewayAuthzDenyEvent({
+          ts: Date.now(),
+          requestId: randomUUID(),
+          method: "http.hooks",
+          reasonCode: "ROLE_FORBIDDEN",
+          errorCode: "INVALID_REQUEST",
+          errorMessage: message,
+          userId: null,
+          principalId: null,
+          actorRole: null,
+          sourceRole: null,
+          clientId: "http.hooks",
+          clientMode: "http",
+          sourceIp,
+        });
+        sendJson(res, 403, {
+          ok: false,
+          error: {
+            type: "forbidden",
+            message,
+          },
+        });
+        return true;
+      }
+    }
+
     if (url.searchParams.has("token")) {
+      recordGatewayAuthzDenyEvent({
+        ts: Date.now(),
+        requestId: randomUUID(),
+        method: "http.hooks",
+        reasonCode: "UNKNOWN_SENDER",
+        errorCode: "INVALID_REQUEST",
+        errorMessage: "hooks endpoint query token is not allowed",
+        userId: null,
+        principalId: null,
+        actorRole: null,
+        sourceRole: null,
+        clientId: "http.hooks",
+        clientMode: "http",
+        sourceIp,
+      });
       res.statusCode = 400;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end(
@@ -162,10 +276,40 @@ export function createHooksRequestHandler(
 
     const token = extractHookToken(req);
     if (!token || token !== hooksConfig.token) {
+      recordGatewayAuthzDenyEvent({
+        ts: Date.now(),
+        requestId: randomUUID(),
+        method: "http.hooks",
+        reasonCode: "UNKNOWN_SENDER",
+        errorCode: "INVALID_REQUEST",
+        errorMessage: "hooks endpoint token missing or invalid",
+        userId: null,
+        principalId: null,
+        actorRole: null,
+        sourceRole: null,
+        clientId: "http.hooks",
+        clientMode: "http",
+        sourceIp,
+      });
       res.statusCode = 401;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
       res.end("Unauthorized");
       return true;
+    }
+
+    if (multiUserMode !== "off") {
+      recordGatewayAuthzAllowEvent({
+        ts: Date.now(),
+        requestId: randomUUID(),
+        method: "http.hooks",
+        userId: null,
+        principalId: null,
+        actorRole: null,
+        sourceRole: null,
+        clientId: "http.hooks",
+        clientMode: "http",
+        sourceIp,
+      });
     }
 
     if (req.method !== "POST") {
@@ -176,7 +320,7 @@ export function createHooksRequestHandler(
       return true;
     }
 
-    const subPath = url.pathname.slice(basePath.length).replace(/^\/+/, "");
+    const subPath = normalizedPath.slice(normalizedBasePath.length).replace(/^\/+/, "");
     if (!subPath) {
       res.statusCode = 404;
       res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -376,9 +520,11 @@ export function createGatewayHttpServer(opts: {
         if (isCanvasPath(url.pathname)) {
           const ok = await authorizeCanvasRequest({
             req,
+            config: configSnapshot,
             auth: resolvedAuth,
             trustedProxies,
             clients,
+            denyMethod: "http.canvas",
           });
           if (!ok) {
             sendUnauthorized(res);
@@ -437,20 +583,33 @@ export function attachGatewayUpgradeHandler(opts: {
     void (async () => {
       if (canvasHost) {
         const url = new URL(req.url ?? "/", "http://localhost");
-        if (url.pathname === CANVAS_WS_PATH) {
+        const normalizedPath = normalizeGatewayBoundaryPath(url.pathname);
+        const isCanvasWsPath =
+          normalizedPath === CANVAS_WS_PATH || normalizedPath.startsWith(`${CANVAS_WS_PATH}/`);
+        if (isCanvasWsPath) {
           const configSnapshot = loadConfig();
           const trustedProxies = configSnapshot.gateway?.trustedProxies ?? [];
           const ok = await authorizeCanvasRequest({
             req,
+            config: configSnapshot,
             auth: resolvedAuth,
             trustedProxies,
             clients,
+            denyMethod: "ws.canvas",
           });
           if (!ok) {
             socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
             socket.destroy();
             return;
           }
+          if (canvasHost.handleUpgrade(req, socket, head)) {
+            return;
+          }
+          // Fail closed for canvas-classified WS paths so they cannot fall through
+          // to the gateway WS upgrader when canvas host path matching is stricter.
+          socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+          socket.destroy();
+          return;
         }
         if (canvasHost.handleUpgrade(req, socket, head)) {
           return;

@@ -10,6 +10,16 @@ import {
   AgentParamsSchema,
   type AgentSummary,
   AgentSummarySchema,
+  type AuthzAllowEvent,
+  AuthzAllowEventSchema,
+  type AuthzAllowListParams,
+  AuthzAllowListParamsSchema,
+  type AuthzAllowListResult,
+  AuthzAllowListResultSchema,
+  type AuthzAllowSummaryParams,
+  AuthzAllowSummaryParamsSchema,
+  type AuthzAllowSummaryResult,
+  AuthzAllowSummaryResultSchema,
   type AuthzDeniedEvent,
   AuthzDeniedEventSchema,
   type AuthzDeniedListParams,
@@ -279,6 +289,12 @@ export const validateAuthzDeniedListParams = ajv.compile<AuthzDeniedListParams>(
 );
 export const validateAuthzDeniedSummaryParams = ajv.compile<AuthzDeniedSummaryParams>(
   AuthzDeniedSummaryParamsSchema,
+);
+export const validateAuthzAllowListParams = ajv.compile<AuthzAllowListParams>(
+  AuthzAllowListParamsSchema,
+);
+export const validateAuthzAllowSummaryParams = ajv.compile<AuthzAllowSummaryParams>(
+  AuthzAllowSummaryParamsSchema,
 );
 export const validateOwnershipBackfillParams = ajv.compile<OwnershipBackfillParams>(
   OwnershipBackfillParamsSchema,
@@ -625,6 +641,11 @@ export type {
   WebLoginStartParams,
   WebLoginWaitParams,
   AgentSummary,
+  AuthzAllowEvent,
+  AuthzAllowListParams,
+  AuthzAllowListResult,
+  AuthzAllowSummaryParams,
+  AuthzAllowSummaryResult,
   AuthzDeniedEvent,
   AuthzDeniedListParams,
   AuthzDeniedListResult,

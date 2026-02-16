@@ -47,6 +47,43 @@ export const AuthzDeniedSummaryParamsSchema = Type.Object(
   { additionalProperties: false },
 );
 
+export const AuthzAllowListParamsSchema = Type.Object(
+  {
+    limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+    cursor: Type.Optional(Type.String({ minLength: 1, pattern: "^[1-9][0-9]*$" })),
+    order: Type.Optional(Type.Union([Type.Literal("desc"), Type.Literal("asc")])),
+    method: Type.Optional(NonEmptyString),
+    userId: Type.Optional(NonEmptyString),
+    principalId: Type.Optional(NonEmptyString),
+    actorRole: Type.Optional(NonEmptyString),
+    sourceRole: Type.Optional(NonEmptyString),
+    clientId: Type.Optional(NonEmptyString),
+    clientMode: Type.Optional(NonEmptyString),
+    sourceIp: Type.Optional(NonEmptyString),
+    sinceTs: Type.Optional(Type.Integer({ minimum: 0 })),
+    untilTs: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
+export const AuthzAllowSummaryParamsSchema = Type.Object(
+  {
+    topN: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+    alertThreshold: Type.Optional(Type.Integer({ minimum: 1, maximum: 500 })),
+    method: Type.Optional(NonEmptyString),
+    userId: Type.Optional(NonEmptyString),
+    principalId: Type.Optional(NonEmptyString),
+    actorRole: Type.Optional(NonEmptyString),
+    sourceRole: Type.Optional(NonEmptyString),
+    clientId: Type.Optional(NonEmptyString),
+    clientMode: Type.Optional(NonEmptyString),
+    sourceIp: Type.Optional(NonEmptyString),
+    sinceTs: Type.Optional(Type.Integer({ minimum: 0 })),
+    untilTs: Type.Optional(Type.Integer({ minimum: 0 })),
+  },
+  { additionalProperties: false },
+);
+
 export const OwnershipBackfillParamsSchema = Type.Object(
   {
     ownerUserId: NonEmptyString,
@@ -300,10 +337,80 @@ export const AuthzDeniedSummaryResultSchema = Type.Object(
     bySourceRole: Type.Array(AuthzDeniedSummaryBucketSchema),
     byErrorCode: Type.Array(AuthzDeniedSummaryBucketSchema),
     byPrincipalId: Type.Array(AuthzDeniedSummaryBucketSchema),
+    bySourceIp: Type.Optional(Type.Array(AuthzDeniedSummaryBucketSchema)),
     highFrequency: Type.Object(
       {
         threshold: Type.Integer({ minimum: 1, maximum: 500 }),
         principals: Type.Array(AuthzDeniedSummaryBucketSchema),
+        sourceIps: Type.Optional(Type.Array(AuthzDeniedSummaryBucketSchema)),
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+
+export const AuthzAllowEventSchema = Type.Object(
+  {
+    ts: Type.Integer({ minimum: 0 }),
+    requestId: NonEmptyString,
+    method: NonEmptyString,
+    userId: NullableString,
+    userAlias: Type.Optional(NullableString),
+    principalId: NullableString,
+    actorRole: NullableString,
+    sourceRole: NullableString,
+    clientId: Type.Optional(NullableString),
+    clientMode: Type.Optional(NullableString),
+    sourceIp: Type.Optional(NullableString),
+  },
+  { additionalProperties: false },
+);
+
+export const AuthzAllowListResultSchema = Type.Object(
+  {
+    ts: Type.Integer({ minimum: 0 }),
+    events: Type.Array(AuthzAllowEventSchema),
+    nextCursor: NullableString,
+    hasMore: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+
+const AuthzAllowSummaryBucketSchema = Type.Object(
+  {
+    key: NonEmptyString,
+    count: Type.Integer({ minimum: 0 }),
+  },
+  { additionalProperties: false },
+);
+
+export const AuthzAllowSummaryResultSchema = Type.Object(
+  {
+    ts: Type.Integer({ minimum: 0 }),
+    total: Type.Integer({ minimum: 0 }),
+    earliestTs: OptionalTimestampSchema,
+    latestTs: OptionalTimestampSchema,
+    window: Type.Object(
+      {
+        sinceTs: OptionalTimestampSchema,
+        untilTs: OptionalTimestampSchema,
+      },
+      { additionalProperties: false },
+    ),
+    byMethod: Type.Array(AuthzAllowSummaryBucketSchema),
+    byActorRole: Type.Array(AuthzAllowSummaryBucketSchema),
+    bySourceRole: Type.Array(AuthzAllowSummaryBucketSchema),
+    byUserId: Type.Array(AuthzAllowSummaryBucketSchema),
+    byPrincipalId: Type.Array(AuthzAllowSummaryBucketSchema),
+    byClientId: Type.Array(AuthzAllowSummaryBucketSchema),
+    byClientMode: Type.Array(AuthzAllowSummaryBucketSchema),
+    bySourceIp: Type.Array(AuthzAllowSummaryBucketSchema),
+    highFrequency: Type.Object(
+      {
+        threshold: Type.Integer({ minimum: 1, maximum: 500 }),
+        principals: Type.Array(AuthzAllowSummaryBucketSchema),
+        sourceIps: Type.Array(AuthzAllowSummaryBucketSchema),
       },
       { additionalProperties: false },
     ),

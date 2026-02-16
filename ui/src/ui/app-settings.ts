@@ -68,15 +68,23 @@ type SettingsHost = {
 };
 
 function canManageControlConfig(host: SettingsHost): boolean {
-  const auth = host.hello?.auth;
-  // Backward compatibility for older hello payloads or disconnected state.
-  if (!auth) {
-    return true;
+  if (host.hello === undefined) {
+    return host.connected !== true;
   }
-  const principalRole =
-    typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
+  const auth = host.hello?.auth;
+  // Keep pre-connect compatibility, but never grant admin controls for connected
+  // sessions when auth metadata is missing.
+  if (!auth) {
+    return host.connected !== true;
+  }
+  const principalRole = typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
   if (principalRole.length > 0) {
     return principalRole === "admin";
+  }
+  // Connected sessions without explicit principal role are treated as non-admin
+  // to avoid scope-only admin UI bypass.
+  if (host.connected === true) {
+    return false;
   }
   const role = typeof auth.role === "string" ? auth.role.trim() : "";
   const scopes = Array.isArray(auth.scopes)
@@ -85,7 +93,7 @@ function canManageControlConfig(host: SettingsHost): boolean {
   return role === "admin" || scopes.includes("operator.admin");
 }
 
-const ADMIN_ONLY_TABS = new Set<Tab>(["security", "config", "debug", "logs"]);
+const ADMIN_ONLY_TABS = new Set<Tab>(["security", "config", "debug", "logs", "instances", "cron"]);
 
 function resolveAccessibleTab(host: SettingsHost, next: Tab): Tab {
   if (ADMIN_ONLY_TABS.has(next) && !canManageControlConfig(host)) {
@@ -470,13 +478,14 @@ export function syncUrlWithSessionKey(host: SettingsHost, sessionKey: string, re
 }
 
 export async function loadOverview(host: SettingsHost) {
+  const canManage = canManageControlConfig(host);
   const tasks: Array<Promise<unknown>> = [
     loadChannels(host as unknown as OpenClawApp, false),
-    loadPresence(host as unknown as OpenClawApp),
     loadSessions(host as unknown as OpenClawApp),
-    loadCronStatus(host as unknown as OpenClawApp),
   ];
-  if (canManageControlConfig(host)) {
+  if (canManage) {
+    tasks.push(loadPresence(host as unknown as OpenClawApp));
+    tasks.push(loadCronStatus(host as unknown as OpenClawApp));
     tasks.push(loadDebug(host as unknown as OpenClawApp));
   }
   await Promise.all(tasks);

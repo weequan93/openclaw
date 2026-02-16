@@ -29,12 +29,17 @@ import { importProfileFromRelays } from "./nostr-profile-import.js";
 // Test Helpers
 // ============================================================================
 
-function createMockRequest(method: string, url: string, body?: unknown): IncomingMessage {
+function createMockRequest(
+  method: string,
+  url: string,
+  body?: unknown,
+  headers?: Record<string, string>,
+): IncomingMessage {
   const socket = new Socket();
   const req = new IncomingMessage(socket);
   req.method = method;
   req.url = url;
-  req.headers = { host: "localhost:3000" };
+  req.headers = { host: "localhost:3000", ...(headers ?? {}) };
 
   if (body) {
     const bodyStr = JSON.stringify(body);
@@ -94,6 +99,7 @@ function createMockContext(overrides?: Partial<NostrProfileHttpContext>): NostrP
       pubkey: "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234",
       relays: ["wss://relay.damus.io"],
     }),
+    authorizeRequest: vi.fn().mockReturnValue(true),
     log: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -113,6 +119,24 @@ describe("nostr-profile-http", () => {
   });
 
   describe("route matching", () => {
+    it("returns 401 for unauthorized nostr profile requests", async () => {
+      const ctx = createMockContext({
+        authorizeRequest: vi.fn().mockReturnValue(false),
+      });
+      const handler = createNostrProfileHttpHandler(ctx);
+      const req = createMockRequest("GET", "/api/channels/nostr/default/profile");
+      const res = createMockResponse();
+
+      const result = await handler(req, res);
+
+      expect(result).toBe(true);
+      expect(res._getStatusCode()).toBe(401);
+      expect(JSON.parse(res._getData())).toEqual({
+        ok: false,
+        error: "Unauthorized",
+      });
+    });
+
     it("returns false for non-nostr paths", async () => {
       const ctx = createMockContext();
       const handler = createNostrProfileHttpHandler(ctx);

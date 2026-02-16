@@ -80,6 +80,24 @@ describe("gateway operator scope resolution", () => {
   });
 
   it("classifies ownership/admin audit methods as admin-only", () => {
+    expect(classifyGatewayMethodAccess("status")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("status")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("system-presence")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("system-presence")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("last-heartbeat")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("last-heartbeat")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("cron.list")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("cron.list")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("cron.status")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("cron.status")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("cron.runs")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("cron.runs")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("authz.allow.list")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("authz.allow.list")).toEqual(["operator.admin"]);
+    expect(classifyGatewayMethodAccess("authz.allow.summary")).toBe("admin");
+    expect(resolveGatewayOperatorScopesForMethod("authz.allow.summary")).toEqual([
+      "operator.admin",
+    ]);
     expect(classifyGatewayMethodAccess("authz.denied.list")).toBe("admin");
     expect(resolveGatewayOperatorScopesForMethod("authz.denied.list")).toEqual(["operator.admin"]);
     expect(classifyGatewayMethodAccess("authz.denied.summary")).toBe("admin");

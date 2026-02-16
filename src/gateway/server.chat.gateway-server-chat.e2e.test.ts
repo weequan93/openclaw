@@ -554,8 +554,32 @@ describe("gateway server chat", () => {
     }
   });
 
-  test("runtime chat and agent events are isolated to session owner", async () => {
+  test("runtime chat and agent events are isolated to session owner even with scope-only admin request", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-owner-fanout-"));
+    const ownerInstanceId = "owner-a";
+    const otherInstanceId = "other-b";
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          identities: {
+            [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${ownerInstanceId}`]: {
+              userId: "user-a",
+              principalId: "msg:discord:default:user-a",
+              alias: "Alice",
+              role: "user",
+            },
+            [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${otherInstanceId}`]: {
+              userId: "user-b",
+              principalId: "msg:discord:default:user-b",
+              alias: "Bob",
+              role: "user",
+            },
+          },
+        },
+      },
+    });
     const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
     const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
     await Promise.all([
@@ -564,7 +588,7 @@ describe("gateway server chat", () => {
     ]);
 
     try {
-      await Promise.all([
+      const [ownerHello, otherHello] = await Promise.all([
         connectOk(userAws, {
           scopes: ["operator.write"],
           identity: {
@@ -577,10 +601,11 @@ describe("gateway server chat", () => {
             version: "1.0.0",
             platform: "test",
             mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: ownerInstanceId,
           },
         }),
         connectOk(userBws, {
-          scopes: ["operator.write"],
+          scopes: ["operator.write", "operator.admin"],
           identity: {
             userId: "user-b",
             principalId: "msg:discord:default:user-b",
@@ -591,9 +616,12 @@ describe("gateway server chat", () => {
             version: "1.0.0",
             platform: "test",
             mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: otherInstanceId,
           },
         }),
       ]);
+      expect(ownerHello.auth?.principalRole).toBe("user");
+      expect(otherHello.auth?.principalRole).toBe("user");
 
       testState.sessionStorePath = path.join(dir, "sessions.json");
       await writeSessionStore({
@@ -676,8 +704,203 @@ describe("gateway server chat", () => {
     }
   });
 
+  test("runtime owner-scoped events follow strict/off mode changes without reconnect", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-owner-fanout-mode-switch-"));
+    const ownerInstanceId = "owner-a-mode-switch";
+    const otherInstanceId = "other-b-mode-switch";
+    const { writeConfigFile } = await import("../config/config.js");
+    const identities = {
+      [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${ownerInstanceId}`]: {
+        userId: "user-a",
+        principalId: "msg:discord:default:user-a",
+        alias: "Alice",
+        role: "user",
+      },
+      [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${otherInstanceId}`]: {
+        userId: "user-b",
+        principalId: "msg:discord:default:user-b",
+        alias: "Bob",
+        role: "user",
+      },
+    } as const;
+    const writeMode = async (mode: "strict" | "off") => {
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode,
+            identities,
+          },
+        },
+      });
+    };
+    await writeMode("strict");
+
+    const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+    await Promise.all([
+      new Promise<void>((resolve) => userAws.once("open", resolve)),
+      new Promise<void>((resolve) => userBws.once("open", resolve)),
+    ]);
+
+    const marker = `owner-fanout-mode-switch-${Date.now()}`;
+    const observedOtherRunIds = new Set<string>();
+    const waitForObservedOtherRunId = async (runId: string): Promise<void> => {
+      await waitFor(() => observedOtherRunIds.has(runId), 6000);
+    };
+    const waitForNoObservedOtherRunId = async (runId: string, waitMs = 300): Promise<void> => {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      expect(observedOtherRunIds.has(runId)).toBe(false);
+    };
+    const otherUserListener = (raw: WebSocket.RawData) => {
+      try {
+        const parsed = JSON.parse(String(raw)) as {
+          type?: string;
+          event?: string;
+          payload?: { runId?: string; sessionKey?: string };
+        };
+        if (
+          parsed.type === "event" &&
+          parsed.event === "agent" &&
+          parsed.payload?.sessionKey === "main" &&
+          typeof parsed.payload?.runId === "string"
+        ) {
+          observedOtherRunIds.add(parsed.payload.runId);
+        }
+      } catch {
+        /* ignore malformed test frames */
+      }
+    };
+    userBws.on("message", otherUserListener);
+
+    const emitOwnerScopedRun = async (runId: string): Promise<void> => {
+      registerAgentRunContext(runId, {
+        sessionKey: "main",
+      });
+      const ownerEventP = onceMessage(
+        userAws,
+        (o) =>
+          o.type === "event" &&
+          o.event === "agent" &&
+          o.payload?.runId === runId &&
+          o.payload?.sessionKey === "main",
+        6000,
+      );
+      emitAgentEvent({
+        runId,
+        stream: "assistant",
+        data: { text: `mode switch event ${runId}` },
+      });
+      const ownerEvent = await ownerEventP;
+      expect(ownerEvent.type).toBe("event");
+      expect(ownerEvent.event).toBe("agent");
+      expect(ownerEvent.payload?.sessionKey).toBe("main");
+    };
+
+    try {
+      const [ownerHello, otherHello] = await Promise.all([
+        connectOk(userAws, {
+          scopes: ["operator.write"],
+          identity: {
+            userId: "user-a",
+            principalId: "msg:discord:default:user-a",
+            alias: "Alice",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: ownerInstanceId,
+          },
+        }),
+        connectOk(userBws, {
+          scopes: ["operator.write", "operator.admin"],
+          identity: {
+            userId: "user-b",
+            principalId: "msg:discord:default:user-b",
+            alias: "Bob",
+          },
+          client: {
+            id: GATEWAY_CLIENT_NAMES.WEBCHAT,
+            version: "1.0.0",
+            platform: "test",
+            mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: otherInstanceId,
+          },
+        }),
+      ]);
+      expect(ownerHello.auth?.principalRole).toBe("user");
+      expect(otherHello.auth?.principalRole).toBe("user");
+
+      testState.sessionStorePath = path.join(dir, "sessions.json");
+      await writeSessionStore({
+        entries: {
+          main: {
+            sessionId: "sess-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+      });
+
+      const strictInitialRunId = `${marker}-strict-initial`;
+      await emitOwnerScopedRun(strictInitialRunId);
+      await waitForNoObservedOtherRunId(strictInitialRunId);
+
+      await writeMode("off");
+      const offRunId = `${marker}-off`;
+      await emitOwnerScopedRun(offRunId);
+      await waitForObservedOtherRunId(offRunId);
+
+      await writeMode("strict");
+      const strictFinalRunId = `${marker}-strict-final`;
+      await emitOwnerScopedRun(strictFinalRunId);
+      await waitForNoObservedOtherRunId(strictFinalRunId);
+    } finally {
+      userBws.off("message", otherUserListener);
+      userAws.close();
+      userBws.close();
+      testState.sessionStorePath = undefined;
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   test("runtime owner-scoped events include delegated users with sessions delegation", async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-owner-fanout-delegated-"));
+    const ownerInstanceId = "owner-a-delegated";
+    const delegatedInstanceId = "delegated-b";
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          identities: {
+            [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${ownerInstanceId}`]: {
+              userId: "user-a",
+              principalId: "msg:discord:default:user-a",
+              alias: "Alice",
+              role: "user",
+            },
+            [`client:${GATEWAY_CLIENT_NAMES.WEBCHAT}:${delegatedInstanceId}`]: {
+              userId: "user-b",
+              principalId: "msg:discord:default:user-b",
+              alias: "Bob",
+              role: "user",
+            },
+          },
+          delegation: {
+            enabled: true,
+            rules: [
+              {
+                fromUserId: "user-b",
+                toUserId: "user-a",
+                resources: ["sessions"],
+              },
+            ],
+          },
+        },
+      },
+    });
     const userAws = new WebSocket(`ws://127.0.0.1:${port}`);
     const userBws = new WebSocket(`ws://127.0.0.1:${port}`);
     await Promise.all([
@@ -699,6 +922,7 @@ describe("gateway server chat", () => {
             version: "1.0.0",
             platform: "test",
             mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: ownerInstanceId,
           },
         }),
         connectOk(userBws, {
@@ -713,6 +937,7 @@ describe("gateway server chat", () => {
             version: "1.0.0",
             platform: "test",
             mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+            instanceId: delegatedInstanceId,
           },
         }),
       ]);
@@ -724,25 +949,6 @@ describe("gateway server chat", () => {
             sessionId: "sess-owner-a",
             updatedAt: Date.now(),
             ownerUserId: "user-a",
-          },
-        },
-      });
-
-      const { writeConfigFile } = await import("../config/config.js");
-      await writeConfigFile({
-        gateway: {
-          multiUser: {
-            mode: "strict",
-            delegation: {
-              enabled: true,
-              rules: [
-                {
-                  fromUserId: "user-b",
-                  toUserId: "user-a",
-                  resources: ["sessions"],
-                },
-              ],
-            },
           },
         },
       });

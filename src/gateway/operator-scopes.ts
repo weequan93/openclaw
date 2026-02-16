@@ -31,7 +31,6 @@ const ADMIN_METHOD_PREFIXES = ["exec.approvals."];
 const READ_METHODS = new Set([
   "health",
   "channels.status",
-  "status",
   "usage.status",
   "usage.cost",
   "tts.status",
@@ -44,11 +43,6 @@ const READ_METHODS = new Set([
   "sessions.list",
   "sessions.preview",
   "sessions.resolve",
-  "cron.list",
-  "cron.status",
-  "cron.runs",
-  "system-presence",
-  "last-heartbeat",
   "node.list",
   "node.describe",
   "chat.history",
@@ -73,8 +67,14 @@ export function isGatewayAdminOnlyMethod(method: string): boolean {
     method.startsWith("config.") ||
     method.startsWith("wizard.") ||
     method.startsWith("update.") ||
+    method.startsWith("cron.") ||
+    method === "status" ||
+    method === "system-presence" ||
+    method === "last-heartbeat" ||
     method === "logs.tail" ||
     method === "channels.logout" ||
+    method === "authz.allow.list" ||
+    method === "authz.allow.summary" ||
     method === "authz.denied.list" ||
     method === "authz.denied.summary" ||
     method === "ownership.gaps" ||
@@ -87,10 +87,6 @@ export function isGatewayAdminOnlyMethod(method: string): boolean {
     method === "agents.files.set" ||
     method === "skills.install" ||
     method === "skills.update" ||
-    method === "cron.add" ||
-    method === "cron.update" ||
-    method === "cron.remove" ||
-    method === "cron.run" ||
     method === "tts.enable" ||
     method === "tts.disable" ||
     method === "tts.setProvider" ||

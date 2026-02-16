@@ -88,6 +88,8 @@ export const GATEWAY_BASE_METHODS = [
   "agent",
   "agent.identity.get",
   "agent.wait",
+  "authz.allow.list",
+  "authz.allow.summary",
   "authz.denied.list",
   "authz.denied.summary",
   "ownership.gaps",

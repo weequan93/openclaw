@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayClient } from "./server-methods/types.js";
 import {
+  __test as authzAllowEventsTest,
+  listGatewayAuthzAllowEvents,
+} from "./authz-allow-events.js";
+import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "./authz-denied-events.js";
@@ -315,6 +319,34 @@ describe("authorizeGatewayMethod", () => {
     }
   });
 
+  it("keeps authz.allow.list admin-only", () => {
+    const decision = authorizeGatewayMethod({
+      method: "authz.allow.list",
+      client: makeClient({
+        scopes: ["operator.read"],
+      }),
+    });
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) {
+      expect(decision.reasonCode).toBe("SCOPE_MISSING");
+      expect(decision.error.message).toContain("missing scope: operator.admin");
+    }
+  });
+
+  it("keeps authz.allow.summary admin-only", () => {
+    const decision = authorizeGatewayMethod({
+      method: "authz.allow.summary",
+      client: makeClient({
+        scopes: ["operator.read"],
+      }),
+    });
+    expect(decision.allow).toBe(false);
+    if (!decision.allow) {
+      expect(decision.reasonCode).toBe("SCOPE_MISSING");
+      expect(decision.error.message).toContain("missing scope: operator.admin");
+    }
+  });
+
   it("keeps authz.denied.summary admin-only", () => {
     const decision = authorizeGatewayMethod({
       method: "authz.denied.summary",
@@ -409,8 +441,14 @@ describe("authorizeGatewayMethod", () => {
     }
   });
 
-  it("keeps cron, skills, and agent mutation methods admin-only", () => {
+  it("keeps status, presence telemetry, cron, skills, and agent control-plane methods admin-only", () => {
     const methods = [
+      "status",
+      "system-presence",
+      "last-heartbeat",
+      "cron.list",
+      "cron.status",
+      "cron.runs",
       "cron.add",
       "cron.update",
       "cron.remove",
@@ -627,6 +665,79 @@ describe("authorizeGatewayMethod", () => {
 });
 
 describe("auditGatewayAuthorization", () => {
+  it("records allow decisions", () => {
+    authzAllowEventsTest.clear();
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const decision = authorizeGatewayMethod({
+      method: "health",
+      client: makeClient({
+        scopes: ["operator.read"],
+      }),
+    });
+    auditGatewayAuthorization({
+      logger: { warn, debug },
+      method: "health",
+      requestId: "allow-req-1",
+      decision,
+      client: {
+        ...makeClient({
+          scopes: ["operator.read"],
+          client: {
+            id: "test-client",
+            version: "1.0.0",
+            platform: "test",
+            mode: "test",
+          },
+        }),
+        clientIp: "203.0.113.8",
+      },
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledTimes(1);
+    const event = listGatewayAuthzAllowEvents({ limit: 1 })[0];
+    expect(event?.requestId).toBe("allow-req-1");
+    expect(event?.method).toBe("health");
+    expect(event?.clientId).toBe("test-client");
+    expect(event?.clientMode).toBe("test");
+    expect(event?.sourceIp).toBe("203.0.113.8");
+  });
+
+  it("falls back to remoteAddr for allow audit source IP", () => {
+    authzAllowEventsTest.clear();
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const decision = authorizeGatewayMethod({
+      method: "health",
+      client: makeClient({
+        scopes: ["operator.read"],
+      }),
+    });
+    auditGatewayAuthorization({
+      logger: { warn, debug },
+      method: "health",
+      requestId: "allow-req-remote-fallback",
+      decision,
+      client: {
+        ...makeClient({
+          scopes: ["operator.read"],
+          client: {
+            id: "test-client",
+            version: "1.0.0",
+            platform: "test",
+            mode: "test",
+          },
+        }),
+        remoteAddr: "127.0.0.1",
+      },
+    });
+    expect(warn).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledTimes(1);
+    const event = listGatewayAuthzAllowEvents({ limit: 1 })[0];
+    expect(event?.requestId).toBe("allow-req-remote-fallback");
+    expect(event?.sourceIp).toBe("127.0.0.1");
+  });
+
   it("logs deny decisions with reason code", () => {
     authzDeniedEventsTest.clear();
     const warn = vi.fn();
@@ -659,5 +770,37 @@ describe("auditGatewayAuthorization", () => {
     expect(event?.clientId).toBe("test-client");
     expect(event?.clientMode).toBe("test");
     expect(event?.sourceIp).toBe("203.0.113.7");
+  });
+
+  it("falls back to remoteAddr for deny audit source IP", () => {
+    authzDeniedEventsTest.clear();
+    const warn = vi.fn();
+    const debug = vi.fn();
+    const decision = authorizeGatewayMethod({
+      method: "health",
+      client: makeClient(),
+    });
+    auditGatewayAuthorization({
+      logger: { warn, debug },
+      method: "health",
+      requestId: "deny-req-remote-fallback",
+      decision,
+      client: {
+        ...makeClient({
+          client: {
+            id: "test-client",
+            version: "1.0.0",
+            platform: "test",
+            mode: "test",
+          },
+        }),
+        remoteAddr: "127.0.0.1",
+      },
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(debug).not.toHaveBeenCalled();
+    const event = listGatewayAuthzDenyEvents({ limit: 1 })[0];
+    expect(event?.requestId).toBe("deny-req-remote-fallback");
+    expect(event?.sourceIp).toBe("127.0.0.1");
   });
 });

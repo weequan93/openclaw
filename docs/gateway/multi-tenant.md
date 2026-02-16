@@ -30,8 +30,11 @@ Implementation status update: February 13, 2026.
   - `skills.bins` now applies the same visibility filter so private skill dependency metadata is not exposed to non-owners.
   - `skills.status` and `skills.bins` now enforce agent ownership checks so non-admin users cannot query skill metadata for agents they do not own.
 - Control-plane scope hardening now marks user-facing control-plane mutation RPCs (`voicewake.set`, `tts.enable`, `tts.disable`, `tts.setProvider`, `talk.mode`, `wake`) and system-control mutation RPCs (`set-heartbeats`, `system-event`, `channels.logout`) as admin-only, so `operator.write` user sessions cannot mutate gateway runtime controls or settings.
+- Cron control-plane RPCs are now fully admin-only (`cron.list`, `cron.status`, `cron.runs`, `cron.add`, `cron.update`, `cron.remove`, `cron.run`) so non-admin user sessions cannot enumerate or operate scheduler state.
+- Gateway `status` RPC is now admin-only so non-admin user sessions cannot read cross-agent channel and session summary data.
+- Gateway presence telemetry RPCs are now admin-only (`system-presence`, `last-heartbeat`) so non-admin user sessions cannot enumerate global runtime instance activity.
 - Gateway authz unit coverage now includes explicit scope-class checks for pairing (`operator.pairing`) and approvals (`operator.approvals`) paths, plus node-role-only method handling for node emitters.
-- Strict-mode auth/connect e2e coverage now verifies mapped non-admin principals must present dedicated scopes for pairing and approvals flows:
+- `compat` and `strict` auth/connect e2e coverage now verifies mapped non-admin principals must present dedicated scopes for pairing and approvals flows:
   - `node.pair.list` denies without `operator.pairing` (including admin-without-pairing scope combos) and allows with `operator.pairing`.
   - `exec.approval.resolve` denies without `operator.approvals` (including admin-without-approvals scope combos) and proceeds to handler validation when `operator.approvals` is granted.
   - `device.pair.*` and `device.token.*` methods deny without `operator.pairing` (including admin-without-pairing scope combos) and proceed to handler-level validation when `operator.pairing` is granted.
@@ -47,6 +50,7 @@ Implementation status update: February 13, 2026.
   - Identity payload emission is conditional so legacy call paths remain shape-compatible when no owner context exists.
 - Gateway method classification now includes `sessions.resolve` as a read operation, removing admin-scope fallback for common session lookup flows.
 - Session tools now propagate owner identity for session discovery and history retrieval paths (`sessions.list`, `sessions.resolve`, `chat.history`) including shared helper resolution and agent-to-agent announce-target lookup.
+- `sessions.list` owner filtering is now applied at list-build time, so payload metadata (`count`) reflects only caller-visible sessions and does not leak hidden cross-user session totals.
 - Subagent lifecycle follow-up RPCs now preserve owner identity (wait, announce, patch, cleanup delete, and persisted registry resume paths) so spawned-run completion handling remains owner-scoped.
 - `/subagents` command runtime calls (`chat.history`, `agent`, `agent.wait`) now execute with the resolved owner identity, preventing unscoped follow-up access in owner-bound sessions.
 - `/approve` control command now includes resolved owner identity on approval resolution RPCs for consistent actor attribution and policy evaluation.
@@ -79,10 +83,27 @@ Implementation status update: February 13, 2026.
   - Owner alias is now propagated into command deny events (`userAlias`) so admin security feeds can display alias while ownership enforcement stays UUID-based.
   - Command deny audit events now include gateway client attribution (`clientId`, `clientMode`) and source IP when available.
   - Real gateway chat command authz e2e now verifies deny-event source IP attribution through trusted-proxy forwarding headers.
+  - Chat command-path deny audit attribution now applies the same source-IP fallback (`remoteAddr`) when forwarded client IP is unavailable, and e2e coverage verifies local-session command denies retain source-IP attribution.
   - Command deny audit role attribution no longer infers `admin` from scope alone when principal role is unresolved.
   - Gateway connect owner-role resolution now treats mapped principals without explicit role as non-admin even when `operator.admin` scope is requested.
     - Legacy non-mapped principals keep admin-scope role inference for backward compatibility.
   - Security admin UI gating now prefers resolved `principalRole` from hello metadata over scope-only checks, so mapped non-admin principals with requested admin scope do not get admin controls.
+  - WS runtime fanout now also applies resolved principal-role checks for admin visibility:
+    - Mapped non-admin principals requesting `operator.admin` no longer bypass owner-scoped `agent`/`chat` event isolation.
+    - Approval and pairing event subscriptions now require explicit `operator.approvals`/`operator.pairing` for non-admin principals (scope-only admin requests are insufficient).
+    - In `compat`/`strict` modes, control-plane runtime events (`presence`, `heartbeat`, `cron`, `talk.mode`, and `voicewake.changed`) now require a resolved admin principal; mapped non-admin principals requesting `operator.admin` and unresolved principals are denied event fanout.
+    - Fanout mode enforcement now resolves current gateway mode dynamically, so config mode changes (`off`/`compat`/`strict`) take effect without gateway restart.
+  - Auth/connect e2e coverage now verifies approval and pairing runtime events only fan out in `compat` and `strict` modes to explicit-scope subscribers (`operator.approvals`/`operator.pairing`) plus resolved admin principals, while mapped non-admin (including role-missing mapped) `operator.admin` requests do not receive those events.
+  - Auth/connect e2e coverage now also verifies mapped non-admin (including role-missing mapped) `operator.admin` principals are blocked from `compat` and `strict` control-plane runtime events (`presence`, `heartbeat`, `cron`, `talk.mode`, and `voicewake.changed`) while resolved admins still receive those events.
+  - Auth/connect e2e coverage now also verifies `off` mode keeps legacy admin-scope fallback for approval and pairing runtime events (backward compatibility behavior).
+  - Auth/connect e2e coverage now also verifies `off` mode keeps control-plane runtime events broadly visible to connected clients (backward compatibility behavior).
+  - Auth/connect e2e coverage now also verifies mapped non-admin `operator.admin` observers stay blocked for approval/pairing runtime fanout across live `strict -> off -> strict` mode switching.
+  - Gateway broadcaster unit coverage now also verifies live `strict -> off -> strict` mode switching for approval/pairing fanout, including legacy admin-scope fallback only while mode is `off`.
+  - Gateway broadcaster unit coverage now also verifies live `strict -> off -> strict` switching for owner-scoped `chat` fanout, including owner-only delivery in strict mode and broad delivery in off mode.
+  - Auth/connect e2e coverage now also verifies live `strict -> off -> strict` mode switching updates control-plane runtime fanout on existing WS sessions without reconnecting clients.
+  - Auth/connect e2e coverage now also verifies admin-only method auth stays role-gated across live `strict -> off -> strict` mode switching on existing WS sessions (mapped non-admin `operator.admin` callers remain denied while mapped admins remain allowed).
+  - Auth/connect e2e coverage now also verifies `strict` and `compat` modes both deny admin-only methods (`status`) for mapped non-admin and role-missing mapped principals requesting `operator.admin`, while mapped admins remain allowed.
+  - Chat runtime e2e coverage now also verifies owner-scoped `agent` event fanout follows live `strict -> off -> strict` mode switching on existing sockets (owner-only in strict, broad in off).
   - `/tts` setting mutations (`on`/`off` and changing provider/limit/summary) are now admin-only in gateway multi-user mode; non-admin denials are logged under `command.tts` while `/tts status` and `/tts audio` remain available to users.
 - Cross-user runtime denial observability is covered in e2e tests:
   - Owner-mismatch denials for `chat.history`/`chat.send`/`chat.abort`, `sessions.delete`/`sessions.compact`, `node.invoke`/`node.describe`, and `browser.request` are asserted in `authz.denied.list` responses with owner alias metadata.
@@ -98,12 +119,103 @@ Implementation status update: February 13, 2026.
   - Admin UI now surfaces current config validation warnings in both Security and Config views, including missing identity-role mapping warnings from `config.get`.
   - Security admin UI now includes a dedicated "Identity Mapping Role Gaps" view to list principals missing explicit identity role mapping.
   - Control UI now treats admin settings surfaces as admin-only in multi-user mode (`Security`, `Config`, `Debug`, and `Logs`): non-admin principals do not see those tabs and direct-route refresh paths are blocked.
+  - Control UI now revalidates the active tab on hello/connect metadata updates, rerouting non-admin sessions away from stale admin-only tabs after reconnect or principal-role changes.
+  - Control UI now also treats global telemetry and scheduler surfaces as admin-only in multi-user mode (`Instances` and `Cron`) so non-admin principals do not query global presence or cron state.
+  - Connected Control UI sessions without `hello` auth metadata (or missing `hello` payload) are now treated as non-admin by default for admin-surface routing and config loaders (disconnected pre-connect state keeps compatibility behavior).
+  - Connected Control UI sessions with missing `hello.auth.principalRole` are now also treated as non-admin by default (no scope-only fallback to `operator.admin`) to prevent admin-surface bypass when principal role is unresolved.
   - Control UI non-admin usage paths (`Overview`, `Channels`, and `Nodes`) now skip admin-oriented config/debug/exec-approval reads so user views stay usage-only.
   - Control UI now keeps `Channels` and `Nodes` mutation controls admin-only in multi-user mode: non-admin principals get read-only usage views, and client-side mutation callbacks are no-op unless admin authorization is resolved.
   - Strict-mode authz deny feeds now reflect mapped alias and principal metadata for mapped users.
   - `operator.admin` access now requires resolved principal role `admin`; mapped `user` principals cannot elevate by requesting admin scope in the connect payload, including system-control methods (`set-heartbeats`, `system-event`, `channels.logout`).
-  - Strict-mode shared-auth connect bypass for unknown sender identity is now limited to admin-scoped clients; non-admin shared-auth connections without sender identity are denied.
+  - Strict-mode shared-auth connect bypass for unknown sender identity is now limited to local admin-scoped clients; non-local shared-auth callers must provide mapped or trusted identity and non-admin shared-auth connections without sender identity are denied.
+  - Local shared-auth admin bypass no longer accepts self-asserted `identity.userId`/`identity.principalId`; owner attribution falls back to trusted client/device context unless explicit identity is allowed for trusted internal device-backed callers.
+  - Strict-mode tailscale shared-token coverage now verifies device-skip denies for unknown sender identity by default and allows only with admin-managed sender mapping.
+  - Connect-time authz deny events now always include a source IP attribution fallback (`remoteAddr`) when forwarded client IP is unavailable, improving admin-panel visibility for local and unknown-sender rejection attempts.
+  - Gateway method authz and handler-level deny events now also use source IP fallback (`remoteAddr`) when client IP attribution is unavailable, so owner-mismatch and policy-deny audits remain attributable for local sessions.
+  - Config-change audit events (`config.patch`, `config.apply`, `config.set`, `config.policyBundle.apply`) now use the same source IP fallback (`remoteAddr`) so admin change-history attribution remains populated for local sessions.
   - Strict mode now ignores self-asserted connect identity from untrusted non-admin shared-auth callers, preventing shared-token impersonation via raw `identity.userId` or `identity.principalId`; trusted local device-backed internal clients remain able to carry explicit owner context.
+    - Explicit `identity.principalId` is no longer used as a mapping lookup key when explicit identity trust is disabled, preventing non-local shared-auth principal spoofing against mapped identities.
+- HTTP tools invoke endpoint (`POST /tools/invoke`) is now local-admin only when multi-user mode is enabled (`compat` or `strict`):
+  - Non-local requests are denied with `403 forbidden`.
+  - Denials are recorded in authz deny logs under method `http.tools.invoke` with reason code `ROLE_FORBIDDEN`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.tools.invoke`.
+- OpenAI-compatible HTTP endpoint (`POST /v1/chat/completions`) is now local-admin only when multi-user mode is enabled (`compat` or `strict`):
+  - Non-local requests are denied with `403 forbidden`.
+  - Denials are recorded in authz deny logs under method `http.openai.chat.completions` with reason code `ROLE_FORBIDDEN`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.openai.chat.completions`.
+- OpenResponses HTTP endpoint (`POST /v1/responses`) is now local-admin only when multi-user mode is enabled (`compat` or `strict`):
+  - Non-local requests are denied with `403 forbidden`.
+  - Denials are recorded in authz deny logs under method `http.openresponses.responses` with reason code `ROLE_FORBIDDEN`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.openresponses.responses`.
+- OpenAI/OpenResponses/tools invoke/canvas endpoint auth failures (missing or invalid token / sender) now emit `UNKNOWN_SENDER` deny events so unauthorized probe attempts remain visible in admin security feeds.
+- Hooks HTTP endpoint (`POST /hooks/*`) is now local-admin only when multi-user mode is enabled (`compat` or `strict`):
+  - Non-local requests are denied with `403 forbidden`.
+  - Denials are recorded in authz deny logs under method `http.hooks` with reason code `ROLE_FORBIDDEN`.
+  - Invalid, missing, or query-string hook token attempts are recorded under method `http.hooks` with reason code `UNKNOWN_SENDER`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.hooks`.
+- Plugin admin HTTP routes (`/api/channels` and `/api/channels/*`) now require gateway auth credentials:
+  - Requests without valid gateway auth are denied with `401 Unauthorized`.
+  - Gateway auth accepts `Authorization: Bearer <credential>` or `X-OpenClaw-Token: <credential>` (use `X-OpenClaw-Token` if the plugin route also uses `Authorization`).
+  - Denials are recorded in authz deny logs under method `http.plugin` with reason code `UNKNOWN_SENDER`.
+  - Admin Security view presets now include one-click filters for plugin unauthorized and forbidden attempts (`http.plugin` + `UNKNOWN_SENDER` and `http.plugin` + `ROLE_FORBIDDEN`).
+  - Authz denied summaries now include source-IP buckets and high-frequency source-IP alerts so repeated unknown-sender attempts can be triaged quickly in admin views.
+  - This blocks unauthenticated config mutation via plugin HTTP routes.
+- Plugin admin HTTP routes under `/api/channels` and `/api/channels/*` are now local-admin only in multi-user mode (`compat` or `strict`):
+  - Non-local requests are denied with `403 forbidden`.
+  - Denials are recorded in authz deny logs under method `http.plugin` with reason code `ROLE_FORBIDDEN`.
+  - Plugin-side unauthorized responses (`401`) on `/api/channels/*` are recorded under `http.plugin` with reason code `UNKNOWN_SENDER`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.plugin` after gateway auth succeeds.
+  - `/api/channels` and `/api/channels/*` admin boundary checks now run even when no plugin HTTP routes are registered, so unknown-sender and non-local probe attempts are still denied and audit-logged.
+  - E2E coverage verifies non-local denial and local allow paths for plugin admin routes.
+  - E2E coverage verifies the `/api/channels` root route is treated as the same admin boundary as `/api/channels/*`.
+  - E2E coverage now also verifies `/api/channels/` trailing-slash behavior for strict-mode non-local deny and local allow paths, and compat-mode non-local deny.
+  - E2E coverage now also verifies local unknown-sender auth denial (`401`) for `/api/channels` and `/api/channels/` root paths when gateway auth is missing.
+  - Plugin admin boundary matching now uses shared boundary-path normalization so encoded `/api/channels...` probes cannot bypass local-admin enforcement.
+  - Unit and e2e coverage now verify encoded slash and backslash probe paths including double-encoded and triple-encoded variants are denied in enforced multi-user modes.
+  - Unit coverage now also verifies `/api/channels/` (trailing slash) is treated as the same plugin admin boundary.
+  - E2E coverage now also verifies `/api/channels` root behavior in `compat` mode (non-local deny) and strict-mode local allow with authz allow-audit emission.
+  - E2E coverage also verifies `authz.denied.summary` source-IP buckets and high-frequency source-IP alerts for repeated plugin deny events.
+  - E2E coverage now also verifies live `strict -> off -> strict` mode changes for non-local plugin admin requests without gateway restart.
+  - Plugin webhook routes outside `/api/channels/*` remain available for normal non-local channel delivery flows.
+- HTTP/WS local-admin boundaries now have live mode-switch coverage for non-local requests without gateway restart (`strict -> off -> strict`) across:
+  - `POST /v1/chat/completions`
+  - `POST /v1/responses`
+  - `POST /tools/invoke`
+  - `POST /hooks/*`
+  - Canvas host HTTP and canvas WS paths (`/canvas/*`, `/canvas/ws`)
+- HTTP/WS local-admin boundaries now also have explicit `compat`-mode denial coverage for non-local requests across OpenAI/OpenResponses/tools invoke/hooks/plugin admin routes/canvas.
+- HTTP deny auditing for OpenAI/OpenResponses/tools invoke/hooks/plugin admin/canvas boundaries now uses a shared source-IP resolver so trusted-proxy handling and fallback attribution stay consistent across endpoints.
+- Hooks/canvas boundary matching now uses shared boundary-path normalization so nested encoded path variants remain subject to local-admin checks and authz deny auditing.
+- OpenAI/OpenResponses/tools-invoke endpoint guards now normalize trailing-slash path variants (for example `/v1/chat/completions/`) so local-admin enforcement and authz audit logging still apply.
+  - Validation coverage now also verifies trailing-slash auth failures emit `UNKNOWN_SENDER` deny events for OpenAI/OpenResponses/tools invoke endpoints.
+  - Endpoint matching now uses shared boundary-path normalization so encoded path variants remain subject to local-admin checks and authz auditing.
+  - Validation coverage now verifies encoded slash and backslash path variants including double-encoded and triple-encoded forms for OpenAI/OpenResponses/tools invoke deny and auth-failure flows.
+- Gateway authz allow decisions are now audit-visible:
+  - Successful gateway method authorization checks are recorded and queryable through admin-only methods `authz.allow.list` and `authz.allow.summary`.
+  - Allow summaries include high-frequency principal and source-IP buckets for behavior baselining and anomaly detection.
+  - Admin Security UI now displays recent allow events and allow summary baselines, including high-frequency principal and source-IP buckets.
+  - Admin Security UI includes an audit feed mode toggle (`both`, `denied`, `allowed`) for focused triage.
+  - Admin Security UI now supports CSV export for denied and allowed summary buckets in addition to raw event exports.
+  - Security "Load older" now supports allow-event cursor pagination in `allowed` mode and dual-feed cursor pagination in `both` mode.
+  - Security header now shows per-feed paging status (`loaded`, `more/end`) for denied and allow feeds.
+  - In `both` mode, Security also provides targeted paging controls (`Load older denied`, `Load older allow`) for independent feed triage.
+- Canvas HTTP/WS endpoints are now local-admin only when multi-user mode is enabled (`compat` or `strict`):
+  - Non-local canvas host requests and canvas websocket upgrades are denied.
+  - Denials are recorded in authz deny logs under methods `http.canvas` and `ws.canvas` with reason code `ROLE_FORBIDDEN`.
+  - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.canvas` and `ws.canvas`.
+  - Canvas websocket local-admin checks now also cover trailing-slash websocket paths under `/canvas/ws/*` to prevent bypass through path variants.
+  - Canvas HTTP path classification now also treats websocket-path trailing-slash variants as canvas-protected paths so local-admin checks run before host routing.
+  - Canvas WS upgrade handling now fails closed for canvas-classified encoded path variants when canvas host raw path matching does not accept the request, preventing fallback to gateway WS upgrade paths.
+  - E2E coverage now verifies canvas WS fail-closed behavior for encoded slash/backslash variants including double-encoded and triple-encoded forms with no fallback to gateway WS upgrades.
+- Admin Security presets now include one-click endpoint filters for high-risk HTTP/WS boundaries:
+  - `http.openai.chat.completions` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - `http.openresponses.responses` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - `http.tools.invoke` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - `http.hooks` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - `http.canvas` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - `ws.canvas` + `ROLE_FORBIDDEN` and `UNKNOWN_SENDER`
+  - Allow-focused presets are also available for `http.plugin`, `http.openai.chat.completions`, `http.openresponses.responses`, `http.tools.invoke`, `http.hooks`, `http.canvas`, and `ws.canvas` to baseline local-admin allow traffic over the last 24 hours.
+  - Applying allow-focused presets now auto-switches Security audit mode to `allowed`; deny-focused presets auto-switch to `denied`.
 - Skill visibility now supports `group_shared` in addition to `shared` and `user_private`:
   - `group_shared` visibility is enforced in `skills.status`, `skills.bins`, runtime prompt construction, and skill env-secret injection paths.
   - `skills.update` enforces `groupIds` for `group_shared` and `ownerUserId` for `user_private`.
@@ -132,6 +244,7 @@ Implementation status update: February 13, 2026.
 - Ownership migration surfaces now include memory checks:
   - `ownership.gaps` and `ownership.backfill` support `memory` resource scanning for QMD ownership partition readiness.
   - Memory backfill safely templates `memory.qmd.sessions.exportDir` with `{ownerUserId}` and reports unresolved custom QMD path ownership entries for admin review.
+  - Gateway CLI `ownership-gaps` and `ownership-backfill` now accept `--resource memory` for migration workflows.
   - Admin security panel ownership views and backfill controls now include `memory` as a first-class resource target.
 - Sandbox ownership defaults are hardened for multi-user modes:
   - `agents.defaults.sandbox.scope=shared` is auto-coerced to `agent` scope when multi-user mode is `compat` or `strict` to avoid cross-user sandbox mixing.

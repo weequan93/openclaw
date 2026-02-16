@@ -1,12 +1,19 @@
+import type { GatewayMultiUserMode } from "./multi-user-mode.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { MAX_BUFFERED_BYTES } from "./server-constants.js";
-import type { GatewayMultiUserMode } from "./multi-user-mode.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 const ADMIN_SCOPE = "operator.admin";
 const APPROVALS_SCOPE = "operator.approvals";
 const PAIRING_SCOPE = "operator.pairing";
 const OWNER_SCOPED_EVENTS = new Set(["chat", "agent"]);
+const ADMIN_ONLY_EVENTS = new Set([
+  "presence",
+  "heartbeat",
+  "cron",
+  "talk.mode",
+  "voicewake.changed",
+]);
 const OWNER_CACHE_TTL_MS = 5_000;
 
 const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
@@ -26,9 +33,15 @@ function normalizeToken(raw: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-function isAdminClient(client: GatewayWsClient): boolean {
-  if (client.owner?.role === "admin") {
-    return true;
+function isAdminClient(
+  client: GatewayWsClient,
+  params: { requireResolvedPrincipal: boolean },
+): boolean {
+  if (client.owner) {
+    return client.owner.role === "admin";
+  }
+  if (params.requireResolvedPrincipal) {
+    return false;
   }
   const role = client.connect.role ?? "operator";
   if (role !== "operator") {
@@ -38,7 +51,14 @@ function isAdminClient(client: GatewayWsClient): boolean {
   return scopes.includes(ADMIN_SCOPE);
 }
 
-function hasEventScope(client: GatewayWsClient, event: string): boolean {
+function hasEventScope(
+  client: GatewayWsClient,
+  event: string,
+  params: { requireResolvedPrincipal: boolean },
+): boolean {
+  if (params.requireResolvedPrincipal && ADMIN_ONLY_EVENTS.has(event)) {
+    return isAdminClient(client, params);
+  }
   const required = EVENT_SCOPE_GUARDS[event];
   if (!required) {
     return true;
@@ -47,10 +67,10 @@ function hasEventScope(client: GatewayWsClient, event: string): boolean {
   if (role !== "operator") {
     return false;
   }
-  const scopes = Array.isArray(client.connect.scopes) ? client.connect.scopes : [];
-  if (scopes.includes(ADMIN_SCOPE)) {
+  if (isAdminClient(client, params)) {
     return true;
   }
+  const scopes = Array.isArray(client.connect.scopes) ? client.connect.scopes : [];
   return required.some((scope) => scopes.includes(scope));
 }
 
@@ -61,10 +81,18 @@ function getSessionKeyFromPayload(payload: unknown): string | undefined {
   return normalizeToken((payload as { sessionKey?: unknown }).sessionKey);
 }
 
+function normalizeMultiUserMode(raw: unknown): GatewayMultiUserMode | undefined {
+  if (raw === "off" || raw === "compat" || raw === "strict") {
+    return raw;
+  }
+  return undefined;
+}
+
 export function createGatewayBroadcaster(params: {
   clients: Set<GatewayWsClient>;
   resolveOwnerUserIdForSessionKey?: (sessionKey: string) => string | undefined;
   multiUserMode?: GatewayMultiUserMode;
+  getMultiUserMode?: () => GatewayMultiUserMode;
   canAccessOwnerScopedEvent?: (params: {
     event: string;
     sessionKey?: string;
@@ -73,8 +101,14 @@ export function createGatewayBroadcaster(params: {
   }) => boolean;
 }) {
   let seq = 0;
-  const multiUserMode = params.multiUserMode ?? "strict";
-  const enforceOwnerFanout = multiUserMode !== "off";
+  const staticMultiUserMode = params.multiUserMode ?? "strict";
+  const resolveActiveMultiUserMode = (): GatewayMultiUserMode => {
+    try {
+      return normalizeMultiUserMode(params.getMultiUserMode?.()) ?? staticMultiUserMode;
+    } catch {
+      return staticMultiUserMode;
+    }
+  };
   const ownerCache = new Map<
     string,
     {
@@ -117,6 +151,9 @@ export function createGatewayBroadcaster(params: {
     },
     targetConnIds?: ReadonlySet<string>,
   ) => {
+    const multiUserMode = resolveActiveMultiUserMode();
+    const enforceOwnerFanout = multiUserMode !== "off";
+    const requireResolvedPrincipal = multiUserMode !== "off";
     const ownerScoped = OWNER_SCOPED_EVENTS.has(event) && enforceOwnerFanout;
     const eventSessionKey = ownerScoped ? getSessionKeyFromPayload(payload) : undefined;
     const ownerUserId = eventSessionKey
@@ -158,10 +195,10 @@ export function createGatewayBroadcaster(params: {
       if (targetConnIds && !targetConnIds.has(c.connId)) {
         continue;
       }
-      if (!hasEventScope(c, event)) {
+      if (!hasEventScope(c, event, { requireResolvedPrincipal })) {
         continue;
       }
-      if (ownerScoped && !isAdminClient(c)) {
+      if (ownerScoped && !isAdminClient(c, { requireResolvedPrincipal })) {
         const clientOwnerUserId = normalizeToken(c.owner?.userId);
         const ownerMatched = Boolean(
           ownerUserId && clientOwnerUserId && clientOwnerUserId === ownerUserId,

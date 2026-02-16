@@ -1,12 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
+import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+import { emitHeartbeatEvent } from "../infra/heartbeat-events.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
+import { __test as authzAllowEventsTest } from "./authz-allow-events.js";
 import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "./authz-denied-events.js";
 import { buildDeviceAuthPayload } from "./device-auth.js";
-import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 import { getHandshakeTimeoutMs } from "./server-constants.js";
 import {
@@ -37,6 +39,12 @@ async function waitForWsClose(ws: WebSocket, timeoutMs: number): Promise<boolean
 
 const openWs = async (port: number) => {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  await new Promise<void>((resolve) => ws.once("open", resolve));
+  return ws;
+};
+
+const openWsWithHeaders = async (port: number, headers: Record<string, string>) => {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers });
   await new Promise<void>((resolve) => ws.once("open", resolve));
   return ws;
 };
@@ -388,21 +396,26 @@ describe("gateway server auth/connect", () => {
       );
       expect(deniedChannelsLogout.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
 
-      const blockedEscalationMethods: Array<{ method: string; params: Record<string, unknown> }> =
-        [
-          { method: "cron.add", params: {} },
-          { method: "cron.update", params: {} },
-          { method: "cron.remove", params: {} },
-          { method: "cron.run", params: {} },
-          { method: "skills.install", params: {} },
-          { method: "skills.update", params: {} },
-          { method: "agents.create", params: {} },
-          { method: "agents.update", params: {} },
-          { method: "agents.delete", params: {} },
-          { method: "agents.files.list", params: {} },
-          { method: "agents.files.get", params: {} },
-          { method: "agents.files.set", params: {} },
-        ];
+      const blockedEscalationMethods: Array<{ method: string; params: Record<string, unknown> }> = [
+        { method: "status", params: {} },
+        { method: "system-presence", params: {} },
+        { method: "last-heartbeat", params: {} },
+        { method: "cron.list", params: {} },
+        { method: "cron.status", params: {} },
+        { method: "cron.runs", params: {} },
+        { method: "cron.add", params: {} },
+        { method: "cron.update", params: {} },
+        { method: "cron.remove", params: {} },
+        { method: "cron.run", params: {} },
+        { method: "skills.install", params: {} },
+        { method: "skills.update", params: {} },
+        { method: "agents.create", params: {} },
+        { method: "agents.update", params: {} },
+        { method: "agents.delete", params: {} },
+        { method: "agents.files.list", params: {} },
+        { method: "agents.files.get", params: {} },
+        { method: "agents.files.set", params: {} },
+      ];
       for (const [index, entry] of blockedEscalationMethods.entries()) {
         const id = `mapped-role-user-admin-escalation-${index}`;
         wsUser.send(
@@ -481,6 +494,12 @@ describe("gateway server auth/connect", () => {
         ),
       ).toBe(true);
       for (const method of [
+        "status",
+        "system-presence",
+        "last-heartbeat",
+        "cron.list",
+        "cron.status",
+        "cron.runs",
         "cron.add",
         "cron.update",
         "cron.remove",
@@ -752,6 +771,118 @@ describe("gateway server auth/connect", () => {
       expect(summary.payload?.byMethod?.some((entry) => entry.key === "authz.denied.list")).toBe(
         true,
       );
+      wsAdmin.close();
+    });
+
+    test("admin can query allow access events and summary via authz.allow methods", async () => {
+      authzAllowEventsTest.clear();
+
+      const wsUser = await openWs(port);
+      const userRes = await connectReq(wsUser, {
+        scopes: ["operator.read"],
+        identity: {
+          userId: "user-allow-summary",
+          principalId: "msg:discord:default:user-allow-summary",
+          alias: "AllowSummaryUser",
+        },
+      });
+      expect(userRes.ok).toBe(true);
+
+      wsUser.send(
+        JSON.stringify({
+          type: "req",
+          id: "user-allow-health-1",
+          method: "health",
+          params: {},
+        }),
+      );
+      const allowOne = await onceMessage<{ ok: boolean }>(
+        wsUser,
+        (o) => o.type === "res" && o.id === "user-allow-health-1",
+      );
+      expect(allowOne.ok).toBe(true);
+
+      wsUser.send(
+        JSON.stringify({
+          type: "req",
+          id: "user-allow-health-2",
+          method: "health",
+          params: {},
+        }),
+      );
+      const allowTwo = await onceMessage<{ ok: boolean }>(
+        wsUser,
+        (o) => o.type === "res" && o.id === "user-allow-health-2",
+      );
+      expect(allowTwo.ok).toBe(true);
+      wsUser.close();
+
+      const wsAdmin = await openWs(port);
+      const adminRes = await connectReq(wsAdmin);
+      expect(adminRes.ok).toBe(true);
+
+      wsAdmin.send(
+        JSON.stringify({
+          type: "req",
+          id: "admin-authz-allow-list",
+          method: "authz.allow.list",
+          params: {
+            method: "health",
+            userId: "user-allow-summary",
+            limit: 10,
+            order: "desc",
+          },
+        }),
+      );
+      const allowList = await onceMessage<{
+        ok: boolean;
+        payload?: {
+          events?: Array<{ method?: string; userId?: string; principalId?: string }>;
+        };
+      }>(wsAdmin, (o) => o.type === "res" && o.id === "admin-authz-allow-list");
+      expect(allowList.ok).toBe(true);
+      expect(allowList.payload?.events?.some((event) => event.method === "health")).toBe(true);
+      expect(
+        allowList.payload?.events?.some(
+          (event) =>
+            event.userId === "user-allow-summary" &&
+            event.principalId === "msg:discord:default:user-allow-summary",
+        ),
+      ).toBe(true);
+
+      wsAdmin.send(
+        JSON.stringify({
+          type: "req",
+          id: "admin-authz-allow-summary",
+          method: "authz.allow.summary",
+          params: {
+            method: "health",
+            userId: "user-allow-summary",
+            topN: 5,
+            alertThreshold: 2,
+          },
+        }),
+      );
+      const allowSummary = await onceMessage<{
+        ok: boolean;
+        payload?: {
+          total?: number;
+          byMethod?: Array<{ key?: string; count?: number }>;
+          highFrequency?: {
+            threshold?: number;
+            principals?: Array<{ key?: string; count?: number }>;
+          };
+        };
+      }>(wsAdmin, (o) => o.type === "res" && o.id === "admin-authz-allow-summary");
+      expect(allowSummary.ok).toBe(true);
+      expect(allowSummary.payload?.total).toBeGreaterThanOrEqual(2);
+      expect(allowSummary.payload?.byMethod?.some((entry) => entry.key === "health")).toBe(true);
+      expect(allowSummary.payload?.highFrequency?.threshold).toBe(2);
+      expect(
+        allowSummary.payload?.highFrequency?.principals?.some(
+          (entry) => entry.key === "msg:discord:default:user-allow-summary" && entry.count === 2,
+        ),
+      ).toBe(true);
       wsAdmin.close();
     });
 
@@ -1115,25 +1246,9 @@ describe("gateway server auth/connect", () => {
       wsAdmin.close();
     });
 
-    test("pairing methods require operator.pairing for mapped non-admin principals in strict mode", async () => {
-      authzDeniedEventsTest.clear();
+    test("pairing methods require operator.pairing for mapped non-admin principals in strict and compat modes", async () => {
       const identity = loadOrCreateDeviceIdentity();
       const { writeConfigFile } = await import("../config/config.js");
-      await writeConfigFile({
-        gateway: {
-          multiUser: {
-            mode: "strict",
-            identities: {
-              [`device:${identity.deviceId}`]: {
-                userId: "user-mapped-pairing",
-                principalId: "msg:discord:default:user-mapped-pairing",
-                alias: "MappedPairingUser",
-                role: "user",
-              },
-            },
-          },
-        },
-      });
 
       const request = async (ws: WebSocket, id: string, scopes: string[]) => {
         const res = await connectReq(ws, { scopes, identity: undefined });
@@ -1146,65 +1261,68 @@ describe("gateway server auth/connect", () => {
         }>(ws, (o) => o.type === "res" && o.id === id);
       };
 
-      const wsMissing = await openWs(port);
-      const deniedMissing = await request(wsMissing, "mapped-pairing-missing-scope", [
-        "operator.write",
-      ]);
-      expect(deniedMissing.ok).toBe(false);
-      expect(deniedMissing.error?.message ?? "").toContain("missing scope: operator.pairing");
-      expect(deniedMissing.error?.details?.reasonCode).toBe("SCOPE_MISSING");
-      wsMissing.close();
-
-      const wsAdminOnly = await openWs(port);
-      const deniedAdminOnly = await request(wsAdminOnly, "mapped-pairing-admin-without-pairing", [
-        "operator.admin",
-        "operator.write",
-      ]);
-      expect(deniedAdminOnly.ok).toBe(false);
-      expect(deniedAdminOnly.error?.message ?? "").toContain("missing scope: operator.pairing");
-      expect(deniedAdminOnly.error?.details?.reasonCode).toBe("SCOPE_MISSING");
-      wsAdminOnly.close();
-
-      const wsAllowed = await openWs(port);
-      const allowed = await request(wsAllowed, "mapped-pairing-allowed", ["operator.pairing"]);
-      expect(allowed.ok).toBe(true);
-      expect(Array.isArray(allowed.payload?.pending)).toBe(true);
-      expect(Array.isArray(allowed.payload?.paired)).toBe(true);
-      wsAllowed.close();
-
-      const deniedEvents = listGatewayAuthzDenyEvents({
-        method: "node.pair.list",
-        reasonCode: "SCOPE_MISSING",
-        userId: "user-mapped-pairing",
-        limit: 20,
-      });
-      expect(
-        deniedEvents.some((event) => event.requestId === "mapped-pairing-missing-scope"),
-      ).toBe(true);
-      expect(
-        deniedEvents.some((event) => event.requestId === "mapped-pairing-admin-without-pairing"),
-      ).toBe(true);
-    });
-
-    test("approval methods require operator.approvals for mapped non-admin principals in strict mode", async () => {
-      authzDeniedEventsTest.clear();
-      const identity = loadOrCreateDeviceIdentity();
-      const { writeConfigFile } = await import("../config/config.js");
-      await writeConfigFile({
-        gateway: {
-          multiUser: {
-            mode: "strict",
-            identities: {
-              [`device:${identity.deviceId}`]: {
-                userId: "user-mapped-approvals",
-                principalId: "msg:discord:default:user-mapped-approvals",
-                alias: "MappedApprovalsUser",
-                role: "user",
+      for (const mode of ["strict", "compat"] as const) {
+        authzDeniedEventsTest.clear();
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities: {
+                [`device:${identity.deviceId}`]: {
+                  userId: "user-mapped-pairing",
+                  principalId: "msg:discord:default:user-mapped-pairing",
+                  alias: "MappedPairingUser",
+                  role: "user",
+                },
               },
             },
           },
-        },
-      });
+        });
+
+        const wsMissing = await openWs(port);
+        const deniedMissing = await request(wsMissing, "mapped-pairing-missing-scope", [
+          "operator.write",
+        ]);
+        expect(deniedMissing.ok).toBe(false);
+        expect(deniedMissing.error?.message ?? "").toContain("missing scope: operator.pairing");
+        expect(deniedMissing.error?.details?.reasonCode).toBe("SCOPE_MISSING");
+        wsMissing.close();
+
+        const wsAdminOnly = await openWs(port);
+        const deniedAdminOnly = await request(wsAdminOnly, "mapped-pairing-admin-without-pairing", [
+          "operator.admin",
+          "operator.write",
+        ]);
+        expect(deniedAdminOnly.ok).toBe(false);
+        expect(deniedAdminOnly.error?.message ?? "").toContain("missing scope: operator.pairing");
+        expect(deniedAdminOnly.error?.details?.reasonCode).toBe("SCOPE_MISSING");
+        wsAdminOnly.close();
+
+        const wsAllowed = await openWs(port);
+        const allowed = await request(wsAllowed, "mapped-pairing-allowed", ["operator.pairing"]);
+        expect(allowed.ok).toBe(true);
+        expect(Array.isArray(allowed.payload?.pending)).toBe(true);
+        expect(Array.isArray(allowed.payload?.paired)).toBe(true);
+        wsAllowed.close();
+
+        const deniedEvents = listGatewayAuthzDenyEvents({
+          method: "node.pair.list",
+          reasonCode: "SCOPE_MISSING",
+          userId: "user-mapped-pairing",
+          limit: 20,
+        });
+        expect(
+          deniedEvents.some((event) => event.requestId === "mapped-pairing-missing-scope"),
+        ).toBe(true);
+        expect(
+          deniedEvents.some((event) => event.requestId === "mapped-pairing-admin-without-pairing"),
+        ).toBe(true);
+      }
+    });
+
+    test("approval methods require operator.approvals for mapped non-admin principals in strict and compat modes", async () => {
+      const identity = loadOrCreateDeviceIdentity();
+      const { writeConfigFile } = await import("../config/config.js");
 
       const request = async (ws: WebSocket, id: string, scopes: string[]) => {
         const res = await connectReq(ws, { scopes, identity: undefined });
@@ -1223,66 +1341,70 @@ describe("gateway server auth/connect", () => {
         }>(ws, (o) => o.type === "res" && o.id === id);
       };
 
-      const wsMissing = await openWs(port);
-      const deniedMissing = await request(wsMissing, "mapped-approval-missing-scope", [
-        "operator.write",
-      ]);
-      expect(deniedMissing.ok).toBe(false);
-      expect(deniedMissing.error?.message ?? "").toContain("missing scope: operator.approvals");
-      expect(deniedMissing.error?.details?.reasonCode).toBe("SCOPE_MISSING");
-      wsMissing.close();
-
-      const wsAdminOnly = await openWs(port);
-      const deniedAdminOnly = await request(wsAdminOnly, "mapped-approval-admin-without-approvals", [
-        "operator.admin",
-        "operator.write",
-      ]);
-      expect(deniedAdminOnly.ok).toBe(false);
-      expect(deniedAdminOnly.error?.message ?? "").toContain("missing scope: operator.approvals");
-      expect(deniedAdminOnly.error?.details?.reasonCode).toBe("SCOPE_MISSING");
-      wsAdminOnly.close();
-
-      const wsAllowed = await openWs(port);
-      const allowed = await request(wsAllowed, "mapped-approval-allowed", ["operator.approvals"]);
-      expect(allowed.ok).toBe(false);
-      expect(allowed.error?.message ?? "").not.toContain("missing scope: operator.approvals");
-      wsAllowed.close();
-
-      const deniedEvents = listGatewayAuthzDenyEvents({
-        method: "exec.approval.resolve",
-        reasonCode: "SCOPE_MISSING",
-        userId: "user-mapped-approvals",
-        limit: 20,
-      });
-      expect(
-        deniedEvents.some((event) => event.requestId === "mapped-approval-missing-scope"),
-      ).toBe(true);
-      expect(
-        deniedEvents.some(
-          (event) => event.requestId === "mapped-approval-admin-without-approvals",
-        ),
-      ).toBe(true);
-    });
-
-    test("device pairing and token methods require operator.pairing for mapped non-admin principals in strict mode", async () => {
-      authzDeniedEventsTest.clear();
-      const identity = loadOrCreateDeviceIdentity();
-      const { writeConfigFile } = await import("../config/config.js");
-      await writeConfigFile({
-        gateway: {
-          multiUser: {
-            mode: "strict",
-            identities: {
-              [`device:${identity.deviceId}`]: {
-                userId: "user-mapped-device-pairing",
-                principalId: "msg:discord:default:user-mapped-device-pairing",
-                alias: "MappedDevicePairingUser",
-                role: "user",
+      for (const mode of ["strict", "compat"] as const) {
+        authzDeniedEventsTest.clear();
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities: {
+                [`device:${identity.deviceId}`]: {
+                  userId: "user-mapped-approvals",
+                  principalId: "msg:discord:default:user-mapped-approvals",
+                  alias: "MappedApprovalsUser",
+                  role: "user",
+                },
               },
             },
           },
-        },
-      });
+        });
+
+        const wsMissing = await openWs(port);
+        const deniedMissing = await request(wsMissing, "mapped-approval-missing-scope", [
+          "operator.write",
+        ]);
+        expect(deniedMissing.ok).toBe(false);
+        expect(deniedMissing.error?.message ?? "").toContain("missing scope: operator.approvals");
+        expect(deniedMissing.error?.details?.reasonCode).toBe("SCOPE_MISSING");
+        wsMissing.close();
+
+        const wsAdminOnly = await openWs(port);
+        const deniedAdminOnly = await request(
+          wsAdminOnly,
+          "mapped-approval-admin-without-approvals",
+          ["operator.admin", "operator.write"],
+        );
+        expect(deniedAdminOnly.ok).toBe(false);
+        expect(deniedAdminOnly.error?.message ?? "").toContain("missing scope: operator.approvals");
+        expect(deniedAdminOnly.error?.details?.reasonCode).toBe("SCOPE_MISSING");
+        wsAdminOnly.close();
+
+        const wsAllowed = await openWs(port);
+        const allowed = await request(wsAllowed, "mapped-approval-allowed", ["operator.approvals"]);
+        expect(allowed.ok).toBe(false);
+        expect(allowed.error?.message ?? "").not.toContain("missing scope: operator.approvals");
+        wsAllowed.close();
+
+        const deniedEvents = listGatewayAuthzDenyEvents({
+          method: "exec.approval.resolve",
+          reasonCode: "SCOPE_MISSING",
+          userId: "user-mapped-approvals",
+          limit: 20,
+        });
+        expect(
+          deniedEvents.some((event) => event.requestId === "mapped-approval-missing-scope"),
+        ).toBe(true);
+        expect(
+          deniedEvents.some(
+            (event) => event.requestId === "mapped-approval-admin-without-approvals",
+          ),
+        ).toBe(true);
+      }
+    });
+
+    test("device pairing and token methods require operator.pairing for mapped non-admin principals in strict and compat modes", async () => {
+      const identity = loadOrCreateDeviceIdentity();
+      const { writeConfigFile } = await import("../config/config.js");
 
       const methods: Array<{ method: string; params: Record<string, unknown> }> = [
         { method: "device.pair.list", params: {} },
@@ -1325,56 +1447,1690 @@ describe("gateway server auth/connect", () => {
         ws.close();
       };
 
-      await assertMissingPairingScope(["operator.write"], "mapped-device-pairing-missing-scope");
-      await assertMissingPairingScope(
-        ["operator.admin", "operator.write"],
-        "mapped-device-pairing-admin-without-pairing",
-      );
+      for (const mode of ["strict", "compat"] as const) {
+        authzDeniedEventsTest.clear();
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities: {
+                [`device:${identity.deviceId}`]: {
+                  userId: "user-mapped-device-pairing",
+                  principalId: "msg:discord:default:user-mapped-device-pairing",
+                  alias: "MappedDevicePairingUser",
+                  role: "user",
+                },
+              },
+            },
+          },
+        });
 
-      const wsAllowed = await openWs(port);
-      const allowedRes = await connectReq(wsAllowed, {
-        scopes: ["operator.pairing"],
-        identity: undefined,
-      });
-      expect(allowedRes.ok).toBe(true);
-      for (const [index, entry] of methods.entries()) {
-        const id = `mapped-device-pairing-allowed-${index}`;
-        const result = await callMethod(wsAllowed, id, entry.method, entry.params);
-        if (entry.method === "device.pair.list") {
-          expect(result.ok).toBe(true);
-          continue;
+        await assertMissingPairingScope(["operator.write"], "mapped-device-pairing-missing-scope");
+        await assertMissingPairingScope(
+          ["operator.admin", "operator.write"],
+          "mapped-device-pairing-admin-without-pairing",
+        );
+
+        const wsAllowed = await openWs(port);
+        const allowedRes = await connectReq(wsAllowed, {
+          scopes: ["operator.pairing"],
+          identity: undefined,
+        });
+        expect(allowedRes.ok).toBe(true);
+        for (const [index, entry] of methods.entries()) {
+          const id = `mapped-device-pairing-allowed-${index}`;
+          const result = await callMethod(wsAllowed, id, entry.method, entry.params);
+          if (entry.method === "device.pair.list") {
+            expect(result.ok).toBe(true);
+            continue;
+          }
+          expect(result.ok).toBe(false);
+          expect(result.error?.message ?? "").not.toContain("missing scope: operator.pairing");
         }
-        expect(result.ok).toBe(false);
-        expect(result.error?.message ?? "").not.toContain("missing scope: operator.pairing");
-      }
-      wsAllowed.close();
+        wsAllowed.close();
 
-      const deniedEvents = listGatewayAuthzDenyEvents({
-        reasonCode: "SCOPE_MISSING",
-        userId: "user-mapped-device-pairing",
-        limit: 200,
-      });
-      for (const [index, entry] of methods.entries()) {
-        expect(
-          deniedEvents.some(
-            (event) =>
-              event.method === entry.method &&
-              event.requestId === `mapped-device-pairing-missing-scope-${index}`,
-          ),
-        ).toBe(true);
-        expect(
-          deniedEvents.some(
-            (event) =>
-              event.method === entry.method &&
-              event.requestId === `mapped-device-pairing-admin-without-pairing-${index}`,
-          ),
-        ).toBe(true);
+        const deniedEvents = listGatewayAuthzDenyEvents({
+          reasonCode: "SCOPE_MISSING",
+          userId: "user-mapped-device-pairing",
+          limit: 200,
+        });
+        for (const [index, entry] of methods.entries()) {
+          expect(
+            deniedEvents.some(
+              (event) =>
+                event.method === entry.method &&
+                event.requestId === `mapped-device-pairing-missing-scope-${index}`,
+            ),
+          ).toBe(true);
+          expect(
+            deniedEvents.some(
+              (event) =>
+                event.method === entry.method &&
+                event.requestId === `mapped-device-pairing-admin-without-pairing-${index}`,
+            ),
+          ).toBe(true);
+        }
       }
     });
 
-    test("cron, skills, and agent mutation methods remain admin-only", async () => {
+    test("approval and pairing runtime events require explicit scopes for mapped non-admin principals in strict and compat modes", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      for (const mode of ["strict", "compat"] as const) {
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities: {
+                "msg:test:mapped-admin-scope-user": {
+                  userId: "mapped-admin-scope-user",
+                  principalId: "msg:test:mapped-admin-scope-user",
+                  alias: "MappedAdminScopeUser",
+                  role: "user",
+                },
+                "msg:test:mapped-no-role-user": {
+                  userId: "mapped-no-role-user",
+                  principalId: "msg:test:mapped-no-role-user",
+                  alias: "MappedNoRoleUser",
+                },
+                "msg:test:approvals-user": {
+                  userId: "approvals-user",
+                  principalId: "msg:test:approvals-user",
+                  alias: "ApprovalsUser",
+                  role: "user",
+                },
+                "msg:test:pairing-user": {
+                  userId: "pairing-user",
+                  principalId: "msg:test:pairing-user",
+                  alias: "PairingUser",
+                  role: "user",
+                },
+                "msg:test:admin-user": {
+                  userId: "admin-user",
+                  principalId: "msg:test:admin-user",
+                  alias: "AdminUser",
+                  role: "admin",
+                },
+              },
+            },
+          },
+        });
+
+        const modeMarker = `${mode}-${Date.now()}`;
+        const mappedUserWs = await openWs(port);
+        const mappedNoRoleWs = await openWs(port);
+        const approvalsWs = await openWs(port);
+        const pairingWs = await openWs(port);
+        const adminWs = await openWs(port);
+        try {
+          const [
+            mappedConnect,
+            mappedNoRoleConnect,
+            approvalsConnect,
+            pairingConnect,
+            adminConnect,
+          ] = await Promise.all([
+            connectReq(mappedUserWs, {
+              scopes: ["operator.admin", "operator.write"],
+              identity: {
+                userId: "mapped-admin-scope-user",
+                principalId: "msg:test:mapped-admin-scope-user",
+                alias: "MappedAdminScopeUser",
+              },
+            }),
+            connectReq(mappedNoRoleWs, {
+              scopes: ["operator.admin", "operator.write"],
+              identity: {
+                userId: "mapped-no-role-user",
+                principalId: "msg:test:mapped-no-role-user",
+                alias: "MappedNoRoleUser",
+              },
+            }),
+            connectReq(approvalsWs, {
+              scopes: ["operator.approvals"],
+              identity: {
+                userId: "approvals-user",
+                principalId: "msg:test:approvals-user",
+                alias: "ApprovalsUser",
+              },
+            }),
+            connectReq(pairingWs, {
+              scopes: ["operator.pairing"],
+              identity: {
+                userId: "pairing-user",
+                principalId: "msg:test:pairing-user",
+                alias: "PairingUser",
+              },
+            }),
+            connectReq(adminWs, {
+              scopes: ["operator.admin"],
+              identity: {
+                userId: "admin-user",
+                principalId: "msg:test:admin-user",
+                alias: "AdminUser",
+              },
+            }),
+          ]);
+          expect(mappedConnect.ok).toBe(true);
+          expect(mappedNoRoleConnect.ok).toBe(true);
+          expect(approvalsConnect.ok).toBe(true);
+          expect(pairingConnect.ok).toBe(true);
+          expect(adminConnect.ok).toBe(true);
+          expect(
+            (mappedConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+              ?.principalRole,
+          ).toBe("user");
+          const mappedNoRolePrincipalRole = (
+            mappedNoRoleConnect.payload as { auth?: { principalRole?: unknown } } | undefined
+          )?.auth?.principalRole;
+          expect(
+            mappedNoRolePrincipalRole === undefined || mappedNoRolePrincipalRole === "user",
+          ).toBe(true);
+
+          const approvalRequestId = `approval-scope-event-${modeMarker}`;
+          const approvalEventApprovalsP = onceMessage(
+            approvalsWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "exec.approval.requested" &&
+              o.payload?.id === approvalRequestId,
+            6000,
+          );
+          const approvalEventAdminP = onceMessage(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "exec.approval.requested" &&
+              o.payload?.id === approvalRequestId,
+            6000,
+          );
+          let mappedSawApprovalEvent = false;
+          let mappedNoRoleSawApprovalEvent = false;
+          let pairingSawApprovalEvent = false;
+          const mappedApprovalListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { id?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "exec.approval.requested" &&
+                parsed.payload?.id === approvalRequestId
+              ) {
+                mappedSawApprovalEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          const mappedNoRoleApprovalListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { id?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "exec.approval.requested" &&
+                parsed.payload?.id === approvalRequestId
+              ) {
+                mappedNoRoleSawApprovalEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          const pairingApprovalListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { id?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "exec.approval.requested" &&
+                parsed.payload?.id === approvalRequestId
+              ) {
+                pairingSawApprovalEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          mappedUserWs.on("message", mappedApprovalListener);
+          mappedNoRoleWs.on("message", mappedNoRoleApprovalListener);
+          pairingWs.on("message", pairingApprovalListener);
+
+          const approvalRequestRpcId = `approval-scope-request-${mode}`;
+          approvalsWs.send(
+            JSON.stringify({
+              type: "req",
+              id: approvalRequestRpcId,
+              method: "exec.approval.request",
+              params: {
+                id: approvalRequestId,
+                command: "echo scope-test",
+                timeoutMs: 80,
+              },
+            }),
+          );
+          const approvalRequestRes = await onceMessage<{
+            ok: boolean;
+            payload?: { id?: string };
+          }>(approvalsWs, (o) => o.type === "res" && o.id === approvalRequestRpcId, 6000);
+          expect(approvalRequestRes.ok).toBe(true);
+          expect(approvalRequestRes.payload?.id).toBe(approvalRequestId);
+          const approvalEventApprovals = await approvalEventApprovalsP;
+          expect(approvalEventApprovals.type).toBe("event");
+          const approvalEventAdmin = await approvalEventAdminP;
+          expect(approvalEventAdmin.type).toBe("event");
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          mappedUserWs.off("message", mappedApprovalListener);
+          mappedNoRoleWs.off("message", mappedNoRoleApprovalListener);
+          pairingWs.off("message", pairingApprovalListener);
+          expect(mappedSawApprovalEvent).toBe(false);
+          expect(mappedNoRoleSawApprovalEvent).toBe(false);
+          expect(pairingSawApprovalEvent).toBe(false);
+
+          const pairNodeId = `node-scope-event-${modeMarker}`;
+          const pairingEventPairingP = onceMessage(
+            pairingWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "node.pair.requested" &&
+              o.payload?.nodeId === pairNodeId,
+            6000,
+          );
+          const pairingEventAdminP = onceMessage(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "node.pair.requested" &&
+              o.payload?.nodeId === pairNodeId,
+            6000,
+          );
+          let mappedSawPairingEvent = false;
+          let mappedNoRoleSawPairingEvent = false;
+          let approvalsSawPairingEvent = false;
+          const mappedPairingListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { nodeId?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "node.pair.requested" &&
+                parsed.payload?.nodeId === pairNodeId
+              ) {
+                mappedSawPairingEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          const mappedNoRolePairingListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { nodeId?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "node.pair.requested" &&
+                parsed.payload?.nodeId === pairNodeId
+              ) {
+                mappedNoRoleSawPairingEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          const approvalsPairingListener = (raw: WebSocket.RawData) => {
+            try {
+              const parsed = JSON.parse(String(raw)) as {
+                type?: string;
+                event?: string;
+                payload?: { nodeId?: string };
+              };
+              if (
+                parsed.type === "event" &&
+                parsed.event === "node.pair.requested" &&
+                parsed.payload?.nodeId === pairNodeId
+              ) {
+                approvalsSawPairingEvent = true;
+              }
+            } catch {
+              /* ignore malformed test frames */
+            }
+          };
+          mappedUserWs.on("message", mappedPairingListener);
+          mappedNoRoleWs.on("message", mappedNoRolePairingListener);
+          approvalsWs.on("message", approvalsPairingListener);
+
+          const pairingRequestRpcId = `pairing-scope-request-${mode}`;
+          pairingWs.send(
+            JSON.stringify({
+              type: "req",
+              id: pairingRequestRpcId,
+              method: "node.pair.request",
+              params: {
+                nodeId: pairNodeId,
+                displayName: "Scope Test Node",
+                platform: "test",
+                version: "1.0.0",
+              },
+            }),
+          );
+          const pairingRequestRes = await onceMessage<{
+            ok: boolean;
+            payload?: { status?: string; request?: { nodeId?: string } };
+          }>(pairingWs, (o) => o.type === "res" && o.id === pairingRequestRpcId, 6000);
+          expect(pairingRequestRes.ok).toBe(true);
+          expect(pairingRequestRes.payload?.status).toBe("pending");
+          expect(pairingRequestRes.payload?.request?.nodeId).toBe(pairNodeId);
+          const pairingEventPairing = await pairingEventPairingP;
+          expect(pairingEventPairing.type).toBe("event");
+          const pairingEventAdmin = await pairingEventAdminP;
+          expect(pairingEventAdmin.type).toBe("event");
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          mappedUserWs.off("message", mappedPairingListener);
+          mappedNoRoleWs.off("message", mappedNoRolePairingListener);
+          approvalsWs.off("message", approvalsPairingListener);
+          expect(mappedSawPairingEvent).toBe(false);
+          expect(mappedNoRoleSawPairingEvent).toBe(false);
+          expect(approvalsSawPairingEvent).toBe(false);
+        } finally {
+          mappedUserWs.close();
+          mappedNoRoleWs.close();
+          approvalsWs.close();
+          pairingWs.close();
+          adminWs.close();
+        }
+      }
+    });
+
+    test("approval and pairing runtime events keep legacy admin-scope fallback in off mode", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+            identities: {},
+          },
+        },
+      });
+
+      const modeMarker = `off-${Date.now()}`;
+      const approvalRequestId = `approval-off-mode-${modeMarker}`;
+      const pairNodeId = `pair-off-mode-${modeMarker}`;
+      const legacyAdminWs = await openWs(port);
+      const approvalsWs = await openWs(port);
+      const pairingWs = await openWs(port);
+      try {
+        const [legacyConnect, approvalsConnect, pairingConnect] = await Promise.all([
+          connectReq(legacyAdminWs, {
+            scopes: ["operator.admin"],
+            identity: undefined,
+          }),
+          connectReq(approvalsWs, {
+            scopes: ["operator.approvals"],
+            identity: {
+              userId: "off-approvals-user",
+              principalId: "msg:test:off-approvals-user",
+              alias: "OffApprovalsUser",
+            },
+          }),
+          connectReq(pairingWs, {
+            scopes: ["operator.pairing"],
+            identity: {
+              userId: "off-pairing-user",
+              principalId: "msg:test:off-pairing-user",
+              alias: "OffPairingUser",
+            },
+          }),
+        ]);
+        expect(legacyConnect.ok).toBe(true);
+        expect(approvalsConnect.ok).toBe(true);
+        expect(pairingConnect.ok).toBe(true);
+
+        let pairingSawApprovalEvent = false;
+        const pairingApprovalListener = (raw: WebSocket.RawData) => {
+          try {
+            const parsed = JSON.parse(String(raw)) as {
+              type?: string;
+              event?: string;
+              payload?: { id?: string };
+            };
+            if (
+              parsed.type === "event" &&
+              parsed.event === "exec.approval.requested" &&
+              parsed.payload?.id === approvalRequestId
+            ) {
+              pairingSawApprovalEvent = true;
+            }
+          } catch {
+            /* ignore malformed test frames */
+          }
+        };
+        pairingWs.on("message", pairingApprovalListener);
+
+        const approvalEventApprovalsP = onceMessage(
+          approvalsWs,
+          (o) =>
+            o.type === "event" &&
+            o.event === "exec.approval.requested" &&
+            o.payload?.id === approvalRequestId,
+          6000,
+        );
+        const approvalEventLegacyAdminP = onceMessage(
+          legacyAdminWs,
+          (o) =>
+            o.type === "event" &&
+            o.event === "exec.approval.requested" &&
+            o.payload?.id === approvalRequestId,
+          6000,
+        );
+        approvalsWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `approval-off-mode-request-${modeMarker}`,
+            method: "exec.approval.request",
+            params: {
+              id: approvalRequestId,
+              command: "echo off-mode",
+              timeoutMs: 80,
+            },
+          }),
+        );
+        const approvalRequestRes = await onceMessage<{ ok: boolean; payload?: { id?: string } }>(
+          approvalsWs,
+          (o) => o.type === "res" && o.id === `approval-off-mode-request-${modeMarker}`,
+          6000,
+        );
+        expect(approvalRequestRes.ok).toBe(true);
+        expect(approvalRequestRes.payload?.id).toBe(approvalRequestId);
+        const approvalEventApprovals = await approvalEventApprovalsP;
+        expect(approvalEventApprovals.type).toBe("event");
+        const approvalEventLegacyAdmin = await approvalEventLegacyAdminP;
+        expect(approvalEventLegacyAdmin.type).toBe("event");
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        pairingWs.off("message", pairingApprovalListener);
+        expect(pairingSawApprovalEvent).toBe(false);
+
+        let approvalsSawPairingEvent = false;
+        const approvalsPairingListener = (raw: WebSocket.RawData) => {
+          try {
+            const parsed = JSON.parse(String(raw)) as {
+              type?: string;
+              event?: string;
+              payload?: { nodeId?: string };
+            };
+            if (
+              parsed.type === "event" &&
+              parsed.event === "node.pair.requested" &&
+              parsed.payload?.nodeId === pairNodeId
+            ) {
+              approvalsSawPairingEvent = true;
+            }
+          } catch {
+            /* ignore malformed test frames */
+          }
+        };
+        approvalsWs.on("message", approvalsPairingListener);
+
+        const pairingEventPairingP = onceMessage(
+          pairingWs,
+          (o) =>
+            o.type === "event" &&
+            o.event === "node.pair.requested" &&
+            o.payload?.nodeId === pairNodeId,
+          6000,
+        );
+        const pairingEventLegacyAdminP = onceMessage(
+          legacyAdminWs,
+          (o) =>
+            o.type === "event" &&
+            o.event === "node.pair.requested" &&
+            o.payload?.nodeId === pairNodeId,
+          6000,
+        );
+        pairingWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `pairing-off-mode-request-${modeMarker}`,
+            method: "node.pair.request",
+            params: {
+              nodeId: pairNodeId,
+              displayName: "Off Mode Scope Test Node",
+              platform: "test",
+              version: "1.0.0",
+            },
+          }),
+        );
+        const pairingRequestRes = await onceMessage<{
+          ok: boolean;
+          payload?: { status?: string; request?: { nodeId?: string } };
+        }>(
+          pairingWs,
+          (o) => o.type === "res" && o.id === `pairing-off-mode-request-${modeMarker}`,
+          6000,
+        );
+        expect(pairingRequestRes.ok).toBe(true);
+        expect(pairingRequestRes.payload?.status).toBe("pending");
+        expect(pairingRequestRes.payload?.request?.nodeId).toBe(pairNodeId);
+        const pairingEventPairing = await pairingEventPairingP;
+        expect(pairingEventPairing.type).toBe("event");
+        const pairingEventLegacyAdmin = await pairingEventLegacyAdminP;
+        expect(pairingEventLegacyAdmin.type).toBe("event");
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        approvalsWs.off("message", approvalsPairingListener);
+        expect(approvalsSawPairingEvent).toBe(false);
+      } finally {
+        legacyAdminWs.close();
+        approvalsWs.close();
+        pairingWs.close();
+      }
+    });
+
+    test("approval and pairing runtime fanout keeps mapped non-admin admin-scope observers blocked across strict/off mode changes", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      const identities = {
+        "msg:test:mode-switch-observer-user": {
+          userId: "mode-switch-observer-user",
+          principalId: "msg:test:mode-switch-observer-user",
+          alias: "ModeSwitchObserverUser",
+          role: "user",
+        },
+        "msg:test:mode-switch-approvals-user": {
+          userId: "mode-switch-approvals-user",
+          principalId: "msg:test:mode-switch-approvals-user",
+          alias: "ModeSwitchApprovalsUser",
+          role: "user",
+        },
+        "msg:test:mode-switch-pairing-user": {
+          userId: "mode-switch-pairing-user",
+          principalId: "msg:test:mode-switch-pairing-user",
+          alias: "ModeSwitchPairingUser",
+          role: "user",
+        },
+      } as const;
+      const writeMode = async (mode: "strict" | "off"): Promise<void> => {
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities,
+            },
+          },
+        });
+      };
+      await writeMode("strict");
+
+      const marker = `approval-pairing-mode-switch-${Date.now()}`;
+      const observerWs = await openWs(port);
+      const approvalsWs = await openWs(port);
+      const pairingWs = await openWs(port);
+      const observedApprovalIds = new Set<string>();
+      const observedPairNodeIds = new Set<string>();
+      const waitForNoObservedApproval = async (approvalId: string, waitMs = 300): Promise<void> => {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        expect(observedApprovalIds.has(approvalId)).toBe(false);
+      };
+      const waitForNoObservedPairing = async (nodeId: string, waitMs = 300): Promise<void> => {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        expect(observedPairNodeIds.has(nodeId)).toBe(false);
+      };
+      const observerListener = (raw: WebSocket.RawData) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as {
+            type?: string;
+            event?: string;
+            payload?: { id?: string; nodeId?: string };
+          };
+          if (parsed.type !== "event") {
+            return;
+          }
+          if (
+            parsed.event === "exec.approval.requested" &&
+            typeof parsed.payload?.id === "string"
+          ) {
+            observedApprovalIds.add(parsed.payload.id);
+            return;
+          }
+          if (
+            parsed.event === "node.pair.requested" &&
+            typeof parsed.payload?.nodeId === "string"
+          ) {
+            observedPairNodeIds.add(parsed.payload.nodeId);
+          }
+        } catch {
+          /* ignore malformed test frames */
+        }
+      };
+      observerWs.on("message", observerListener);
+      const requestApproval = async (approvalId: string): Promise<void> => {
+        const reqId = `${approvalId}-request`;
+        const approvalEventP = onceMessage(
+          approvalsWs,
+          (o) =>
+            o.type === "event" &&
+            o.event === "exec.approval.requested" &&
+            o.payload?.id === approvalId,
+          6000,
+        );
+        approvalsWs.send(
+          JSON.stringify({
+            type: "req",
+            id: reqId,
+            method: "exec.approval.request",
+            params: {
+              id: approvalId,
+              command: "echo mode-switch",
+              timeoutMs: 80,
+            },
+          }),
+        );
+        const approvalRes = await onceMessage<{ ok: boolean; payload?: { id?: string } }>(
+          approvalsWs,
+          (o) => o.type === "res" && o.id === reqId,
+          6000,
+        );
+        expect(approvalRes.ok).toBe(true);
+        expect(approvalRes.payload?.id).toBe(approvalId);
+        const approvalEvent = await approvalEventP;
+        expect(approvalEvent.type).toBe("event");
+      };
+      const requestPairing = async (nodeId: string): Promise<void> => {
+        const reqId = `${nodeId}-request`;
+        const pairingEventP = onceMessage(
+          pairingWs,
+          (o) =>
+            o.type === "event" && o.event === "node.pair.requested" && o.payload?.nodeId === nodeId,
+          6000,
+        );
+        pairingWs.send(
+          JSON.stringify({
+            type: "req",
+            id: reqId,
+            method: "node.pair.request",
+            params: {
+              nodeId,
+              displayName: "Mode Switch Scope Test Node",
+              platform: "test",
+              version: "1.0.0",
+            },
+          }),
+        );
+        const pairingRes = await onceMessage<{
+          ok: boolean;
+          payload?: { status?: string; request?: { nodeId?: string } };
+        }>(pairingWs, (o) => o.type === "res" && o.id === reqId, 6000);
+        expect(pairingRes.ok).toBe(true);
+        expect(pairingRes.payload?.status).toBe("pending");
+        expect(pairingRes.payload?.request?.nodeId).toBe(nodeId);
+        const pairingEvent = await pairingEventP;
+        expect(pairingEvent.type).toBe("event");
+      };
+
+      try {
+        const [observerConnect, approvalsConnect, pairingConnect] = await Promise.all([
+          connectReq(observerWs, {
+            scopes: ["operator.admin", "operator.write"],
+            identity: {
+              userId: "mode-switch-observer-user",
+              principalId: "msg:test:mode-switch-observer-user",
+              alias: "ModeSwitchObserverUser",
+            },
+          }),
+          connectReq(approvalsWs, {
+            scopes: ["operator.approvals"],
+            identity: {
+              userId: "mode-switch-approvals-user",
+              principalId: "msg:test:mode-switch-approvals-user",
+              alias: "ModeSwitchApprovalsUser",
+            },
+          }),
+          connectReq(pairingWs, {
+            scopes: ["operator.pairing"],
+            identity: {
+              userId: "mode-switch-pairing-user",
+              principalId: "msg:test:mode-switch-pairing-user",
+              alias: "ModeSwitchPairingUser",
+            },
+          }),
+        ]);
+        expect(observerConnect.ok).toBe(true);
+        expect(approvalsConnect.ok).toBe(true);
+        expect(pairingConnect.ok).toBe(true);
+        expect(
+          (observerConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+            ?.principalRole,
+        ).toBe("user");
+
+        const strictInitialApprovalId = `${marker}-strict-initial-approval`;
+        await requestApproval(strictInitialApprovalId);
+        await waitForNoObservedApproval(strictInitialApprovalId);
+        const strictInitialPairNodeId = `${marker}-strict-initial-pair`;
+        await requestPairing(strictInitialPairNodeId);
+        await waitForNoObservedPairing(strictInitialPairNodeId);
+
+        await writeMode("off");
+
+        const offApprovalId = `${marker}-off-approval`;
+        await requestApproval(offApprovalId);
+        await waitForNoObservedApproval(offApprovalId);
+        const offPairNodeId = `${marker}-off-pair`;
+        await requestPairing(offPairNodeId);
+        await waitForNoObservedPairing(offPairNodeId);
+
+        await writeMode("strict");
+
+        const strictFinalApprovalId = `${marker}-strict-final-approval`;
+        await requestApproval(strictFinalApprovalId);
+        await waitForNoObservedApproval(strictFinalApprovalId);
+        const strictFinalPairNodeId = `${marker}-strict-final-pair`;
+        await requestPairing(strictFinalPairNodeId);
+        await waitForNoObservedPairing(strictFinalPairNodeId);
+      } finally {
+        observerWs.off("message", observerListener);
+        observerWs.close();
+        approvalsWs.close();
+        pairingWs.close();
+      }
+    });
+
+    test("control-plane runtime events remain broadly visible in off mode", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "off",
+            identities: {
+              "msg:test:off-mapped-user": {
+                userId: "off-mapped-user",
+                principalId: "msg:test:off-mapped-user",
+                alias: "OffMappedUser",
+                role: "user",
+              },
+              "msg:test:off-admin-user": {
+                userId: "off-admin-user",
+                principalId: "msg:test:off-admin-user",
+                alias: "OffAdminUser",
+                role: "admin",
+              },
+            },
+          },
+        },
+      });
+
+      const modeMarker = `off-control-plane-${Date.now()}`;
+      const talkPhase = `talk-${modeMarker}`;
+      const voicewakeTrigger = `voicewake-${modeMarker}`;
+      const heartbeatReason = `heartbeat-${modeMarker}`;
+      const presenceReason = `presence-${modeMarker}`;
+      const presenceDeviceId = `device-${modeMarker}`;
+
+      const mappedUserWs = await openWs(port);
+      const adminWs = await openWs(port);
+      const observed = new Set<string>();
+      const observedCronAddedJobIds = new Set<string>();
+      const waitForObserved = async (
+        label: string,
+        predicate: () => boolean,
+        timeoutMs = 6000,
+      ): Promise<void> => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (predicate()) {
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        throw new Error(
+          `timeout waiting for ${label}; observed=${JSON.stringify([...observed])} cronAdded=${JSON.stringify([...observedCronAddedJobIds])}`,
+        );
+      };
+      const mappedListener = (raw: WebSocket.RawData) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as {
+            type?: string;
+            event?: string;
+            payload?: {
+              phase?: string;
+              reason?: string;
+              triggers?: string[];
+              action?: string;
+              jobId?: string;
+              presence?: Array<{ reason?: string; deviceId?: string }>;
+            };
+          };
+          if (parsed.type !== "event" || typeof parsed.event !== "string") {
+            return;
+          }
+          if (parsed.event === "talk.mode" && parsed.payload?.phase === talkPhase) {
+            observed.add("talk.mode");
+            return;
+          }
+          if (
+            parsed.event === "voicewake.changed" &&
+            Array.isArray(parsed.payload?.triggers) &&
+            parsed.payload.triggers.includes(voicewakeTrigger)
+          ) {
+            observed.add("voicewake.changed");
+            return;
+          }
+          if (parsed.event === "heartbeat" && parsed.payload?.reason === heartbeatReason) {
+            observed.add("heartbeat");
+            return;
+          }
+          if (
+            parsed.event === "presence" &&
+            Array.isArray(parsed.payload?.presence) &&
+            parsed.payload.presence.some(
+              (entry) => entry?.reason === presenceReason && entry?.deviceId === presenceDeviceId,
+            )
+          ) {
+            observed.add("presence");
+            return;
+          }
+          if (
+            parsed.event === "cron" &&
+            parsed.payload?.action === "added" &&
+            typeof parsed.payload?.jobId === "string"
+          ) {
+            observedCronAddedJobIds.add(parsed.payload.jobId);
+          }
+        } catch {
+          /* ignore malformed frames */
+        }
+      };
+      mappedUserWs.on("message", mappedListener);
+      try {
+        const [mappedConnect, adminConnect] = await Promise.all([
+          connectReq(mappedUserWs, {
+            scopes: ["operator.write"],
+            identity: {
+              userId: "off-mapped-user",
+              principalId: "msg:test:off-mapped-user",
+              alias: "OffMappedUser",
+            },
+          }),
+          connectReq(adminWs, {
+            scopes: ["operator.admin"],
+            identity: {
+              userId: "off-admin-user",
+              principalId: "msg:test:off-admin-user",
+              alias: "OffAdminUser",
+            },
+          }),
+        ]);
+        expect(mappedConnect.ok).toBe(true);
+        expect(adminConnect.ok).toBe(true);
+
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `off-mode-talk-mode-${modeMarker}`,
+            method: "talk.mode",
+            params: { enabled: true, phase: talkPhase },
+          }),
+        );
+        const talkRes = await onceMessage<{ ok: boolean }>(
+          adminWs,
+          (o) => o.type === "res" && o.id === `off-mode-talk-mode-${modeMarker}`,
+          6000,
+        );
+        expect(talkRes.ok).toBe(true);
+        await waitForObserved("talk.mode", () => observed.has("talk.mode"));
+
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `off-mode-voicewake-set-${modeMarker}`,
+            method: "voicewake.set",
+            params: { triggers: ["openclaw", voicewakeTrigger] },
+          }),
+        );
+        const voicewakeRes = await onceMessage<{ ok: boolean }>(
+          adminWs,
+          (o) => o.type === "res" && o.id === `off-mode-voicewake-set-${modeMarker}`,
+          6000,
+        );
+        expect(voicewakeRes.ok).toBe(true);
+        await waitForObserved("voicewake.changed", () => observed.has("voicewake.changed"));
+
+        emitHeartbeatEvent({
+          status: "sent",
+          reason: heartbeatReason,
+        });
+        await waitForObserved("heartbeat", () => observed.has("heartbeat"));
+
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `off-mode-system-event-${modeMarker}`,
+            method: "system-event",
+            params: {
+              text: "off mode control-plane presence test",
+              reason: presenceReason,
+              deviceId: presenceDeviceId,
+              mode: "off-test",
+            },
+          }),
+        );
+        const presenceRes = await onceMessage<{ ok: boolean }>(
+          adminWs,
+          (o) => o.type === "res" && o.id === `off-mode-system-event-${modeMarker}`,
+          6000,
+        );
+        expect(presenceRes.ok).toBe(true);
+        await waitForObserved("presence", () => observed.has("presence"));
+
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `off-mode-cron-add-${modeMarker}`,
+            method: "cron.add",
+            params: {
+              name: `off-mode-cron-${modeMarker}`,
+              enabled: true,
+              schedule: { kind: "every", everyMs: 60_000 },
+              sessionTarget: "main",
+              wakeMode: "next-heartbeat",
+              payload: {
+                kind: "systemEvent",
+                text: "off mode control-plane cron event test",
+              },
+            },
+          }),
+        );
+        const cronAddRes = await onceMessage<{ ok: boolean; payload?: { id?: string } }>(
+          adminWs,
+          (o) => o.type === "res" && o.id === `off-mode-cron-add-${modeMarker}`,
+          6000,
+        );
+        expect(cronAddRes.ok).toBe(true);
+        const cronAddedJobId =
+          typeof cronAddRes.payload?.id === "string" ? cronAddRes.payload.id : "";
+        expect(cronAddedJobId.length).toBeGreaterThan(0);
+        await waitForObserved("cron.added", () => observedCronAddedJobIds.has(cronAddedJobId));
+
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id: `off-mode-cron-remove-${modeMarker}`,
+            method: "cron.remove",
+            params: { id: cronAddedJobId },
+          }),
+        );
+        const cronRemoveRes = await onceMessage<{
+          ok: boolean;
+          payload?: { removed?: boolean };
+        }>(adminWs, (o) => o.type === "res" && o.id === `off-mode-cron-remove-${modeMarker}`, 6000);
+        expect(cronRemoveRes.ok).toBe(true);
+        expect(cronRemoveRes.payload?.removed).toBe(true);
+      } finally {
+        mappedUserWs.off("message", mappedListener);
+        mappedUserWs.close();
+        adminWs.close();
+      }
+    });
+
+    test("control-plane runtime fanout follows strict/off mode changes without reconnect", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      const identities = {
+        "msg:test:mode-switch-mapped-user": {
+          userId: "mode-switch-mapped-user",
+          principalId: "msg:test:mode-switch-mapped-user",
+          alias: "ModeSwitchMappedUser",
+          role: "user",
+        },
+        "msg:test:mode-switch-admin-user": {
+          userId: "mode-switch-admin-user",
+          principalId: "msg:test:mode-switch-admin-user",
+          alias: "ModeSwitchAdminUser",
+          role: "admin",
+        },
+      } as const;
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities,
+          },
+        },
+      });
+
+      const marker = `mode-switch-${Date.now()}`;
+      const mappedUserWs = await openWs(port);
+      const adminWs = await openWs(port);
+      const observedTalkPhases = new Set<string>();
+      const waitForObservedPhase = async (phase: string, timeoutMs = 6000): Promise<void> => {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+          if (observedTalkPhases.has(phase)) {
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        throw new Error(
+          `timeout waiting for talk.mode phase ${phase}; observed=${JSON.stringify([...observedTalkPhases])}`,
+        );
+      };
+      const waitForNoObservedPhase = async (phase: string, waitMs = 300): Promise<void> => {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        expect(observedTalkPhases.has(phase)).toBe(false);
+      };
+      const sendTalkMode = async (id: string, phase: string): Promise<void> => {
+        const eventP = onceMessage(
+          adminWs,
+          (o) => o.type === "event" && o.event === "talk.mode" && o.payload?.phase === phase,
+          6000,
+        );
+        adminWs.send(
+          JSON.stringify({
+            type: "req",
+            id,
+            method: "talk.mode",
+            params: { enabled: true, phase },
+          }),
+        );
+        const res = await onceMessage<{ ok: boolean }>(
+          adminWs,
+          (o) => o.type === "res" && o.id === id,
+          6000,
+        );
+        expect(res.ok).toBe(true);
+        await eventP;
+      };
+      const mappedListener = (raw: WebSocket.RawData) => {
+        try {
+          const parsed = JSON.parse(String(raw)) as {
+            type?: string;
+            event?: string;
+            payload?: { phase?: string };
+          };
+          if (
+            parsed.type === "event" &&
+            parsed.event === "talk.mode" &&
+            typeof parsed.payload?.phase === "string"
+          ) {
+            observedTalkPhases.add(parsed.payload.phase);
+          }
+        } catch {
+          /* ignore malformed frames */
+        }
+      };
+      mappedUserWs.on("message", mappedListener);
+      try {
+        const [mappedConnect, adminConnect] = await Promise.all([
+          connectReq(mappedUserWs, {
+            scopes: ["operator.write"],
+            identity: {
+              userId: "mode-switch-mapped-user",
+              principalId: "msg:test:mode-switch-mapped-user",
+              alias: "ModeSwitchMappedUser",
+            },
+          }),
+          connectReq(adminWs, {
+            scopes: ["operator.admin"],
+            identity: {
+              userId: "mode-switch-admin-user",
+              principalId: "msg:test:mode-switch-admin-user",
+              alias: "ModeSwitchAdminUser",
+            },
+          }),
+        ]);
+        expect(mappedConnect.ok).toBe(true);
+        expect(adminConnect.ok).toBe(true);
+
+        const strictInitialPhase = `${marker}-strict-initial`;
+        await sendTalkMode(`${marker}-strict-initial-req`, strictInitialPhase);
+        await waitForNoObservedPhase(strictInitialPhase);
+
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode: "off",
+              identities,
+            },
+          },
+        });
+
+        const offPhase = `${marker}-off`;
+        await sendTalkMode(`${marker}-off-req`, offPhase);
+        await waitForObservedPhase(offPhase);
+
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode: "strict",
+              identities,
+            },
+          },
+        });
+
+        const strictFinalPhase = `${marker}-strict-final`;
+        await sendTalkMode(`${marker}-strict-final-req`, strictFinalPhase);
+        await waitForNoObservedPhase(strictFinalPhase);
+      } finally {
+        mappedUserWs.off("message", mappedListener);
+        mappedUserWs.close();
+        adminWs.close();
+      }
+    });
+
+    test("admin-only method auth remains role-gated across strict/off mode changes without reconnect", async () => {
+      authzDeniedEventsTest.clear();
+      const { writeConfigFile } = await import("../config/config.js");
+      const identities = {
+        "msg:test:method-mode-switch-mapped-user": {
+          userId: "method-mode-switch-mapped-user",
+          principalId: "msg:test:method-mode-switch-mapped-user",
+          alias: "MethodModeSwitchMappedUser",
+          role: "user",
+        },
+        "msg:test:method-mode-switch-admin-user": {
+          userId: "method-mode-switch-admin-user",
+          principalId: "msg:test:method-mode-switch-admin-user",
+          alias: "MethodModeSwitchAdminUser",
+          role: "admin",
+        },
+      } as const;
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities,
+          },
+        },
+      });
+
+      const marker = `method-mode-switch-${Date.now()}`;
+      const mappedUserWs = await openWs(port);
+      const adminWs = await openWs(port);
+      const request = async (
+        ws: WebSocket,
+        id: string,
+        method: string,
+        params: Record<string, unknown>,
+      ) => {
+        ws.send(JSON.stringify({ type: "req", id, method, params }));
+        return await onceMessage<{
+          ok: boolean;
+          payload?: Record<string, unknown>;
+          error?: { message?: string; details?: { reasonCode?: string } };
+        }>(ws, (o) => o.type === "res" && o.id === id, 6000);
+      };
+      const writeMode = async (mode: "strict" | "off"): Promise<void> => {
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities,
+            },
+          },
+        });
+      };
+      try {
+        const [mappedConnect, adminConnect] = await Promise.all([
+          connectReq(mappedUserWs, {
+            scopes: ["operator.admin", "operator.write"],
+            identity: {
+              userId: "method-mode-switch-mapped-user",
+              principalId: "msg:test:method-mode-switch-mapped-user",
+              alias: "MethodModeSwitchMappedUser",
+            },
+          }),
+          connectReq(adminWs, {
+            scopes: ["operator.admin"],
+            identity: {
+              userId: "method-mode-switch-admin-user",
+              principalId: "msg:test:method-mode-switch-admin-user",
+              alias: "MethodModeSwitchAdminUser",
+            },
+          }),
+        ]);
+        expect(mappedConnect.ok).toBe(true);
+        expect(adminConnect.ok).toBe(true);
+        expect(
+          (mappedConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+            ?.principalRole,
+        ).toBe("user");
+        expect(
+          (adminConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+            ?.principalRole,
+        ).toBe("admin");
+
+        const strictInitialMappedId = `${marker}-strict-initial-mapped`;
+        const strictInitialMapped = await request(
+          mappedUserWs,
+          strictInitialMappedId,
+          "status",
+          {},
+        );
+        expect(strictInitialMapped.ok).toBe(false);
+        expect(strictInitialMapped.error?.message ?? "").toContain(
+          "admin scope requires admin principal role",
+        );
+        expect(strictInitialMapped.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+
+        const strictInitialAdmin = await request(
+          adminWs,
+          `${marker}-strict-initial-admin`,
+          "status",
+          {},
+        );
+        expect(strictInitialAdmin.ok).toBe(true);
+
+        await writeMode("off");
+
+        const offMappedId = `${marker}-off-mapped`;
+        const offMapped = await request(mappedUserWs, offMappedId, "status", {});
+        expect(offMapped.ok).toBe(false);
+        expect(offMapped.error?.message ?? "").toContain(
+          "admin scope requires admin principal role",
+        );
+        expect(offMapped.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+
+        const offAdmin = await request(adminWs, `${marker}-off-admin`, "status", {});
+        expect(offAdmin.ok).toBe(true);
+
+        await writeMode("strict");
+
+        const strictFinalMappedId = `${marker}-strict-final-mapped`;
+        const strictFinalMapped = await request(mappedUserWs, strictFinalMappedId, "status", {});
+        expect(strictFinalMapped.ok).toBe(false);
+        expect(strictFinalMapped.error?.message ?? "").toContain(
+          "admin scope requires admin principal role",
+        );
+        expect(strictFinalMapped.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+
+        const strictFinalAdmin = await request(
+          adminWs,
+          `${marker}-strict-final-admin`,
+          "status",
+          {},
+        );
+        expect(strictFinalAdmin.ok).toBe(true);
+
+        const deniedStatus = listGatewayAuthzDenyEvents({
+          method: "status",
+          reasonCode: "ROLE_FORBIDDEN",
+          userId: "method-mode-switch-mapped-user",
+          limit: 20,
+        });
+        expect(deniedStatus.some((event) => event.requestId === strictInitialMappedId)).toBe(true);
+        expect(deniedStatus.some((event) => event.requestId === offMappedId)).toBe(true);
+        expect(deniedStatus.some((event) => event.requestId === strictFinalMappedId)).toBe(true);
+      } finally {
+        mappedUserWs.close();
+        adminWs.close();
+      }
+    });
+
+    test("control-plane runtime events require resolved admin principal for mapped non-admin sessions in strict and compat modes", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      for (const mode of ["strict", "compat"] as const) {
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode,
+              identities: {
+                "msg:test:mapped-admin-scope-user": {
+                  userId: "mapped-admin-scope-user",
+                  principalId: "msg:test:mapped-admin-scope-user",
+                  alias: "MappedAdminScopeUser",
+                  role: "user",
+                },
+                "msg:test:mapped-no-role-user": {
+                  userId: "mapped-no-role-user",
+                  principalId: "msg:test:mapped-no-role-user",
+                  alias: "MappedNoRoleUser",
+                },
+                "msg:test:admin-user": {
+                  userId: "admin-user",
+                  principalId: "msg:test:admin-user",
+                  alias: "AdminUser",
+                  role: "admin",
+                },
+              },
+            },
+          },
+        });
+
+        const mappedUserWs = await openWs(port);
+        const mappedNoRoleWs = await openWs(port);
+        const adminWs = await openWs(port);
+        try {
+          const [mappedConnect, mappedNoRoleConnect, adminConnect] = await Promise.all([
+            connectReq(mappedUserWs, {
+              scopes: ["operator.admin", "operator.write"],
+              identity: {
+                userId: "mapped-admin-scope-user",
+                principalId: "msg:test:mapped-admin-scope-user",
+                alias: "MappedAdminScopeUser",
+              },
+            }),
+            connectReq(mappedNoRoleWs, {
+              scopes: ["operator.admin", "operator.write"],
+              identity: {
+                userId: "mapped-no-role-user",
+                principalId: "msg:test:mapped-no-role-user",
+                alias: "MappedNoRoleUser",
+              },
+            }),
+            connectReq(adminWs, {
+              scopes: ["operator.admin"],
+              identity: {
+                userId: "admin-user",
+                principalId: "msg:test:admin-user",
+                alias: "AdminUser",
+              },
+            }),
+          ]);
+          expect(mappedConnect.ok).toBe(true);
+          expect(mappedNoRoleConnect.ok).toBe(true);
+          expect(adminConnect.ok).toBe(true);
+          expect(
+            (mappedConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+              ?.principalRole,
+          ).toBe("user");
+          const mappedNoRolePrincipalRole = (
+            mappedNoRoleConnect.payload as { auth?: { principalRole?: unknown } } | undefined
+          )?.auth?.principalRole;
+          expect(
+            mappedNoRolePrincipalRole === undefined || mappedNoRolePrincipalRole === "user",
+          ).toBe(true);
+          expect(
+            (adminConnect.payload as { auth?: { principalRole?: unknown } } | undefined)?.auth
+              ?.principalRole,
+          ).toBe("admin");
+
+          const requestStatus = async (ws: WebSocket, id: string) => {
+            ws.send(
+              JSON.stringify({
+                type: "req",
+                id,
+                method: "status",
+                params: {},
+              }),
+            );
+            return await onceMessage<{
+              ok: boolean;
+              error?: { message?: string; details?: { reasonCode?: string } };
+            }>(ws, (o) => o.type === "res" && o.id === id, 6000);
+          };
+
+          const mappedStatus = await requestStatus(mappedUserWs, `mapped-non-admin-status-${mode}`);
+          expect(mappedStatus.ok).toBe(false);
+          expect(mappedStatus.error?.message ?? "").toContain(
+            "admin scope requires admin principal role",
+          );
+          expect(mappedStatus.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+
+          const mappedNoRoleStatus = await requestStatus(
+            mappedNoRoleWs,
+            `mapped-no-role-status-${mode}`,
+          );
+          expect(mappedNoRoleStatus.ok).toBe(false);
+          expect(mappedNoRoleStatus.error?.message ?? "").toContain(
+            "admin scope requires admin principal role",
+          );
+          expect(mappedNoRoleStatus.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+
+          const adminStatus = await requestStatus(adminWs, `admin-status-${mode}`);
+          expect(adminStatus.ok).toBe(true);
+
+          const marker = `${mode}-${Date.now()}`;
+          const talkPhase = `talk-${marker}`;
+          const voicewakeTrigger = `voicewake-${marker}`;
+          const heartbeatReason = `heartbeat-${marker}`;
+          const presenceReason = `presence-${marker}`;
+          const presenceDeviceId = `device-${marker}`;
+          const registerBlockedObserver = (ws: WebSocket) => {
+            const blockedEvents = new Set<string>();
+            const cronAddedJobIds = new Set<string>();
+            const listener = (raw: WebSocket.RawData) => {
+              try {
+                const parsed = JSON.parse(String(raw)) as {
+                  type?: string;
+                  event?: string;
+                  payload?: {
+                    reason?: string;
+                    action?: string;
+                    jobId?: string;
+                    presence?: Array<{ reason?: string; deviceId?: string }>;
+                  };
+                };
+                if (parsed.type !== "event" || typeof parsed.event !== "string") {
+                  return;
+                }
+                if (
+                  parsed.event === "talk.mode" ||
+                  parsed.event === "voicewake.changed" ||
+                  (parsed.event === "heartbeat" && parsed.payload?.reason === heartbeatReason)
+                ) {
+                  blockedEvents.add(parsed.event);
+                }
+                if (
+                  parsed.event === "presence" &&
+                  Array.isArray(parsed.payload?.presence) &&
+                  parsed.payload.presence.some(
+                    (entry) =>
+                      entry?.reason === presenceReason && entry?.deviceId === presenceDeviceId,
+                  )
+                ) {
+                  blockedEvents.add("presence");
+                }
+                if (
+                  parsed.event === "cron" &&
+                  parsed.payload?.action === "added" &&
+                  typeof parsed.payload?.jobId === "string"
+                ) {
+                  cronAddedJobIds.add(parsed.payload.jobId);
+                }
+              } catch {
+                /* ignore malformed frames */
+              }
+            };
+            ws.on("message", listener);
+            return { blockedEvents, cronAddedJobIds, listener };
+          };
+
+          const mappedObserver = registerBlockedObserver(mappedUserWs);
+          const mappedNoRoleObserver = registerBlockedObserver(mappedNoRoleWs);
+
+          const talkEventP = onceMessage(
+            adminWs,
+            (o) => o.type === "event" && o.event === "talk.mode" && o.payload?.phase === talkPhase,
+            6000,
+          );
+          adminWs.send(
+            JSON.stringify({
+              type: "req",
+              id: `mapped-non-admin-talk-mode-${mode}`,
+              method: "talk.mode",
+              params: { enabled: true, phase: talkPhase },
+            }),
+          );
+          const talkRes = await onceMessage<{ ok: boolean }>(
+            adminWs,
+            (o) => o.type === "res" && o.id === `mapped-non-admin-talk-mode-${mode}`,
+            6000,
+          );
+          expect(talkRes.ok).toBe(true);
+          await talkEventP;
+
+          const voicewakeEventP = onceMessage(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "voicewake.changed" &&
+              Array.isArray(o.payload?.triggers) &&
+              o.payload?.triggers?.includes(voicewakeTrigger),
+            6000,
+          );
+          adminWs.send(
+            JSON.stringify({
+              type: "req",
+              id: `mapped-non-admin-voicewake-set-${mode}`,
+              method: "voicewake.set",
+              params: { triggers: ["openclaw", voicewakeTrigger] },
+            }),
+          );
+          const voicewakeRes = await onceMessage<{ ok: boolean }>(
+            adminWs,
+            (o) => o.type === "res" && o.id === `mapped-non-admin-voicewake-set-${mode}`,
+            6000,
+          );
+          expect(voicewakeRes.ok).toBe(true);
+          await voicewakeEventP;
+
+          const heartbeatEventP = onceMessage(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "heartbeat" &&
+              o.payload?.reason === heartbeatReason,
+            6000,
+          );
+          emitHeartbeatEvent({
+            status: "sent",
+            reason: heartbeatReason,
+          });
+          await heartbeatEventP;
+
+          const presenceEventP = onceMessage(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "presence" &&
+              Array.isArray(o.payload?.presence) &&
+              o.payload?.presence?.some(
+                (entry) => entry?.reason === presenceReason && entry?.deviceId === presenceDeviceId,
+              ),
+            6000,
+          );
+          adminWs.send(
+            JSON.stringify({
+              type: "req",
+              id: `mapped-non-admin-system-event-${mode}`,
+              method: "system-event",
+              params: {
+                text: `mapped non-admin control-plane presence test (${mode})`,
+                reason: presenceReason,
+                deviceId: presenceDeviceId,
+                mode: `${mode}-test`,
+              },
+            }),
+          );
+          const presenceRes = await onceMessage<{ ok: boolean }>(
+            adminWs,
+            (o) => o.type === "res" && o.id === `mapped-non-admin-system-event-${mode}`,
+            6000,
+          );
+          expect(presenceRes.ok).toBe(true);
+          await presenceEventP;
+
+          const cronAddedEventP = onceMessage<{
+            type?: string;
+            payload?: { action?: string; jobId?: string };
+          }>(
+            adminWs,
+            (o) =>
+              o.type === "event" &&
+              o.event === "cron" &&
+              o.payload?.action === "added" &&
+              typeof o.payload?.jobId === "string",
+            6000,
+          );
+          adminWs.send(
+            JSON.stringify({
+              type: "req",
+              id: `mapped-non-admin-cron-add-${mode}`,
+              method: "cron.add",
+              params: {
+                name: `mapped-non-admin-cron-${marker}`,
+                enabled: true,
+                schedule: { kind: "every", everyMs: 60_000 },
+                sessionTarget: "main",
+                wakeMode: "next-heartbeat",
+                payload: {
+                  kind: "systemEvent",
+                  text: `mapped non-admin control-plane cron event test (${mode})`,
+                },
+              },
+            }),
+          );
+          const cronAddRes = await onceMessage<{ ok: boolean; payload?: { id?: string } }>(
+            adminWs,
+            (o) => o.type === "res" && o.id === `mapped-non-admin-cron-add-${mode}`,
+            6000,
+          );
+          expect(cronAddRes.ok).toBe(true);
+          const cronAddedEvent = await cronAddedEventP;
+          expect(cronAddedEvent.type).toBe("event");
+          const cronAddedJobId =
+            typeof cronAddedEvent.payload?.jobId === "string" ? cronAddedEvent.payload.jobId : "";
+          expect(cronAddedJobId.length).toBeGreaterThan(0);
+          expect(cronAddRes.payload?.id).toBe(cronAddedJobId);
+
+          adminWs.send(
+            JSON.stringify({
+              type: "req",
+              id: `mapped-non-admin-cron-remove-${mode}`,
+              method: "cron.remove",
+              params: { id: cronAddedJobId },
+            }),
+          );
+          const cronRemoveRes = await onceMessage<{
+            ok: boolean;
+            payload?: { removed?: boolean };
+          }>(
+            adminWs,
+            (o) => o.type === "res" && o.id === `mapped-non-admin-cron-remove-${mode}`,
+            6000,
+          );
+          expect(cronRemoveRes.ok).toBe(true);
+          expect(cronRemoveRes.payload?.removed).toBe(true);
+
+          await new Promise((resolve) => setTimeout(resolve, 250));
+          mappedUserWs.off("message", mappedObserver.listener);
+          mappedNoRoleWs.off("message", mappedNoRoleObserver.listener);
+          expect(mappedObserver.blockedEvents.has("talk.mode")).toBe(false);
+          expect(mappedObserver.blockedEvents.has("voicewake.changed")).toBe(false);
+          expect(mappedObserver.blockedEvents.has("heartbeat")).toBe(false);
+          expect(mappedObserver.blockedEvents.has("presence")).toBe(false);
+          expect(mappedObserver.cronAddedJobIds.has(cronAddedJobId)).toBe(false);
+          expect(mappedNoRoleObserver.blockedEvents.has("talk.mode")).toBe(false);
+          expect(mappedNoRoleObserver.blockedEvents.has("voicewake.changed")).toBe(false);
+          expect(mappedNoRoleObserver.blockedEvents.has("heartbeat")).toBe(false);
+          expect(mappedNoRoleObserver.blockedEvents.has("presence")).toBe(false);
+          expect(mappedNoRoleObserver.cronAddedJobIds.has(cronAddedJobId)).toBe(false);
+        } finally {
+          mappedUserWs.close();
+          mappedNoRoleWs.close();
+          adminWs.close();
+        }
+      }
+    });
+
+    test("status, presence telemetry, cron, skills, and agent control-plane methods remain admin-only", async () => {
       authzDeniedEventsTest.clear();
       const methods: Array<{ method: string; params: Record<string, unknown> }> = [
+        { method: "status", params: {} },
+        { method: "system-presence", params: {} },
+        { method: "last-heartbeat", params: {} },
+        { method: "cron.list", params: {} },
+        { method: "cron.status", params: {} },
+        { method: "cron.runs", params: {} },
         { method: "cron.add", params: {} },
         { method: "cron.update", params: {} },
         { method: "cron.remove", params: {} },
@@ -1510,6 +3266,170 @@ describe("gateway server auth/connect", () => {
       expect(res.ok).toBe(false);
       expect(res.error?.message ?? "").toContain("unknown sender identity");
       await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+    });
+
+    test("rejects non-local shared-auth principal-id spoofing against mapped identities in strict mode", async () => {
+      authzDeniedEventsTest.clear();
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities: {
+              "msg:test:victim-user": {
+                userId: "victim-user",
+                principalId: "msg:test:victim-user",
+                alias: "VictimUser",
+                role: "user",
+              },
+            },
+          },
+        },
+      });
+
+      try {
+        const ws = await openWsWithHeaders(port, {
+          "x-forwarded-for": "203.0.113.29",
+          "x-forwarded-host": "gateway.example.com",
+        });
+        const res = await connectReq(ws, {
+          device: null,
+          token: "test-gateway-token-1234567890",
+          scopes: ["operator.write"],
+          identity: {
+            userId: "spoofed-user",
+            principalId: "msg:test:victim-user",
+            alias: "SpoofedUser",
+          },
+        });
+        expect(res.ok).toBe(false);
+        expect(res.error?.message ?? "").toContain("unknown sender identity");
+        await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+
+        const connectDenyEvents = listGatewayAuthzDenyEvents({
+          method: "connect",
+          reasonCode: "UNKNOWN_SENDER",
+          limit: 50,
+        });
+        expect(connectDenyEvents.length).toBeGreaterThan(0);
+        const latest = connectDenyEvents[0];
+        expect(latest?.userId).toBeNull();
+        expect(latest?.principalId).toBeNull();
+        expect(latest?.clientMode).toBe("test");
+        expect(typeof latest?.sourceIp).toBe("string");
+      } finally {
+        await writeConfigFile({
+          gateway: {
+            multiUser: {
+              mode: "strict",
+              identities: {},
+            },
+          },
+        });
+      }
+    });
+
+    test("allows local shared-auth admin connections without sender identity in strict mode", async () => {
+      const ws = await openWs(port);
+      const res = await connectReq(ws, {
+        device: null,
+        identity: undefined,
+        scopes: ["operator.admin"],
+      });
+      expect(res.ok).toBe(true);
+      ws.close();
+    });
+
+    test("ignores self-asserted identity on local shared-auth admin bypass in strict mode", async () => {
+      authzDeniedEventsTest.clear();
+      const ws = await openWs(port);
+      const res = await connectReq(ws, {
+        device: null,
+        scopes: ["operator.admin"],
+        identity: {
+          userId: "spoof-user",
+          principalId: "msg:discord:default:spoof-user",
+          alias: "SpoofUser",
+        },
+      });
+      expect(res.ok).toBe(true);
+
+      ws.send(
+        JSON.stringify({
+          type: "req",
+          id: "local-shared-auth-admin-identity-spoof-check",
+          method: "node.event",
+          params: {},
+        }),
+      );
+      const denied = await onceMessage<{
+        ok: boolean;
+        error?: { details?: { reasonCode?: string } };
+      }>(ws, (o) => o.type === "res" && o.id === "local-shared-auth-admin-identity-spoof-check");
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.details?.reasonCode).toBe("ROLE_FORBIDDEN");
+      ws.close();
+
+      const event = listGatewayAuthzDenyEvents({
+        method: "node.event",
+        reasonCode: "ROLE_FORBIDDEN",
+        limit: 50,
+      }).find((entry) => entry.requestId === "local-shared-auth-admin-identity-spoof-check");
+      expect(event).toBeDefined();
+      expect(event?.userId?.startsWith("legacy:operator:test:")).toBe(true);
+      expect(event?.principalId).toBe("client:test:default");
+      expect(event?.userId).not.toBe("spoof-user");
+      expect(event?.principalId).not.toBe("msg:discord:default:spoof-user");
+    });
+
+    test("rejects non-local shared-auth admin connections without sender identity in strict mode", async () => {
+      authzDeniedEventsTest.clear();
+      const ws = await openWsWithHeaders(port, {
+        "x-forwarded-for": "203.0.113.20",
+        "x-forwarded-host": "gateway.example.com",
+      });
+      const res = await connectReq(ws, {
+        device: null,
+        identity: undefined,
+        scopes: ["operator.admin"],
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error?.message ?? "").toContain("unknown sender identity");
+      await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+
+      const connectDenyEvents = listGatewayAuthzDenyEvents({
+        method: "connect",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 50,
+      }).filter((entry) => entry.sourceRole === "operator");
+      expect(connectDenyEvents.length).toBeGreaterThan(0);
+      const latest = connectDenyEvents[0];
+      expect(latest?.clientMode).toBe("test");
+      expect(typeof latest?.sourceIp).toBe("string");
+    });
+
+    test("rejects local shared-auth node-role admin scope connections without sender identity in strict mode", async () => {
+      authzDeniedEventsTest.clear();
+      const ws = await openWs(port);
+      const res = await connectReq(ws, {
+        role: "node",
+        device: null,
+        identity: undefined,
+        scopes: ["operator.admin"],
+      });
+      expect(res.ok).toBe(false);
+      expect(res.error?.message ?? "").toContain("unknown sender identity");
+      await new Promise<void>((resolve) => ws.once("close", () => resolve()));
+
+      const connectDenyEvents = listGatewayAuthzDenyEvents({
+        method: "connect",
+        reasonCode: "UNKNOWN_SENDER",
+        limit: 50,
+      }).filter((entry) => entry.sourceRole === "node");
+      expect(connectDenyEvents.length).toBeGreaterThan(0);
+      const latest = connectDenyEvents[0];
+      expect(latest?.clientMode).toBe("test");
+      expect(typeof latest?.sourceIp).toBe("string");
     });
 
     test("accepts local shared-auth device callers with explicit identity in strict mode", async () => {
@@ -1916,9 +3836,43 @@ describe("gateway server auth/connect", () => {
       ws.close();
     });
 
-    test("allows shared token to skip device when tailscale auth is enabled", async () => {
+    test("rejects shared token device-skip without mapped sender when tailscale auth is enabled in strict mode", async () => {
       const ws = await openTailscaleWs(port);
       const res = await connectReq(ws, { token: "secret", device: null });
+      expect(res.ok).toBe(false);
+      expect(res.error?.message ?? "").toContain("unknown sender identity");
+      ws.close();
+    });
+
+    test("allows shared token device-skip when sender client is mapped in strict mode", async () => {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities: {
+              "client:test:default": {
+                userId: "tailscale-user",
+                principalId: "msg:discord:default:tailscale-user",
+                alias: "TailMapped",
+                role: "user",
+              },
+            },
+          },
+        },
+      });
+
+      const ws = await openTailscaleWs(port);
+      const res = await connectReq(ws, {
+        token: "secret",
+        device: null,
+        scopes: ["operator.write"],
+        identity: {
+          userId: "spoofed-user",
+          principalId: "msg:discord:default:spoofed-user",
+          alias: "Spoofed",
+        },
+      });
       expect(res.ok).toBe(true);
       ws.close();
     });
@@ -1926,9 +3880,8 @@ describe("gateway server auth/connect", () => {
     test("ignores self-asserted identity for non-local shared-auth callers", async () => {
       authzDeniedEventsTest.clear();
       const identity = loadOrCreateDeviceIdentity();
-      const { publicKeyRawBase64UrlFromPem, signDevicePayload } = await import(
-        "../infra/device-identity.js"
-      );
+      const { publicKeyRawBase64UrlFromPem, signDevicePayload } =
+        await import("../infra/device-identity.js");
       const connectWithNonceDevice = async () => {
         const ws = new WebSocket(`ws://127.0.0.1:${port}`, {
           headers: {
@@ -1981,7 +3934,8 @@ describe("gateway server auth/connect", () => {
       if (!res.ok) {
         expect(res.error?.message ?? "").toContain("pairing required");
         ws.close();
-        const { approveDevicePairing, listDevicePairing } = await import("../infra/device-pairing.js");
+        const { approveDevicePairing, listDevicePairing } =
+          await import("../infra/device-pairing.js");
         const list = await listDevicePairing();
         const pending = list.pending.at(0);
         expect(pending?.requestId).toBeDefined();

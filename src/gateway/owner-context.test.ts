@@ -44,6 +44,27 @@ describe("connect owner identity helpers", () => {
     expect(hasConnectSenderIdentity(connect, { allowExplicitIdentity: false })).toBe(false);
   });
 
+  it("does not treat self-asserted principalId mapping as trusted when explicit identity is disabled", () => {
+    const connect = makeConnect({
+      identity: {
+        userId: "spoof-user",
+        principalId: "msg:telegram:default:42",
+      },
+    });
+    expect(
+      hasConnectSenderIdentity(connect, {
+        allowExplicitIdentity: false,
+        mappings: {
+          "msg:telegram:default:42": {
+            userId: "trusted-user",
+            principalId: "msg:telegram:default:42",
+            role: "user",
+          },
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("requires both userId and principalId for explicit mapping", () => {
     const connect = makeConnect({
       identity: {
@@ -135,6 +156,56 @@ describe("connect owner identity helpers", () => {
     expect(owner.userId).toBe("device-123");
     expect(owner.principalId).toBe("device:device-123");
     expect(owner.alias).toBeUndefined();
+  });
+
+  it("ignores principalId mapping candidates from self-asserted identity when explicit identity is not trusted", () => {
+    const owner = resolveConnectOwnerContext({
+      connect: makeConnect({
+        identity: {
+          userId: "spoof-user",
+          principalId: "msg:discord:default:spoof-user",
+          alias: "SpoofUser",
+        },
+      }),
+      allowExplicitIdentity: false,
+      mappings: {
+        "msg:discord:default:spoof-user": {
+          userId: "trusted-user",
+          principalId: "msg:discord:default:trusted-user",
+          alias: "TrustedUser",
+          role: "user",
+        },
+      },
+      connId: "conn-spoof",
+    });
+    expect(owner.userId).toContain("legacy:operator");
+    expect(owner.userId).not.toBe("trusted-user");
+    expect(owner.principalId).toContain("client:test-client:default");
+    expect(owner.alias).toBeUndefined();
+  });
+
+  it("still allows trusted client mapping when explicit identity is not trusted", () => {
+    const owner = resolveConnectOwnerContext({
+      connect: makeConnect({
+        identity: {
+          userId: "spoof-user",
+          principalId: "msg:discord:default:spoof-user",
+          alias: "SpoofUser",
+        },
+      }),
+      allowExplicitIdentity: false,
+      mappings: {
+        "client:test-client:default": {
+          userId: "trusted-client-user",
+          principalId: "msg:discord:default:trusted-client-user",
+          alias: "TrustedClientUser",
+          role: "user",
+        },
+      },
+    });
+    expect(owner.userId).toBe("trusted-client-user");
+    expect(owner.principalId).toBe("msg:discord:default:trusted-client-user");
+    expect(owner.alias).toBe("TrustedClientUser");
   });
 
   it("resolves owner identity from admin-managed mappings and keeps alias/group ids", () => {

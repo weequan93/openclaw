@@ -187,6 +187,72 @@ describe("gateway-cli coverage", () => {
     );
   }, 60_000);
 
+  it("applies authz-denied preset filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({ ts: Date.now(), events: [] });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      ["gateway", "authz-denied", "--preset", "plugin-unknown-sender-24h", "--json"],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.denied.list",
+        params: {
+          limit: 100,
+          method: "http.plugin",
+          reasonCode: "UNKNOWN_SENDER",
+          sinceTs: 0,
+          untilTs: 1_000_000,
+        },
+      }),
+    );
+
+    nowSpy.mockRestore();
+  }, 60_000);
+
+  it("applies authz-denied HTTP endpoint preset filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({ ts: Date.now(), events: [] });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      ["gateway", "authz-denied", "--preset", "openai-role-forbidden-24h", "--json"],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.denied.list",
+        params: {
+          limit: 100,
+          method: "http.openai.chat.completions",
+          reasonCode: "ROLE_FORBIDDEN",
+          sinceTs: 0,
+          untilTs: 1_000_000,
+        },
+      }),
+    );
+
+    nowSpy.mockRestore();
+  }, 60_000);
+
   it("registers gateway authz-denied-summary and passes filters", async () => {
     runtimeLogs.length = 0;
     runtimeErrors.length = 0;
@@ -245,6 +311,216 @@ describe("gateway-cli coverage", () => {
           method: "sessions.list",
           reasonCode: "OWNER_MISMATCH",
           errorCode: "INVALID_REQUEST",
+          userId: "user-a",
+          principalId: "principal:a",
+          sinceTs: 10,
+          untilTs: 20,
+        },
+      }),
+    );
+  }, 60_000);
+
+  it("applies authz-denied-summary preset filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({
+      ts: Date.now(),
+      total: 0,
+      byReasonCode: [],
+      byMethod: [],
+      byActorRole: [],
+      bySourceRole: [],
+      byErrorCode: [],
+      byPrincipalId: [],
+      highFrequency: { threshold: 5, principals: [] },
+      window: {},
+    });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      ["gateway", "authz-denied-summary", "--preset", "plugin-role-forbidden-24h", "--json"],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.denied.summary",
+        params: {
+          topN: 5,
+          alertThreshold: 5,
+          method: "http.plugin",
+          reasonCode: "ROLE_FORBIDDEN",
+          sinceTs: 0,
+          untilTs: 1_000_000,
+        },
+      }),
+    );
+
+    nowSpy.mockRestore();
+  }, 60_000);
+
+  it("applies authz-denied-summary HTTP endpoint preset filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({
+      ts: Date.now(),
+      total: 0,
+      byReasonCode: [],
+      byMethod: [],
+      byActorRole: [],
+      bySourceRole: [],
+      byErrorCode: [],
+      byPrincipalId: [],
+      highFrequency: { threshold: 5, principals: [] },
+      window: {},
+    });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      ["gateway", "authz-denied-summary", "--preset", "hooks-unknown-sender-24h", "--json"],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.denied.summary",
+        params: {
+          topN: 5,
+          alertThreshold: 5,
+          method: "http.hooks",
+          reasonCode: "UNKNOWN_SENDER",
+          sinceTs: 0,
+          untilTs: 1_000_000,
+        },
+      }),
+    );
+
+    nowSpy.mockRestore();
+  }, 60_000);
+
+  it("registers gateway authz-allow and passes filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({ ts: Date.now(), events: [] });
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      [
+        "gateway",
+        "authz-allow",
+        "--limit",
+        "50",
+        "--cursor",
+        "15",
+        "--order",
+        "asc",
+        "--method",
+        "health",
+        "--user-id",
+        "user-a",
+        "--principal-id",
+        "principal:a",
+        "--since",
+        "10",
+        "--until",
+        "20",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.allow.list",
+        params: {
+          limit: 50,
+          cursor: "15",
+          order: "asc",
+          method: "health",
+          userId: "user-a",
+          principalId: "principal:a",
+          sinceTs: 10,
+          untilTs: 20,
+        },
+      }),
+    );
+  }, 60_000);
+
+  it("registers gateway authz-allow-summary and passes filters", async () => {
+    runtimeLogs.length = 0;
+    runtimeErrors.length = 0;
+    callGateway.mockClear();
+    callGateway.mockResolvedValueOnce({
+      ts: Date.now(),
+      total: 2,
+      byMethod: [{ key: "health", count: 2 }],
+      byActorRole: [],
+      bySourceRole: [],
+      byUserId: [{ key: "user-a", count: 2 }],
+      byPrincipalId: [{ key: "principal:a", count: 2 }],
+      byClientId: [],
+      byClientMode: [],
+      bySourceIp: [{ key: "127.0.0.1", count: 2 }],
+      highFrequency: {
+        threshold: 2,
+        principals: [{ key: "principal:a", count: 2 }],
+        sourceIps: [{ key: "127.0.0.1", count: 2 }],
+      },
+      window: {},
+    });
+
+    const { registerGatewayCli } = await import("./gateway-cli.js");
+    const program = new Command();
+    program.exitOverride();
+    registerGatewayCli(program);
+
+    await program.parseAsync(
+      [
+        "gateway",
+        "authz-allow-summary",
+        "--top-n",
+        "7",
+        "--alert-threshold",
+        "3",
+        "--method",
+        "health",
+        "--user-id",
+        "user-a",
+        "--principal-id",
+        "principal:a",
+        "--since",
+        "10",
+        "--until",
+        "20",
+        "--json",
+      ],
+      { from: "user" },
+    );
+
+    expect(callGateway).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "authz.allow.summary",
+        params: {
+          topN: 7,
+          alertThreshold: 3,
+          method: "health",
           userId: "user-a",
           principalId: "principal:a",
           sinceTs: 10,
@@ -361,6 +637,8 @@ describe("gateway-cli coverage", () => {
         "sessions",
         "--resource",
         "nodes",
+        "--resource",
+        "memory",
         "--dry-run",
         "--json",
       ],
@@ -373,7 +651,7 @@ describe("gateway-cli coverage", () => {
         params: {
           ownerUserId: "user-a",
           ownerPrincipalId: "principal:a",
-          resources: ["sessions", "nodes"],
+          resources: ["sessions", "nodes", "memory"],
           dryRun: true,
         },
       }),
@@ -571,6 +849,8 @@ describe("gateway-cli coverage", () => {
         "sessions",
         "--resource",
         "nodes",
+        "--resource",
+        "memory",
         "--json",
       ],
       { from: "user" },
@@ -581,7 +861,7 @@ describe("gateway-cli coverage", () => {
         method: "ownership.gaps",
         params: {
           limit: 25,
-          resources: ["sessions", "nodes"],
+          resources: ["sessions", "nodes", "memory"],
         },
       }),
     );

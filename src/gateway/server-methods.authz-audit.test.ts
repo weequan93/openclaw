@@ -1,8 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 import { __test as denyEventsTest, listGatewayAuthzDenyEvents } from "./authz-denied-events.js";
 import { ErrorCodes, errorShape, type RequestFrame } from "./protocol/index.js";
 import { handleGatewayRequest } from "./server-methods.js";
-import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
 
 const request: RequestFrame = {
   type: "req",
@@ -96,5 +96,30 @@ describe("gateway handler deny auditing", () => {
     expect(event?.requestId).toBe("req-1");
     expect(event?.reasonCode).toBe("POLICY_DENY");
     expect(event?.errorMessage).toContain("policy blocked");
+  });
+
+  it("falls back to remoteAddr for handler deny source IP", async () => {
+    const respond = vi.fn();
+    const context = makeContext();
+    await handleGatewayRequest({
+      req: request,
+      client: {
+        ...makeClient(),
+        clientIp: undefined,
+        remoteAddr: "127.0.0.1",
+      },
+      isWebchatConnect: () => false,
+      respond,
+      context,
+      extraHandlers: {
+        health: ({ respond }) => {
+          respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "policy blocked"));
+        },
+      },
+    });
+
+    const event = listGatewayAuthzDenyEvents({ limit: 1 })[0];
+    expect(event?.requestId).toBe("req-1");
+    expect(event?.sourceIp).toBe("127.0.0.1");
   });
 });
