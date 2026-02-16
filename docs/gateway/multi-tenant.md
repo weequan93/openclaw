@@ -573,6 +573,8 @@ These existing features should be treated as enhancement targets because they ar
 
 ### P1 ownership metadata and data partition
 
+Status: completed and verified on February 17, 2026.
+
 1. Add required `ownerUserId` metadata to owned resources.
    Scope: agents, nodes, sessions, browser profiles, and ownership-aware audit payloads.
    Target files: `src/config/types.agents.ts`, `src/infra/device-pairing.ts`, `src/gateway/node-registry.ts`, `src/config/sessions.ts`.
@@ -592,6 +594,8 @@ These existing features should be treated as enhancement targets because they ar
 
 ### P2 migration, tooling, and hardening
 
+Status: completed and verified on February 17, 2026.
+
 1. Implement staged mode rollout.
    Scope: `off`, `compat`, `strict` behavior with progressive enforcement.
    Target files: `src/config/zod-schema.ts`, `src/config/config.ts`, `src/gateway/server-methods/config.ts`.
@@ -608,6 +612,13 @@ These existing features should be treated as enhancement targets because they ar
    Scope: denied-access feed, config-change feed, and unresolved mapping feed.
    Target files: admin UI and supporting gateway query methods.
    Exit criteria: admins can detect and triage ownership or authz violations quickly.
+
+Verification command set used for P1 and P2:
+
+- `pnpm exec vitest run src/gateway/ownership-backfill.test.ts src/gateway/server-methods/ownership.test.ts src/gateway/session-utils.test.ts src/memory/owner-partition.test.ts src/memory/backend-config.test.ts src/gateway/call.test.ts src/agents/tools/gateway.test.ts src/config/config.plugin-validation.test.ts`
+- `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.auth.e2e.test.ts`
+- `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.roles-allowlist-update.e2e.test.ts src/gateway/server.chat.command-authz.e2e.test.ts src/gateway/server.chat.gateway-server-chat.e2e.test.ts src/gateway/server.sessions.gateway-server-sessions-a.e2e.test.ts`
+- `pnpm exec vitest run --config vitest.e2e.config.ts src/gateway/server.agent.gateway-server-agent-a.e2e.test.ts src/gateway/server.agent.gateway-server-agent-b.e2e.test.ts src/gateway/server.plugins-http.e2e.test.ts src/gateway/server.hooks.e2e.test.ts src/gateway/server.canvas-auth.e2e.test.ts src/gateway/openai-http.e2e.test.ts src/gateway/openresponses-http.e2e.test.ts`
 
 ## P0 implementation checklist and PR slices
 
