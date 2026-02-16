@@ -3,7 +3,7 @@ import path from "node:path";
 import type { SessionEntry } from "./types.js";
 import { expandHomePrefix, resolveRequiredHomeDir } from "../../infra/home-dir.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../../routing/session-key.js";
-import { resolveStateDir } from "../paths.js";
+import { resolveConfigPath, resolveStateDir } from "../paths.js";
 
 function resolveAgentSessionsDir(
   agentId?: string,
@@ -84,7 +84,13 @@ export function resolveStorePath(
         }),
       );
     }
-    return path.resolve(value);
+    if (path.isAbsolute(value)) {
+      return path.resolve(value);
+    }
+    // Resolve relative session store paths from the active config directory so
+    // environment-isolated runs (for example test workers) do not share cwd files.
+    const configDir = path.dirname(resolveConfigPath());
+    return path.resolve(configDir, value);
   };
 
   if (!store) {

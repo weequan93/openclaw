@@ -46,4 +46,21 @@ describe("resolveStorePath", () => {
       path.resolve("/home/test/.openclaw/agents/ops/sessions/shared/sessions.json"),
     );
   });
+
+  it("resolves relative paths from OPENCLAW_CONFIG_PATH directory", () => {
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", "/tmp/openclaw-test/config/openclaw.json");
+    const resolved = resolveStorePath("sessions/{ownerUserId}.json", {
+      ownerUserId: "User-A",
+    });
+    expect(resolved).toBe(path.resolve("/tmp/openclaw-test/config/sessions/user-a.json"));
+  });
+
+  it("resolves relative paths from OPENCLAW_STATE_DIR when OPENCLAW_CONFIG_PATH is not set", () => {
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", "");
+    vi.stubEnv("OPENCLAW_STATE_DIR", "/tmp/openclaw-state");
+    const resolved = resolveStorePath("sessions/{ownerUserId}.json", {
+      ownerUserId: "User-A",
+    });
+    expect(resolved).toBe(path.resolve("/tmp/openclaw-state/sessions/user-a.json"));
+  });
 });

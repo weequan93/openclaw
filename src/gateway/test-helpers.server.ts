@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { GatewayServerOptions } from "./server.js";
 import { resetSubagentRegistryForTests } from "../agents/subagent-registry.js";
+import { resolveConfigPath } from "../config/paths.js";
 import { resolveMainSessionKeyFromConfig, type SessionEntry } from "../config/sessions.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
 import {
@@ -50,15 +51,23 @@ let tempHome: string | undefined;
 let tempConfigRoot: string | undefined;
 
 async function cleanupGatewayRelativeSessionArtifacts() {
-  // Some tests intentionally use relative session.store templates such as
-  // "sessions/{ownerUserId}.json". Clean up generated local artifacts so
-  // test runs do not dirty the repo workspace.
-  await fs.rm(path.resolve("sessions"), {
-    recursive: true,
-    force: true,
-    maxRetries: 5,
-    retryDelay: 10,
-  });
+  // Relative session.store templates are resolved from the active config root.
+  // Clean up only that per-test sessions directory to avoid cross-worker races.
+  const sessionsDirs = new Set<string>();
+  try {
+    const configDir = path.dirname(resolveConfigPath());
+    sessionsDirs.add(path.join(configDir, "sessions"));
+  } catch {
+    sessionsDirs.add(path.resolve("sessions"));
+  }
+  for (const sessionsDir of sessionsDirs) {
+    await fs.rm(sessionsDir, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 10,
+    });
+  }
 }
 
 export async function writeSessionStore(params: {
