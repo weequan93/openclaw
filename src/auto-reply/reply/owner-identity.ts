@@ -1,6 +1,6 @@
 import type { GatewayOwnerIdentity } from "../../agents/tools/sessions-helpers.js";
-import type { HandleCommandsParams } from "./commands-types.js";
 import type { MsgContext } from "../templating.js";
+import type { HandleCommandsParams } from "./commands-types.js";
 
 export type GatewayOwnerRole = "admin" | "user" | "node" | "service";
 
@@ -36,7 +36,7 @@ export function resolveCommandGatewayOwnerIdentity(
       : typeof params.ctx.GatewayOwnerPrincipalId === "string" &&
           params.ctx.GatewayOwnerPrincipalId.trim()
         ? params.ctx.GatewayOwnerPrincipalId.trim()
-      : `user:${ownerUserId}`;
+        : `user:${ownerUserId}`;
   const ownerAlias =
     typeof params.ctx.GatewayOwnerAlias === "string" && params.ctx.GatewayOwnerAlias.trim()
       ? params.ctx.GatewayOwnerAlias.trim()

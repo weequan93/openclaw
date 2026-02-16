@@ -15,10 +15,16 @@ vi.mock("./tools/gateway.js", () => ({
   }),
 }));
 
+vi.mock("../gateway/session-utils.js", () => ({
+  loadSessionEntry: vi.fn(() => ({ entry: undefined })),
+}));
+
 describe("gateway tool", () => {
   beforeEach(async () => {
     const { callGatewayTool } = await import("./tools/gateway.js");
+    const { loadSessionEntry } = await import("../gateway/session-utils.js");
     vi.mocked(callGatewayTool).mockClear();
+    vi.mocked(loadSessionEntry).mockClear();
   });
 
   it("schedules SIGUSR1 restart", async () => {
@@ -238,5 +244,142 @@ describe("gateway tool", () => {
     });
     expect(tools.some((candidate) => candidate.name === "gateway")).toBe(true);
     expect(tools.some((candidate) => candidate.name === "cron")).toBe(true);
+  });
+
+  it("uses owner-scoped session lookup for restart sentinel delivery context", async () => {
+    vi.useFakeTimers();
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const previousProfile = process.env.OPENCLAW_PROFILE;
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-test-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    process.env.OPENCLAW_PROFILE = "isolated";
+    const { loadSessionEntry } = await import("../gateway/session-utils.js");
+    vi.mocked(loadSessionEntry).mockReturnValue({
+      entry: {
+        sessionId: "session-1",
+        deliveryContext: {
+          channel: "telegram",
+          to: "user-1",
+          accountId: "acct-1",
+        },
+      },
+    });
+
+    try {
+      const tool = createGatewayTool({
+        config: { commands: { restart: true } },
+        ownerUserId: "owner-1",
+        ownerRole: "admin",
+        agentSessionKey: "agent:main:telegram:dm:user-1",
+      });
+      await tool.execute("call-owner-restart", {
+        action: "restart",
+        delayMs: 0,
+      });
+      expect(loadSessionEntry).toHaveBeenCalledWith("agent:main:telegram:dm:user-1", {
+        ownerUserId: "owner-1",
+      });
+
+      const sentinelPath = path.join(stateDir, "restart-sentinel.json");
+      const raw = await fs.readFile(sentinelPath, "utf-8");
+      const parsed = JSON.parse(raw) as {
+        payload?: { ownerUserId?: string; deliveryContext?: unknown };
+      };
+      expect(parsed.payload?.ownerUserId).toBe("owner-1");
+      expect(parsed.payload?.deliveryContext).toEqual({
+        channel: "telegram",
+        to: "user-1",
+        accountId: "acct-1",
+      });
+
+      await vi.runAllTimersAsync();
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      if (previousProfile === undefined) {
+        delete process.env.OPENCLAW_PROFILE;
+      } else {
+        process.env.OPENCLAW_PROFILE = previousProfile;
+      }
+    }
+  });
+
+  it("falls back to base session for thread restart sentinel delivery context", async () => {
+    vi.useFakeTimers();
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
+    const previousProfile = process.env.OPENCLAW_PROFILE;
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-test-"));
+    process.env.OPENCLAW_STATE_DIR = stateDir;
+    process.env.OPENCLAW_PROFILE = "isolated";
+    const { loadSessionEntry } = await import("../gateway/session-utils.js");
+    vi.mocked(loadSessionEntry)
+      .mockReturnValueOnce({ entry: { sessionId: "thread-1" } })
+      .mockReturnValueOnce({
+        entry: {
+          sessionId: "base-1",
+          deliveryContext: {
+            channel: "slack",
+            to: "U1",
+            accountId: "acct-2",
+          },
+        },
+      });
+
+    try {
+      const tool = createGatewayTool({
+        config: { commands: { restart: true } },
+        ownerUserId: "owner-2",
+        ownerRole: "admin",
+        agentSessionKey: "agent:main:slack:dm:U1:thread:thread-abc",
+      });
+      await tool.execute("call-thread-restart", {
+        action: "restart",
+        delayMs: 0,
+      });
+
+      expect(loadSessionEntry).toHaveBeenNthCalledWith(
+        1,
+        "agent:main:slack:dm:U1:thread:thread-abc",
+        { ownerUserId: "owner-2" },
+      );
+      expect(loadSessionEntry).toHaveBeenNthCalledWith(2, "agent:main:slack:dm:U1", {
+        ownerUserId: "owner-2",
+      });
+
+      const sentinelPath = path.join(stateDir, "restart-sentinel.json");
+      const raw = await fs.readFile(sentinelPath, "utf-8");
+      const parsed = JSON.parse(raw) as {
+        payload?: { ownerUserId?: string; deliveryContext?: unknown; threadId?: string };
+      };
+      expect(parsed.payload?.ownerUserId).toBe("owner-2");
+      expect(parsed.payload?.threadId).toBe("thread-abc");
+      expect(parsed.payload?.deliveryContext).toEqual({
+        channel: "slack",
+        to: "U1",
+        accountId: "acct-2",
+      });
+
+      await vi.runAllTimersAsync();
+    } finally {
+      kill.mockRestore();
+      vi.useRealTimers();
+      if (previousStateDir === undefined) {
+        delete process.env.OPENCLAW_STATE_DIR;
+      } else {
+        process.env.OPENCLAW_STATE_DIR = previousStateDir;
+      }
+      if (previousProfile === undefined) {
+        delete process.env.OPENCLAW_PROFILE;
+      } else {
+        process.env.OPENCLAW_PROFILE = previousProfile;
+      }
+    }
   });
 });

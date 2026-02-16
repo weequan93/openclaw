@@ -2,6 +2,7 @@ import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
 import { loadConfig } from "../config/config.js";
 import { type AgentEventPayload, getAgentRunContext } from "../infra/agent-events.js";
 import { resolveHeartbeatVisibility } from "../infra/heartbeat-visibility.js";
+import { resolveAgentRunOwner } from "./server-methods/agent-job.js";
 import { loadSessionEntry } from "./session-utils.js";
 import { formatForLog } from "./ws-log.js";
 
@@ -305,7 +306,8 @@ export function createAgentEventHandler({
       return "off";
     }
     try {
-      const { cfg, entry } = loadSessionEntry(sessionKey);
+      const ownerUserId = resolveAgentRunOwner(runId);
+      const { cfg, entry } = loadSessionEntry(sessionKey, { ownerUserId });
       const sessionVerbose = normalizeVerboseLevel(entry?.verboseLevel);
       if (sessionVerbose) {
         return sessionVerbose;

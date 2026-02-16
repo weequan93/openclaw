@@ -63,6 +63,19 @@ const openTailscaleWs = async (port: number) => {
   return ws;
 };
 
+function rawDataToString(raw: WebSocket.RawData): string {
+  if (typeof raw === "string") {
+    return raw;
+  }
+  if (Buffer.isBuffer(raw)) {
+    return raw.toString("utf8");
+  }
+  if (Array.isArray(raw)) {
+    return Buffer.concat(raw).toString("utf8");
+  }
+  return Buffer.from(raw).toString("utf8");
+}
+
 describe("gateway server auth/connect", () => {
   describe("default auth (token)", () => {
     let server: Awaited<ReturnType<typeof startGatewayServer>>;
@@ -1648,7 +1661,7 @@ describe("gateway server auth/connect", () => {
           let pairingSawApprovalEvent = false;
           const mappedApprovalListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { id?: string };
@@ -1666,7 +1679,7 @@ describe("gateway server auth/connect", () => {
           };
           const mappedNoRoleApprovalListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { id?: string };
@@ -1684,7 +1697,7 @@ describe("gateway server auth/connect", () => {
           };
           const pairingApprovalListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { id?: string };
@@ -1757,7 +1770,7 @@ describe("gateway server auth/connect", () => {
           let approvalsSawPairingEvent = false;
           const mappedPairingListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { nodeId?: string };
@@ -1775,7 +1788,7 @@ describe("gateway server auth/connect", () => {
           };
           const mappedNoRolePairingListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { nodeId?: string };
@@ -1793,7 +1806,7 @@ describe("gateway server auth/connect", () => {
           };
           const approvalsPairingListener = (raw: WebSocket.RawData) => {
             try {
-              const parsed = JSON.parse(String(raw)) as {
+              const parsed = JSON.parse(rawDataToString(raw)) as {
                 type?: string;
                 event?: string;
                 payload?: { nodeId?: string };
@@ -1902,7 +1915,7 @@ describe("gateway server auth/connect", () => {
         let pairingSawApprovalEvent = false;
         const pairingApprovalListener = (raw: WebSocket.RawData) => {
           try {
-            const parsed = JSON.parse(String(raw)) as {
+            const parsed = JSON.parse(rawDataToString(raw)) as {
               type?: string;
               event?: string;
               payload?: { id?: string };
@@ -1966,7 +1979,7 @@ describe("gateway server auth/connect", () => {
         let approvalsSawPairingEvent = false;
         const approvalsPairingListener = (raw: WebSocket.RawData) => {
           try {
-            const parsed = JSON.parse(String(raw)) as {
+            const parsed = JSON.parse(rawDataToString(raw)) as {
               type?: string;
               event?: string;
               payload?: { nodeId?: string };
@@ -2088,7 +2101,7 @@ describe("gateway server auth/connect", () => {
       };
       const observerListener = (raw: WebSocket.RawData) => {
         try {
-          const parsed = JSON.parse(String(raw)) as {
+          const parsed = JSON.parse(rawDataToString(raw)) as {
             type?: string;
             event?: string;
             payload?: { id?: string; nodeId?: string };
@@ -2298,7 +2311,7 @@ describe("gateway server auth/connect", () => {
       };
       const mappedListener = (raw: WebSocket.RawData) => {
         try {
-          const parsed = JSON.parse(String(raw)) as {
+          const parsed = JSON.parse(rawDataToString(raw)) as {
             type?: string;
             event?: string;
             payload?: {
@@ -2551,7 +2564,7 @@ describe("gateway server auth/connect", () => {
       };
       const mappedListener = (raw: WebSocket.RawData) => {
         try {
-          const parsed = JSON.parse(String(raw)) as {
+          const parsed = JSON.parse(rawDataToString(raw)) as {
             type?: string;
             event?: string;
             payload?: { phase?: string };
@@ -2899,7 +2912,7 @@ describe("gateway server auth/connect", () => {
             const cronAddedJobIds = new Set<string>();
             const listener = (raw: WebSocket.RawData) => {
               try {
-                const parsed = JSON.parse(String(raw)) as {
+                const parsed = JSON.parse(rawDataToString(raw)) as {
                   type?: string;
                   event?: string;
                   payload?: {

@@ -69,13 +69,13 @@ type SettingsHost = {
 
 function canManageControlConfig(host: SettingsHost): boolean {
   if (host.hello === undefined) {
-    return host.connected !== true;
+    return !host.connected;
   }
   const auth = host.hello?.auth;
   // Keep pre-connect compatibility, but never grant admin controls for connected
   // sessions when auth metadata is missing.
   if (!auth) {
-    return host.connected !== true;
+    return !host.connected;
   }
   const principalRole = typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
   if (principalRole.length > 0) {
@@ -83,7 +83,7 @@ function canManageControlConfig(host: SettingsHost): boolean {
   }
   // Connected sessions without explicit principal role are treated as non-admin
   // to avoid scope-only admin UI bypass.
-  if (host.connected === true) {
+  if (host.connected) {
     return false;
   }
   const role = typeof auth.role === "string" ? auth.role.trim() : "";

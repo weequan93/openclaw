@@ -190,7 +190,9 @@ function resolveSessionConfig(
     exportDirRaw && exportDirRaw.includes("{ownerUserId}")
       ? exportDirRaw.replaceAll("{ownerUserId}", ownerToken ?? "shared")
       : exportDirRaw;
-  const exportDirBase = exportDirTemplate ? resolvePath(exportDirTemplate, workspaceDir) : undefined;
+  const exportDirBase = exportDirTemplate
+    ? resolvePath(exportDirTemplate, workspaceDir)
+    : undefined;
   const exportDir =
     exportDirBase && ownerToken && exportDirTemplate === exportDirRaw
       ? resolveOwnerPartitionedDirectory(exportDirBase, ownerToken)

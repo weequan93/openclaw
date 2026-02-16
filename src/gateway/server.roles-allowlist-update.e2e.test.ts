@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { DeviceIdentity } from "../infra/device-identity.js";
+import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 
@@ -168,6 +169,151 @@ describe("gateway role enforcement", () => {
       expect(statusRes.error?.message ?? "").toContain("unauthorized role");
     } finally {
       nodeWs.close();
+    }
+  });
+});
+
+describe("gateway node events ownership enforcement", () => {
+  test("denies node events for sessions owned by another user", async () => {
+    let nodeClient: GatewayClient | undefined;
+    let userBws: WebSocket | undefined;
+    const sessionKey = `agent:main:discord:dm:node-owner-deny-${Date.now()}`;
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        session: {
+          store: "sessions/{ownerUserId}.json",
+        },
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            identities: {
+              "msg:discord:default:user-a": {
+                userId: "user-a",
+                principalId: "msg:discord:default:user-a",
+                alias: "UserA",
+                role: "user",
+              },
+              "msg:discord:default:user-b": {
+                userId: "user-b",
+                principalId: "msg:discord:default:user-b",
+                alias: "UserB",
+                role: "user",
+              },
+            },
+          },
+        },
+      });
+
+      userBws = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve) => userBws?.once("open", resolve));
+      await connectOk(userBws, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-b",
+          principalId: "msg:discord:default:user-b",
+          alias: "UserB",
+        },
+      });
+
+      const patch = await rpcReq(userBws, "sessions.patch", {
+        key: sessionKey,
+        label: `Owner B node-event target ${Date.now()}`,
+      });
+      expect(patch.ok).toBe(true);
+
+      const beforeList = await rpcReq<{
+        sessions?: Array<{ key?: string; updatedAt?: number; ownerUserId?: string | null }>;
+      }>(userBws, "sessions.list", { limit: 500 });
+      expect(beforeList.ok).toBe(true);
+      const beforeEntry =
+        beforeList.payload?.sessions?.find((session) => session.key === sessionKey) ?? null;
+      expect(beforeEntry).toBeTruthy();
+      expect(beforeEntry?.ownerUserId ?? null).toBe("user-b");
+      const beforeUpdatedAt = Number(beforeEntry?.updatedAt ?? 0);
+      expect(beforeUpdatedAt).toBeGreaterThan(0);
+
+      drainSystemEvents(sessionKey);
+
+      nodeClient = await connectNodeClient({
+        port,
+        commands: [],
+        instanceId: "node-events-owner-deny",
+        displayName: "node-events-owner-deny",
+      });
+
+      const adminNodeList = await rpcReq<{
+        nodes?: Array<{ nodeId: string; connected?: boolean; displayName?: string }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeList.ok).toBe(true);
+      const nodeId =
+        adminNodeList.payload?.nodes?.find(
+          (node) => node.connected && node.displayName === "node-events-owner-deny",
+        )?.nodeId ?? "";
+      expect(nodeId).toBeTruthy();
+
+      const pairRequest = await rpcReq<{ request?: { requestId?: string } }>(
+        ws,
+        "node.pair.request",
+        {
+          nodeId,
+          displayName: "node-events-owner-deny",
+          commands: [],
+        },
+      );
+      expect(pairRequest.ok).toBe(true);
+      const requestId = pairRequest.payload?.request?.requestId ?? "";
+      expect(requestId).toBeTruthy();
+
+      const pairApproved = await rpcReq(ws, "node.pair.approve", {
+        requestId,
+        ownerUserId: "user-a",
+      });
+      expect(pairApproved.ok).toBe(true);
+
+      await nodeClient.request("node.event", {
+        event: "voice.transcript",
+        payloadJSON: JSON.stringify({
+          text: "should not run",
+          sessionKey,
+        }),
+      });
+      await nodeClient.request("node.event", {
+        event: "agent.request",
+        payloadJSON: JSON.stringify({
+          message: "should not run",
+          sessionKey,
+        }),
+      });
+      await nodeClient.request("node.event", {
+        event: "exec.started",
+        payloadJSON: JSON.stringify({
+          sessionKey,
+          runId: "run-owner-deny",
+          command: "echo blocked",
+        }),
+      });
+
+      await sleep(200);
+
+      const afterList = await rpcReq<{
+        sessions?: Array<{ key?: string; updatedAt?: number; ownerUserId?: string | null }>;
+      }>(userBws, "sessions.list", { limit: 500 });
+      expect(afterList.ok).toBe(true);
+      const afterEntry =
+        afterList.payload?.sessions?.find((session) => session.key === sessionKey) ?? null;
+      expect(afterEntry).toBeTruthy();
+      expect(afterEntry?.ownerUserId ?? null).toBe("user-b");
+      const afterUpdatedAt = Number(afterEntry?.updatedAt ?? 0);
+      expect(afterUpdatedAt).toBe(beforeUpdatedAt);
+      expect(peekSystemEvents(sessionKey)).toEqual([]);
+    } finally {
+      if (userBws && userBws.readyState !== WebSocket.CLOSED) {
+        userBws.close();
+      }
+      nodeClient?.stop();
+      drainSystemEvents(sessionKey);
     }
   });
 });
@@ -376,6 +522,79 @@ describe("gateway node command allowlist", () => {
 });
 
 describe("gateway node and browser ownership", () => {
+  test("denies encoded browser profile mutation routes for non-admin users", async () => {
+    const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve) => userWs.once("open", resolve));
+    const sinceTs = Date.now();
+
+    try {
+      const { writeConfigFile } = await import("../config/config.js");
+      await writeConfigFile({
+        gateway: {
+          multiUser: {
+            mode: "strict",
+          },
+        },
+        browser: {
+          defaultProfile: "alice",
+          profiles: {
+            alice: {
+              cdpPort: 18810,
+              color: "#00AA00",
+              ownerUserId: "user-a",
+            },
+          },
+        },
+      });
+
+      await connectOk(userWs, {
+        scopes: ["operator.write"],
+        identity: {
+          userId: "user-a",
+          principalId: "msg:discord:default:user-a",
+          alias: "Alice",
+        },
+      });
+
+      const denied = await rpcReq(userWs, "browser.request", {
+        method: "POST",
+        path: "/profiles%252Fcreate",
+        body: { name: "should-not-create" },
+      });
+      expect(denied.ok).toBe(false);
+      expect(denied.error?.message ?? "").toContain("admin-only");
+      expect((denied.error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+        "ROLE_FORBIDDEN",
+      );
+
+      const deniedFeed = await rpcReq<{
+        events?: Array<{
+          method?: string;
+          reasonCode?: string;
+          userId?: string | null;
+          userAlias?: string | null;
+        }>;
+      }>(ws, "authz.denied.list", {
+        method: "browser.request",
+        reasonCode: "ROLE_FORBIDDEN",
+        userId: "user-a",
+        sinceTs,
+        limit: 20,
+      });
+      expect(deniedFeed.ok).toBe(true);
+      expect(
+        (deniedFeed.payload?.events ?? []).some(
+          (event) =>
+            event.method === "browser.request" &&
+            event.reasonCode === "ROLE_FORBIDDEN" &&
+            event.userAlias === "Alice",
+        ),
+      ).toBe(true);
+    } finally {
+      userWs.close();
+    }
+  });
+
   test("filters node.list and denies node.invoke/browser.request for owner mismatch", async () => {
     let browserNodeClient: GatewayClient | undefined;
     const userWs = new WebSocket(`ws://127.0.0.1:${port}`);
@@ -414,7 +633,7 @@ describe("gateway node and browser ownership", () => {
       });
 
       const adminNodeList = await rpcReq<{
-        nodes?: Array<{ nodeId: string; connected?: boolean }>;
+        nodes?: Array<{ nodeId: string; connected?: boolean; ownerUserId?: string }>;
       }>(ws, "node.list", {});
       expect(adminNodeList.ok).toBe(true);
       const nodeId =
@@ -458,6 +677,13 @@ describe("gateway node and browser ownership", () => {
           },
         },
       });
+      const adminNodeListAfterPair = await rpcReq<{
+        nodes?: Array<{ nodeId: string; ownerUserId?: string }>;
+      }>(ws, "node.list", {});
+      expect(adminNodeListAfterPair.ok).toBe(true);
+      expect(
+        adminNodeListAfterPair.payload?.nodes?.find((node) => node.nodeId === nodeId)?.ownerUserId,
+      ).toBe("user-b");
 
       await connectOk(userWs, {
         scopes: ["operator.write"],

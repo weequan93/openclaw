@@ -115,7 +115,9 @@ function normalizeGroupIds(raw: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
-function resolveSkillVisibility(skillConfig?: SkillConfig): "shared" | "group_shared" | "user_private" {
+function resolveSkillVisibility(
+  skillConfig?: SkillConfig,
+): "shared" | "group_shared" | "user_private" {
   if (skillConfig?.visibility === "user_private") {
     return "user_private";
   }

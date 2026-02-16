@@ -54,9 +54,14 @@ describe("gateway tool defaults", () => {
     );
 
     callGatewayMock.mockResolvedValueOnce({ ok: true });
-    await callGatewayTool("wake", {}, { mode: "next-heartbeat", text: "wake up" }, {
-      allowAdmin: true,
-    });
+    await callGatewayTool(
+      "wake",
+      {},
+      { mode: "next-heartbeat", text: "wake up" },
+      {
+        allowAdmin: true,
+      },
+    );
     expect(callGatewayMock).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "wake",
@@ -90,6 +95,29 @@ describe("gateway tool defaults", () => {
       expect.objectContaining({
         method: "health",
         scopes: ["operator.read", "operator.write"],
+      }),
+    );
+  });
+
+  it("rejects unknown methods unless explicit scopes are provided", async () => {
+    await expect(callGatewayTool("custom.unknown", {}, {})).rejects.toThrow(
+      "not explicitly scope-classified",
+    );
+    expect(callGatewayMock).not.toHaveBeenCalled();
+
+    callGatewayMock.mockResolvedValueOnce({ ok: true });
+    await callGatewayTool(
+      "custom.unknown",
+      {},
+      {},
+      {
+        scopes: ["operator.read"],
+      },
+    );
+    expect(callGatewayMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "custom.unknown",
+        scopes: ["operator.read"],
       }),
     );
   });

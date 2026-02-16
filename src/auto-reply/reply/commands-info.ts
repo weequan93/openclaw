@@ -6,9 +6,9 @@ import {
   buildCommandsMessagePaginated,
   buildHelpMessage,
 } from "../status.js";
+import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { buildContextReply } from "./commands-context-report.js";
 import { buildStatusReply } from "./commands-status.js";
-import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 
 export const handleHelpCommand: CommandHandler = async (params, allowTextCommands) => {
   if (!allowTextCommands) {

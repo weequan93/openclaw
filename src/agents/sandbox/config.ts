@@ -6,8 +6,8 @@ import type {
   SandboxPruneConfig,
   SandboxScope,
 } from "./types.js";
-import { resolveAgentConfig } from "../agent-scope.js";
 import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
+import { resolveAgentConfig } from "../agent-scope.js";
 import {
   DEFAULT_SANDBOX_BROWSER_AUTOSTART_TIMEOUT_MS,
   DEFAULT_SANDBOX_BROWSER_CDP_PORT,

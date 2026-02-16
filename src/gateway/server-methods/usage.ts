@@ -358,7 +358,7 @@ export const usageHandlers: GatewayRequestHandlers = {
     const specificKey = typeof p.key === "string" ? p.key.trim() : null;
 
     // Load session store for named sessions
-    const { store } = loadCombinedSessionStoreForGateway(config);
+    const { store } = loadCombinedSessionStoreForGateway(config, { ownerUserId });
     const now = Date.now();
 
     // Merge discovered sessions with store entries
@@ -865,10 +865,10 @@ export const usageHandlers: GatewayRequestHandlers = {
     }
 
     const config = loadConfig();
-    const { entry } = loadSessionEntry(key);
     const strictOwner = isGatewayStrictOwnerMode(config);
     const ownerRestricted = isOwnerRestrictedPrincipal(owner, config);
     const ownerUserId = ownerRestricted ? owner?.userId : undefined;
+    const { entry } = loadSessionEntry(key, { ownerUserId });
     const sessionOwnerUserId =
       typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : undefined;
     if (
@@ -932,10 +932,10 @@ export const usageHandlers: GatewayRequestHandlers = {
         : 200;
 
     const config = loadConfig();
-    const { entry } = loadSessionEntry(key);
     const strictOwner = isGatewayStrictOwnerMode(config);
     const ownerRestricted = isOwnerRestrictedPrincipal(owner, config);
     const ownerUserId = ownerRestricted ? owner?.userId : undefined;
+    const { entry } = loadSessionEntry(key, { ownerUserId });
     const sessionOwnerUserId =
       typeof entry?.ownerUserId === "string" ? entry.ownerUserId.trim() : undefined;
     if (

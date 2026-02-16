@@ -639,4 +639,13 @@ describe("callGateway scope resolution", () => {
     await callGateway({ method: "health", scopes: ["operator.admin", "operator.admin"] });
     expect(lastClientOptions?.scopes).toEqual(["operator.admin"]);
   });
+
+  it("rejects unknown methods unless explicit scopes are provided", async () => {
+    await expect(callGateway({ method: "custom.unknown" })).rejects.toThrow(
+      "not explicitly scope-classified",
+    );
+
+    await callGateway({ method: "custom.unknown", scopes: ["operator.read"] });
+    expect(lastClientOptions?.scopes).toEqual(["operator.read"]);
+  });
 });

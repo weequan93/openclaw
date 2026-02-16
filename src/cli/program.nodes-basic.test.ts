@@ -291,10 +291,9 @@ describe("cli program (nodes basics)", () => {
     });
     const program = buildProgram();
     runtime.log.mockClear();
-    await program.parseAsync(
-      ["nodes", "approve", "r2", "--owner-user", " user-123 "],
-      { from: "user" },
-    );
+    await program.parseAsync(["nodes", "approve", "r2", "--owner-user", " user-123 "], {
+      from: "user",
+    });
     expect(callGateway).toHaveBeenCalledWith(
       expect.objectContaining({
         method: "node.pair.approve",

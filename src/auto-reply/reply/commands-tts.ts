@@ -32,7 +32,8 @@ function hasGatewayIdentity(params: Parameters<CommandHandler>[0]): boolean {
       params.ctx.GatewayOwnerUserId.trim().length > 0) ||
     (typeof params.ctx.GatewayOwnerPrincipalId === "string" &&
       params.ctx.GatewayOwnerPrincipalId.trim().length > 0) ||
-    (typeof params.ctx.GatewayOwnerRole === "string" && params.ctx.GatewayOwnerRole.trim().length > 0) ||
+    (typeof params.ctx.GatewayOwnerRole === "string" &&
+      params.ctx.GatewayOwnerRole.trim().length > 0) ||
     (Array.isArray(params.ctx.GatewayClientScopes) && params.ctx.GatewayClientScopes.length > 0)
   );
 }

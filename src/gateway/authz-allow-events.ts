@@ -142,7 +142,7 @@ function bucketizeAll(
   }
   return [...counts.entries()]
     .map(([key, count]) => ({ key, count }))
-    .sort((a, b) => (b.count === a.count ? a.key.localeCompare(b.key) : b.count - a.count));
+    .toSorted((a, b) => (b.count === a.count ? a.key.localeCompare(b.key) : b.count - a.count));
 }
 
 function bucketize(

@@ -10,9 +10,9 @@ import {
   requestNodePairing,
   verifyNodeToken,
 } from "../../infra/node-pairing.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
-import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import {
   ErrorCodes,
   errorShape,
@@ -292,13 +292,11 @@ export const nodeHandlers: GatewayRequestHandlers = {
       const ownerRestricted = isOwnerRestrictedPrincipal(owner, cfg);
       const ownerContext = ownerRestricted ? owner : null;
       const ownerUserId = ownerContext?.userId;
-      const pairedNodeOwners = ownerRestricted
-        ? new Map(
-            (await listNodePairing()).paired.map(
-              (node) => [node.nodeId, normalizeOwnerUserId(node.ownerUserId)] as const,
-            ),
-          )
-        : null;
+      const pairedNodeOwners = new Map(
+        (await listNodePairing()).paired.map(
+          (node) => [node.nodeId, normalizeOwnerUserId(node.ownerUserId)] as const,
+        ),
+      );
       const pairedById = new Map(
         list.paired
           .filter((entry) => isNodeEntry(entry))
@@ -345,6 +343,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
           commands,
           pathEnv: live?.pathEnv,
           permissions: live?.permissions ?? paired?.permissions,
+          ownerUserId: pairedNodeOwners.get(nodeId),
           connectedAtMs: live?.connectedAtMs,
           paired: Boolean(paired),
           connected: Boolean(live),
@@ -408,9 +407,9 @@ export const nodeHandlers: GatewayRequestHandlers = {
       const cfg = loadConfig();
       const ownerContext = isOwnerRestrictedPrincipal(owner, cfg) ? owner : null;
       const strictOwner = isGatewayStrictOwnerMode(cfg);
+      const pairedNode = await getPairedNode(id);
+      const nodeOwnerUserId = normalizeOwnerUserId(pairedNode?.ownerUserId);
       if (ownerContext) {
-        const pairedNode = await getPairedNode(id);
-        const nodeOwnerUserId = normalizeOwnerUserId(pairedNode?.ownerUserId);
         const ownerMismatch = Boolean(nodeOwnerUserId) && nodeOwnerUserId !== ownerContext.userId;
         const ownerMissing = !nodeOwnerUserId;
         const delegated =
@@ -464,6 +463,7 @@ export const nodeHandlers: GatewayRequestHandlers = {
           commands,
           pathEnv: live?.pathEnv,
           permissions: live?.permissions,
+          ownerUserId: nodeOwnerUserId,
           connectedAtMs: live?.connectedAtMs,
           paired: Boolean(paired),
           connected: Boolean(live),

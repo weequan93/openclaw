@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
@@ -500,6 +500,115 @@ describe("gateway canvas host auth", () => {
     });
   }, 60_000);
 
+  test("routes canvas host paths before plugin HTTP handler in strict mode", async () => {
+    const resolvedAuth: ResolvedGatewayAuth = {
+      mode: "token",
+      token: "test-token",
+      password: undefined,
+      allowTailscale: false,
+    };
+    authzDeniedEventsTest.clear();
+    const pluginHandler = vi.fn(
+      async (
+        _req: import("node:http").IncomingMessage,
+        res: import("node:http").ServerResponse,
+      ) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ source: "plugin" }));
+        return true;
+      },
+    );
+
+    await withTempConfig({
+      cfg: {
+        gateway: {
+          trustedProxies: ["127.0.0.1"],
+          multiUser: {
+            mode: "strict",
+          },
+        },
+      },
+      run: async () => {
+        const clients = new Set<GatewayWsClient>();
+        const canvasWss = new WebSocketServer({ noServer: true });
+        const canvasHost: CanvasHostHandler = {
+          rootDir: "test",
+          close: async () => {},
+          handleUpgrade: (req, socket, head) => {
+            const url = new URL(req.url ?? "/", "http://localhost");
+            if (url.pathname !== CANVAS_WS_PATH) {
+              return false;
+            }
+            canvasWss.handleUpgrade(req, socket, head, (ws) => {
+              ws.close();
+            });
+            return true;
+          },
+          handleHttpRequest: async (req, res) => {
+            const url = new URL(req.url ?? "/", "http://localhost");
+            if (
+              url.pathname !== CANVAS_HOST_PATH &&
+              !url.pathname.startsWith(`${CANVAS_HOST_PATH}/`)
+            ) {
+              return false;
+            }
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("canvas-ok");
+            return true;
+          },
+        };
+
+        const httpServer = createGatewayHttpServer({
+          canvasHost,
+          clients,
+          controlUiEnabled: false,
+          controlUiBasePath: "/__control__",
+          openAiChatCompletionsEnabled: false,
+          openResponsesEnabled: false,
+          handleHooksRequest: async () => false,
+          handlePluginRequest: pluginHandler,
+          resolvedAuth,
+        });
+
+        const wss = new WebSocketServer({ noServer: true });
+        attachGatewayUpgradeHandler({
+          httpServer,
+          wss,
+          canvasHost,
+          clients,
+          resolvedAuth,
+        });
+
+        const listener = await listen(httpServer);
+        try {
+          const sourceIp = "203.0.113.178";
+          const denied = await fetch(`http://127.0.0.1:${listener.port}${CANVAS_HOST_PATH}/`, {
+            headers: {
+              authorization: "Bearer test-token",
+              "x-forwarded-for": sourceIp,
+            },
+          });
+          expect(denied.status).toBe(401);
+          expect(pluginHandler).not.toHaveBeenCalled();
+
+          const denies = listGatewayAuthzDenyEvents({
+            method: "http.canvas",
+            reasonCode: "ROLE_FORBIDDEN",
+            sourceIp,
+            limit: 10,
+          });
+          expect(denies.length).toBeGreaterThan(0);
+        } finally {
+          await listener.close();
+          canvasWss.close();
+          wss.close();
+        }
+      },
+    });
+  }, 60_000);
+
   test("denies non-local encoded canvas host paths in strict multi-user mode", async () => {
     const resolvedAuth: ResolvedGatewayAuth = {
       mode: "token",
@@ -817,6 +926,119 @@ describe("gateway canvas host auth", () => {
             );
           }
           expect(gatewayWsConnections).toBe(0);
+        } finally {
+          await listener.close();
+          canvasWss.close();
+          wss.close();
+        }
+      },
+    });
+  }, 60_000);
+
+  test("fails closed for encoded canvas HTTP paths instead of falling through to plugin handlers", async () => {
+    const resolvedAuth: ResolvedGatewayAuth = {
+      mode: "token",
+      token: "test-token",
+      password: undefined,
+      allowTailscale: false,
+    };
+    const pluginHandler = vi.fn(
+      async (
+        _req: import("node:http").IncomingMessage,
+        res: import("node:http").ServerResponse,
+      ) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ source: "plugin" }));
+        return true;
+      },
+    );
+
+    await withTempConfig({
+      cfg: {
+        gateway: {
+          multiUser: {
+            mode: "off",
+          },
+        },
+      },
+      run: async () => {
+        const clients = new Set<GatewayWsClient>();
+        const canvasWss = new WebSocketServer({ noServer: true });
+        const canvasHost: CanvasHostHandler = {
+          rootDir: "test",
+          close: async () => {},
+          handleUpgrade: (req, socket, head) => {
+            const url = new URL(req.url ?? "/", "http://localhost");
+            if (url.pathname !== CANVAS_WS_PATH) {
+              return false;
+            }
+            canvasWss.handleUpgrade(req, socket, head, (ws) => {
+              ws.close();
+            });
+            return true;
+          },
+          handleHttpRequest: async (req, res) => {
+            const url = new URL(req.url ?? "/", "http://localhost");
+            if (
+              url.pathname !== CANVAS_HOST_PATH &&
+              !url.pathname.startsWith(`${CANVAS_HOST_PATH}/`)
+            ) {
+              return false;
+            }
+            res.statusCode = 200;
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
+            res.end("canvas-ok");
+            return true;
+          },
+        };
+
+        const httpServer = createGatewayHttpServer({
+          canvasHost,
+          clients,
+          controlUiEnabled: false,
+          controlUiBasePath: "/__control__",
+          openAiChatCompletionsEnabled: false,
+          openResponsesEnabled: false,
+          handleHooksRequest: async () => false,
+          handlePluginRequest: pluginHandler,
+          resolvedAuth,
+        });
+
+        const wss = new WebSocketServer({ noServer: true });
+        attachGatewayUpgradeHandler({
+          httpServer,
+          wss,
+          canvasHost,
+          clients,
+          resolvedAuth,
+        });
+
+        const listener = await listen(httpServer);
+        try {
+          const encodedVariants = [
+            "%2Fcanvas",
+            "%5Ccanvas",
+            "%252Fcanvas",
+            "%255Ccanvas",
+            "%25252Fcanvas",
+            "%25255Ccanvas",
+          ];
+          for (const encodedCanvasSegment of encodedVariants) {
+            const res = await fetch(
+              `http://127.0.0.1:${listener.port}${CANVAS_HOST_PATH.replace(
+                "/canvas",
+                encodedCanvasSegment,
+              )}`,
+              {
+                headers: {
+                  authorization: "Bearer test-token",
+                },
+              },
+            );
+            expect(res.status).toBe(404);
+          }
+          expect(pluginHandler).not.toHaveBeenCalled();
         } finally {
           await listener.close();
           canvasWss.close();

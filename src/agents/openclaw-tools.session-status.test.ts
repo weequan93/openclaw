@@ -17,8 +17,18 @@ vi.mock("../config/sessions.js", async (importOriginal) => {
       updateSessionStoreMock(storePath, store);
       return store;
     },
-    resolveStorePath: (_store: string | undefined, opts?: { agentId?: string }) =>
-      opts?.agentId === "support" ? "/tmp/support/sessions.json" : "/tmp/main/sessions.json",
+    resolveStorePath: (
+      _store: string | undefined,
+      opts?: { agentId?: string; ownerUserId?: string },
+    ) => {
+      const ownerPrefix =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? `/tmp/${opts.ownerUserId.trim()}`
+          : "/tmp";
+      return opts?.agentId === "support"
+        ? `${ownerPrefix}/support/sessions.json`
+        : `${ownerPrefix}/main/sessions.json`;
+    },
   };
 });
 
@@ -273,5 +283,33 @@ describe("session_status tool", () => {
     expect(saved.providerOverride).toBeUndefined();
     expect(saved.modelOverride).toBeUndefined();
     expect(saved.authProfileOverride).toBeUndefined();
+  });
+
+  it("uses owner-scoped session store path when owner user id is provided", async () => {
+    loadSessionStoreMock.mockReset();
+    updateSessionStoreMock.mockReset();
+    loadSessionStoreMock.mockImplementation((storePath: string) => {
+      if (storePath === "/tmp/user-77/main/sessions.json") {
+        return {
+          main: { sessionId: "s-owner", updatedAt: 10 },
+        };
+      }
+      return {};
+    });
+
+    const tool = createOpenClawTools({
+      agentSessionKey: "main",
+      ownerUserId: "user-77",
+    }).find((candidate) => candidate.name === "session_status");
+    expect(tool).toBeDefined();
+    if (!tool) {
+      throw new Error("missing session_status tool");
+    }
+
+    const result = await tool.execute("call-owner", {});
+    const details = result.details as { ok?: boolean; sessionKey?: string };
+    expect(details.ok).toBe(true);
+    expect(details.sessionKey).toBe("main");
+    expect(loadSessionStoreMock).toHaveBeenCalledWith("/tmp/user-77/main/sessions.json");
   });
 });

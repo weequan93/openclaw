@@ -22,7 +22,7 @@ function ownerError(params: {
   return errorShape(ErrorCodes.INVALID_REQUEST, params.message, {
     details: {
       reasonCode: params.reasonCode,
-      ...(params.details ?? {}),
+      ...params.details,
     },
   });
 }

@@ -9,8 +9,8 @@ import { createBrowserRouteDispatcher } from "../../browser/routes/dispatcher.js
 import { loadConfig } from "../../config/config.js";
 import { getPairedNode } from "../../infra/node-pairing.js";
 import { saveMediaBuffer } from "../../media/store.js";
-import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import { enforceBrowserOwnerPolicy } from "../browser-owner-policy.js";
+import { hasGatewayDelegatedAccess } from "../delegation-policy.js";
 import { isGatewayStrictOwnerMode } from "../multi-user-mode.js";
 import { isNodeCommandAllowed, resolveNodeCommandAllowlist } from "../node-command-policy.js";
 import { ErrorCodes, errorShape } from "../protocol/index.js";

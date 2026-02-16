@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { MemoryCitationsMode } from "../../config/types.memory.js";
 import type { MemorySearchResult } from "../../memory/types.js";
 import type { AnyAgentTool } from "./common.js";
+import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
 import { resolveMemoryBackendConfig } from "../../memory/backend-config.js";
 import { getMemorySearchManager } from "../../memory/index.js";
 import { resolveSessionOwnerUserId } from "../../memory/owner-partition.js";
@@ -40,6 +41,9 @@ export function createMemorySearchTool(options: {
     agentId,
     sessionKey: options.agentSessionKey,
   });
+  if (requiresOwnerScopedMemory(cfg, options.agentSessionKey) && !ownerUserId) {
+    return null;
+  }
   if (!resolveMemorySearchConfig(cfg, agentId, { ownerUserId })) {
     return null;
   }
@@ -111,6 +115,9 @@ export function createMemoryGetTool(options: {
     agentId,
     sessionKey: options.agentSessionKey,
   });
+  if (requiresOwnerScopedMemory(cfg, options.agentSessionKey) && !ownerUserId) {
+    return null;
+  }
   if (!resolveMemorySearchConfig(cfg, agentId, { ownerUserId })) {
     return null;
   }
@@ -213,6 +220,14 @@ function shouldIncludeCitations(params: {
   // auto: show citations in direct chats; suppress in groups/channels by default.
   const chatType = deriveChatTypeFromSessionKey(params.sessionKey);
   return chatType === "direct";
+}
+
+function requiresOwnerScopedMemory(cfg: OpenClawConfig, sessionKey?: string): boolean {
+  const normalizedSessionKey = typeof sessionKey === "string" ? sessionKey.trim() : "";
+  if (!normalizedSessionKey) {
+    return false;
+  }
+  return resolveGatewayMultiUserMode(cfg) === "strict";
 }
 
 function deriveChatTypeFromSessionKey(sessionKey?: string): "direct" | "group" | "channel" {

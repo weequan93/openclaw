@@ -447,7 +447,7 @@ function canManageSecurity(state: SecurityState): boolean {
   // Keep pre-connect compatibility, but never grant admin controls for connected
   // sessions when auth metadata is missing.
   if (!auth) {
-    return state.connected !== true;
+    return !state.connected;
   }
   const principalRole = typeof auth.principalRole === "string" ? auth.principalRole.trim() : "";
   if (principalRole.length > 0) {
@@ -455,7 +455,7 @@ function canManageSecurity(state: SecurityState): boolean {
   }
   // Connected sessions without explicit principal role are treated as non-admin
   // to avoid scope-only admin UI bypass.
-  if (state.connected === true) {
+  if (state.connected) {
     return false;
   }
   const role = typeof auth.role === "string" ? auth.role.trim() : "";

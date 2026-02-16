@@ -47,6 +47,19 @@ async function waitFor(condition: () => boolean, timeoutMs = 1500) {
   throw new Error("timeout waiting for condition");
 }
 
+function rawDataToString(raw: WebSocket.RawData): string {
+  if (typeof raw === "string") {
+    return raw;
+  }
+  if (Buffer.isBuffer(raw)) {
+    return raw.toString("utf8");
+  }
+  if (Array.isArray(raw)) {
+    return Buffer.concat(raw).toString("utf8");
+  }
+  return Buffer.from(raw).toString("utf8");
+}
+
 describe("gateway server chat", () => {
   test("handles chat send and history flows", async () => {
     const tempDirs: string[] = [];
@@ -660,7 +673,7 @@ describe("gateway server chat", () => {
       let otherUserReceived = false;
       const otherUserListener = (raw: WebSocket.RawData) => {
         try {
-          const parsed = JSON.parse(String(raw)) as {
+          const parsed = JSON.parse(rawDataToString(raw)) as {
             type?: string;
             event?: string;
             payload?: { runId?: string };
@@ -753,7 +766,7 @@ describe("gateway server chat", () => {
     };
     const otherUserListener = (raw: WebSocket.RawData) => {
       try {
-        const parsed = JSON.parse(String(raw)) as {
+        const parsed = JSON.parse(rawDataToString(raw)) as {
           type?: string;
           event?: string;
           payload?: { runId?: string; sessionKey?: string };

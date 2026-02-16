@@ -2,6 +2,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import type { GatewayOwnerContext } from "./owner-context.js";
 import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
+import { normalizeGatewayBoundaryPath } from "./path-normalize.js";
 import { ErrorCodes, errorShape, type ErrorShape } from "./protocol/index.js";
 
 const ROLE_FORBIDDEN = "ROLE_FORBIDDEN";
@@ -64,7 +65,7 @@ function deny(params: {
     error: errorShape(ErrorCodes.INVALID_REQUEST, params.message, {
       details: {
         reasonCode: params.reasonCode,
-        ...(params.details ?? {}),
+        ...params.details,
       },
     }),
   };
@@ -86,7 +87,11 @@ function canAccessProfileOwner(params: {
   });
 }
 
-function resolveAllowedProfiles(params: { cfg: OpenClawConfig; ownerUserId: string }): Set<string> {
+function resolveAllowedProfiles(params: {
+  cfg: OpenClawConfig;
+  ownerUserId: string;
+  mode: ReturnType<typeof resolveGatewayMultiUserMode>;
+}): Set<string> {
   const profiles = params.cfg.browser?.profiles ?? {};
   const allowed = new Set<string>();
   for (const [name, profile] of Object.entries(profiles)) {
@@ -94,7 +99,9 @@ function resolveAllowedProfiles(params: { cfg: OpenClawConfig; ownerUserId: stri
       continue;
     }
     if (profile.shared === true) {
-      allowed.add(name);
+      if (params.mode !== "strict") {
+        allowed.add(name);
+      }
       continue;
     }
     const profileOwner = normalizeString(profile.ownerUserId);
@@ -121,18 +128,20 @@ export function enforceBrowserOwnerPolicy(params: BrowserPolicyInput): BrowserPo
   if (mode === "off") {
     return { ok: true, query: params.query, body: params.body };
   }
+  const normalizedPath = normalizeGatewayBoundaryPath(params.path);
 
-  if (isProfileMutationPath(params.path)) {
+  if (isProfileMutationPath(normalizedPath)) {
     return deny({
       message: "browser profile configuration is admin-only",
       reasonCode: ROLE_FORBIDDEN,
-      details: { path: params.path },
+      details: { path: params.path, normalizedPath },
     });
   }
 
   const allowedProfiles = resolveAllowedProfiles({
     cfg: params.cfg,
     ownerUserId: owner.userId,
+    mode,
   });
   const requestedProfile = extractRequestedProfile({
     query: params.query,
@@ -172,7 +181,7 @@ export function enforceBrowserOwnerPolicy(params: BrowserPolicyInput): BrowserPo
     const profileOwner = effectiveProfileOwner;
     if (mode === "compat" && profile && profile.shared !== true && !profileOwner) {
       const nextQuery: Record<string, unknown> = {
-        ...(params.query ?? {}),
+        ...params.query,
         profile: effectiveProfile,
       };
       let nextBody = params.body;
@@ -197,7 +206,7 @@ export function enforceBrowserOwnerPolicy(params: BrowserPolicyInput): BrowserPo
   }
 
   const nextQuery: Record<string, unknown> = {
-    ...(params.query ?? {}),
+    ...params.query,
     profile: effectiveProfile,
   };
   let nextBody = params.body;

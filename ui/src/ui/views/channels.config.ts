@@ -140,10 +140,8 @@ export function renderChannelConfigSection(params: { channelId: string; props: C
   const { channelId, props } = params;
   if (!props.canManage) {
     return html`
-      <div style="margin-top: 16px;">
-        <div class="callout">
-          Channel configuration requires an admin principal role.
-        </div>
+      <div style="margin-top: 16px">
+        <div class="callout">Channel configuration requires an admin principal role.</div>
       </div>
     `;
   }

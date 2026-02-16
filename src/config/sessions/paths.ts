@@ -59,32 +59,39 @@ export function resolveSessionFilePath(
   return candidate ? candidate : resolveSessionTranscriptPath(sessionId, opts?.agentId);
 }
 
-export function resolveStorePath(store?: string, opts?: { agentId?: string }) {
+export function resolveStorePath(
+  store?: string,
+  opts?: { agentId?: string; ownerUserId?: string },
+) {
   const agentId = normalizeAgentId(opts?.agentId ?? DEFAULT_AGENT_ID);
-  if (!store) {
-    return resolveDefaultSessionStorePath(agentId);
-  }
-  if (store.includes("{agentId}")) {
-    const expanded = store.replaceAll("{agentId}", agentId);
-    if (expanded.startsWith("~")) {
+  const ownerUserId =
+    typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+      ? opts.ownerUserId.trim().toLowerCase()
+      : undefined;
+  const ownerSegment = ownerUserId
+    ? ownerUserId
+        .replace(/[^a-z0-9._-]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "") || "shared"
+    : "shared";
+  const expand = (value: string) => {
+    if (value.startsWith("~")) {
       return path.resolve(
-        expandHomePrefix(expanded, {
+        expandHomePrefix(value, {
           home: resolveRequiredHomeDir(process.env, os.homedir),
           env: process.env,
           homedir: os.homedir,
         }),
       );
     }
-    return path.resolve(expanded);
+    return path.resolve(value);
+  };
+
+  if (!store) {
+    return resolveDefaultSessionStorePath(agentId);
   }
-  if (store.startsWith("~")) {
-    return path.resolve(
-      expandHomePrefix(store, {
-        home: resolveRequiredHomeDir(process.env, os.homedir),
-        env: process.env,
-        homedir: os.homedir,
-      }),
-    );
-  }
-  return path.resolve(store);
+  const expandedTemplate = store
+    .replaceAll("{agentId}", agentId)
+    .replaceAll("{ownerUserId}", ownerSegment);
+  return expand(expandedTemplate);
 }

@@ -3,15 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
-import {
-  __test as authzDeniedEventsTest,
-  listGatewayAuthzDenyEvents,
-} from "../../gateway/authz-denied-events.js";
 import type { MsgContext } from "../templating.js";
 import {
   addSubagentRunForTests,
   resetSubagentRegistryForTests,
 } from "../../agents/subagent-registry.js";
+import {
+  __test as authzDeniedEventsTest,
+  listGatewayAuthzDenyEvents,
+} from "../../gateway/authz-denied-events.js";
 import * as internalHooks from "../../hooks/internal-hooks.js";
 import { clearPluginCommands, registerPluginCommand } from "../../plugins/commands.js";
 import { resetBashChatCommandForTests } from "./bash-command.js";
@@ -217,6 +217,64 @@ describe("handleCommands gating", () => {
     const events = listGatewayAuthzDenyEvents({ method: "command.usage" });
     expect(events).toHaveLength(1);
     expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("blocks /restart for non-admin gateway principals in strict mode", async () => {
+    const cfg = {
+      commands: { text: true, restart: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/restart", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayClientScopes: ["operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/restart is admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.restart" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+  });
+
+  it("blocks /restart for non-gateway senders in strict mode", async () => {
+    const cfg = {
+      commands: { text: true, restart: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/restart", cfg);
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/restart is admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.restart" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("UNKNOWN_SENDER");
+  });
+
+  it("blocks /restart when gateway principal has admin scope but non-admin role", async () => {
+    const cfg = {
+      commands: { text: true, restart: true },
+      gateway: { multiUser: { mode: "strict" } },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    } as OpenClawConfig;
+    const params = buildParams("/restart", cfg, {
+      GatewayOwnerUserId: "user-1",
+      GatewayOwnerPrincipalId: "principal:user-1",
+      GatewayOwnerRole: "user",
+      GatewayClientScopes: ["operator.admin", "operator.write"],
+    });
+    const result = await handleCommands(params);
+    expect(result.shouldContinue).toBe(false);
+    expect(result.reply?.text).toContain("/restart is admin-only");
+
+    const events = listGatewayAuthzDenyEvents({ method: "command.restart" });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.reasonCode).toBe("ROLE_FORBIDDEN");
+    expect(events[0]?.actorRole).toBe("user");
   });
 
   it("records authz deny event for unauthorized /restart", async () => {
@@ -743,7 +801,9 @@ describe("handleCommands /tts", () => {
       commands: { text: true },
       gateway: { multiUser: { mode: "strict" } },
       channels: { whatsapp: { allowFrom: ["*"] } },
-      messages: { tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-admin-scope-user-role.json") } },
+      messages: {
+        tts: { prefsPath: path.join(testWorkspaceDir, "tts-strict-admin-scope-user-role.json") },
+      },
     } as OpenClawConfig;
     const params = buildParams("/tts on", cfg, {
       GatewayOwnerUserId: "user-1",

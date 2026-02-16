@@ -324,7 +324,63 @@ describe("node handlers ownership", () => {
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
-        nodes: [expect.objectContaining({ nodeId: "node-1" })],
+        nodes: [expect.objectContaining({ nodeId: "node-1", ownerUserId: "user-a" })],
+      }),
+      undefined,
+    );
+  });
+
+  it("includes ownerUserId metadata in node.describe responses", async () => {
+    const context = makeContext();
+    context.nodeRegistry.listConnected = vi.fn(() => [
+      {
+        nodeId: "node-1",
+        displayName: "Node A",
+        commands: [],
+        caps: [],
+      },
+    ]);
+    mocks.listDevicePairing.mockResolvedValue({
+      pending: [],
+      paired: [
+        {
+          deviceId: "node-1",
+          role: "node",
+          displayName: "Node A",
+        },
+      ],
+    });
+    mocks.getPairedNode.mockResolvedValue({
+      nodeId: "node-1",
+      token: "token-1",
+      ownerUserId: "user-a",
+      createdAtMs: 1,
+      approvedAtMs: 2,
+    });
+    mocks.loadConfig.mockReturnValue({});
+
+    const respond = vi.fn();
+    await nodeHandlers["node.describe"]({
+      params: { nodeId: "node-1" },
+      respond,
+      context,
+      req: { type: "req", id: "1d", method: "node.describe" },
+      client: null,
+      owner: {
+        userId: "admin-a",
+        principalId: "principal:admin-a",
+        role: "admin",
+        sourceRole: "operator",
+        scopes: ["operator.admin"],
+      },
+      isWebchatConnect: () => false,
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        nodeId: "node-1",
+        ownerUserId: "user-a",
       }),
       undefined,
     );

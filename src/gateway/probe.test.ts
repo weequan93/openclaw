@@ -20,7 +20,7 @@ vi.mock("./client.js", () => ({
     }
 
     start() {
-      Promise.resolve().then(() => {
+      void Promise.resolve().then(() => {
         const onHelloOk = this.opts.onHelloOk as ((hello: unknown) => void) | undefined;
         onHelloOk?.({ protocol: 2 });
       });

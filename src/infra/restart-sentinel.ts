@@ -32,6 +32,8 @@ export type RestartSentinelPayload = {
   status: "ok" | "error" | "skipped";
   ts: number;
   sessionKey?: string;
+  /** Optional owner binding to keep fallback session lookups owner-scoped after restart. */
+  ownerUserId?: string;
   /** Delivery context captured at restart time to ensure channel routing survives restart. */
   deliveryContext?: {
     channel?: string;

@@ -231,7 +231,7 @@ export async function approveNodePairing(
     const ownerUserId =
       typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
         ? opts.ownerUserId.trim()
-        : pending.ownerUserId ?? existing?.ownerUserId;
+        : (pending.ownerUserId ?? existing?.ownerUserId);
     const node: NodePairingPairedNode = {
       nodeId: pending.nodeId,
       token: newToken(),

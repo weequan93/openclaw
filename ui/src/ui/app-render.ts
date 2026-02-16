@@ -115,7 +115,16 @@ function resolveAssistantAvatarUrl(state: AppViewState): string | undefined {
 }
 
 function escapeCsvCell(value: unknown): string {
-  const text = value == null ? "" : String(value);
+  const text =
+    value == null
+      ? ""
+      : typeof value === "string"
+        ? value
+        : typeof value === "number" || typeof value === "boolean" || typeof value === "bigint"
+          ? String(value)
+          : value instanceof Date
+            ? value.toISOString()
+            : (JSON.stringify(value) ?? "");
   if (!/[",\n]/.test(text)) {
     return text;
   }

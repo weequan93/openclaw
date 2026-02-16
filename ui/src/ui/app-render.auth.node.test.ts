@@ -62,6 +62,43 @@ vi.mock("./views/nodes.ts", () => ({
 
 const { renderApp } = await import("./app-render.ts");
 
+type RenderChannelsProps = {
+  canManage?: boolean;
+  onRefresh: (...args: unknown[]) => unknown;
+  onWhatsAppStart: (...args: unknown[]) => unknown;
+  onWhatsAppWait: (...args: unknown[]) => unknown;
+  onWhatsAppLogout: (...args: unknown[]) => unknown;
+  onConfigPatch: (...args: unknown[]) => unknown;
+  onConfigSave: (...args: unknown[]) => unknown;
+  onConfigReload: (...args: unknown[]) => unknown;
+  onNostrProfileEdit: (...args: unknown[]) => unknown;
+  onNostrProfileCancel: (...args: unknown[]) => unknown;
+  onNostrProfileFieldChange: (...args: unknown[]) => unknown;
+  onNostrProfileSave: (...args: unknown[]) => unknown;
+  onNostrProfileImport: (...args: unknown[]) => unknown;
+  onNostrProfileToggleAdvanced: (...args: unknown[]) => unknown;
+};
+
+type RenderNodesProps = {
+  canManage?: boolean;
+  onRefresh: (...args: unknown[]) => unknown;
+  onDevicesRefresh: (...args: unknown[]) => unknown;
+  onDeviceApprove: (...args: unknown[]) => unknown;
+  onDeviceReject: (...args: unknown[]) => unknown;
+  onDeviceRotate: (...args: unknown[]) => unknown;
+  onDeviceRevoke: (...args: unknown[]) => unknown;
+  onLoadConfig: (...args: unknown[]) => unknown;
+  onLoadExecApprovals: (...args: unknown[]) => unknown;
+  onBindDefault: (...args: unknown[]) => unknown;
+  onBindAgent: (...args: unknown[]) => unknown;
+  onSaveBindings: (...args: unknown[]) => unknown;
+  onExecApprovalsTargetChange: (...args: unknown[]) => unknown;
+  onExecApprovalsSelectAgent: (...args: unknown[]) => unknown;
+  onExecApprovalsPatch: (...args: unknown[]) => unknown;
+  onExecApprovalsRemove: (...args: unknown[]) => unknown;
+  onSaveExecApprovals: (...args: unknown[]) => unknown;
+};
+
 function createState(tab: "channels" | "nodes", principalRole?: "admin" | "user") {
   return {
     tab,
@@ -171,9 +208,9 @@ describe("renderApp callback auth gating", () => {
 
     renderApp(state as never);
 
-    const channelsCalls = mocks.renderChannels.mock.calls as unknown as Array<[any]>;
+    const channelsCalls = mocks.renderChannels.mock.calls as unknown as Array<[unknown]>;
     expect(channelsCalls).toHaveLength(1);
-    const [props] = channelsCalls[0];
+    const props = channelsCalls[0]?.[0] as RenderChannelsProps;
     expect(props.canManage).toBe(false);
 
     props.onRefresh(true);
@@ -210,9 +247,9 @@ describe("renderApp callback auth gating", () => {
 
     renderApp(state as never);
 
-    const nodesCalls = mocks.renderNodes.mock.calls as unknown as Array<[any]>;
+    const nodesCalls = mocks.renderNodes.mock.calls as unknown as Array<[unknown]>;
     expect(nodesCalls).toHaveLength(1);
-    const [props] = nodesCalls[0];
+    const props = nodesCalls[0]?.[0] as RenderNodesProps;
     expect(props.canManage).toBe(false);
 
     props.onRefresh();
@@ -256,9 +293,9 @@ describe("renderApp callback auth gating", () => {
 
     renderApp(state as never);
 
-    const channelsCalls = mocks.renderChannels.mock.calls as unknown as Array<[any]>;
+    const channelsCalls = mocks.renderChannels.mock.calls as unknown as Array<[unknown]>;
     expect(channelsCalls).toHaveLength(1);
-    const [props] = channelsCalls[0];
+    const props = channelsCalls[0]?.[0] as RenderChannelsProps;
     expect(props.canManage).toBe(false);
   });
 });

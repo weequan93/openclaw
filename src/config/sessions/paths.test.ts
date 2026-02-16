@@ -19,4 +19,31 @@ describe("resolveStorePath", () => {
       path.resolve("/srv/openclaw-home/.openclaw/agents/research/sessions/sessions.json"),
     );
   });
+
+  it("replaces ownerUserId template when provided", () => {
+    vi.stubEnv("HOME", "/home/test");
+    const resolved = resolveStorePath(
+      "~/.openclaw/agents/{agentId}/sessions/{ownerUserId}/sessions.json",
+      {
+        agentId: "ops",
+        ownerUserId: "User-A",
+      },
+    );
+    expect(resolved).toBe(
+      path.resolve("/home/test/.openclaw/agents/ops/sessions/user-a/sessions.json"),
+    );
+  });
+
+  it("falls back to shared owner segment when ownerUserId is missing", () => {
+    vi.stubEnv("HOME", "/home/test");
+    const resolved = resolveStorePath(
+      "~/.openclaw/agents/{agentId}/sessions/{ownerUserId}/sessions.json",
+      {
+        agentId: "ops",
+      },
+    );
+    expect(resolved).toBe(
+      path.resolve("/home/test/.openclaw/agents/ops/sessions/shared/sessions.json"),
+    );
+  });
 });

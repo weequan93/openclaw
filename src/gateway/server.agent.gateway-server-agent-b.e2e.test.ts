@@ -5,7 +5,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi 
 import { WebSocket } from "ws";
 import type { ChannelPlugin } from "../channels/plugins/types.js";
 import type { PluginRegistry } from "../plugins/registry.js";
-import { whatsappPlugin } from "../../extensions/whatsapp/src/channel.js";
 import { emitAgentEvent, registerAgentRunContext } from "../infra/agent-events.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
@@ -102,12 +101,53 @@ const createMSTeamsPlugin = (params?: { aliases?: string[] }): ChannelPlugin => 
   },
 });
 
+const createWhatsAppPlugin = (): ChannelPlugin => ({
+  id: "whatsapp",
+  meta: {
+    id: "whatsapp",
+    label: "WhatsApp",
+    selectionLabel: "WhatsApp",
+    docsPath: "/channels/whatsapp",
+    blurb: "WhatsApp test stub.",
+  },
+  capabilities: { chatTypes: ["direct"] },
+  config: {
+    listAccountIds: () => ["default"],
+    resolveAccount: () => ({}),
+    resolveAllowFrom: ({ cfg }) => {
+      const channels = cfg.channels as Record<string, unknown> | undefined;
+      const entry = channels?.whatsapp as Record<string, unknown> | undefined;
+      const allow = entry?.allowFrom;
+      return Array.isArray(allow) ? allow.map((value) => String(value)) : [];
+    },
+  },
+  outbound: {
+    deliveryMode: "direct",
+    resolveTarget: ({ to, allowFrom }) => {
+      const trimmed = to?.trim() ?? "";
+      if (trimmed) {
+        return { ok: true, to: trimmed };
+      }
+      const first = allowFrom?.[0];
+      if (first) {
+        return { ok: true, to: String(first) };
+      }
+      return {
+        ok: false,
+        error: new Error("missing target for whatsapp"),
+      };
+    },
+    sendText: async () => ({ channel: "whatsapp", messageId: "msg-test" }),
+    sendMedia: async () => ({ channel: "whatsapp", messageId: "msg-test" }),
+  },
+});
+
 const emptyRegistry = createRegistry([]);
 const defaultRegistry = createRegistry([
   {
     pluginId: "whatsapp",
     source: "test",
-    plugin: whatsappPlugin,
+    plugin: createWhatsAppPlugin(),
   },
 ]);
 
@@ -116,8 +156,20 @@ function expectChannels(call: Record<string, unknown>, channel: string) {
   expect(call.messageChannel).toBe(channel);
 }
 
+function findAgentCallByRunId(runId: string): Record<string, unknown> {
+  const spy = vi.mocked(agentCommand);
+  for (let idx = spy.mock.calls.length - 1; idx >= 0; idx -= 1) {
+    const call = spy.mock.calls[idx]?.[0] as Record<string, unknown> | undefined;
+    if (call?.runId === runId) {
+      return call;
+    }
+  }
+  throw new Error(`agentCommand call missing for runId=${runId}`);
+}
+
 describe("gateway server agent", () => {
   beforeEach(() => {
+    testState.sessionConfig = { scope: "per-sender", mainKey: "main" };
     registryState.registry = defaultRegistry;
     setActivePluginRegistry(defaultRegistry);
   });
@@ -149,17 +201,17 @@ describe("gateway server agent", () => {
         },
       },
     });
+    const idem = "idem-agent-last-msteams";
     const res = await rpcReq(ws, "agent", {
       message: "hi",
       sessionKey: "main",
       channel: "last",
       deliver: true,
-      idempotencyKey: "idem-agent-last-msteams",
+      idempotencyKey: idem,
     });
     expect(res.ok).toBe(true);
 
-    const spy = vi.mocked(agentCommand);
-    const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const call = findAgentCallByRunId(idem);
     expectChannels(call, "msteams");
     expect(call.to).toBe("conversation:teams-123");
     expect(call.deliver).toBe(true);
@@ -189,33 +241,34 @@ describe("gateway server agent", () => {
         },
       },
     });
+    const idemIMessage = "idem-agent-imsg";
     const resIMessage = await rpcReq(ws, "agent", {
       message: "hi",
       sessionKey: "main",
       channel: "imsg",
       deliver: true,
-      idempotencyKey: "idem-agent-imsg",
+      idempotencyKey: idemIMessage,
     });
     expect(resIMessage.ok).toBe(true);
 
+    const idemTeams = "idem-agent-teams";
     const resTeams = await rpcReq(ws, "agent", {
       message: "hi",
       sessionKey: "main",
       channel: "teams",
       to: "conversation:teams-abc",
       deliver: false,
-      idempotencyKey: "idem-agent-teams",
+      idempotencyKey: idemTeams,
     });
     expect(resTeams.ok).toBe(true);
 
-    const spy = vi.mocked(agentCommand);
-    const lastIMessageCall = spy.mock.calls.at(-2)?.[0] as Record<string, unknown>;
-    expectChannels(lastIMessageCall, "imessage");
-    expect(lastIMessageCall.to).toBe("chat_id:123");
+    const imessageCall = findAgentCallByRunId(idemIMessage);
+    expectChannels(imessageCall, "imessage");
+    expect(imessageCall.to).toBe("chat_id:123");
 
-    const lastTeamsCall = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
-    expectChannels(lastTeamsCall, "msteams");
-    expect(lastTeamsCall.to).toBe("conversation:teams-abc");
+    const teamsCall = findAgentCallByRunId(idemTeams);
+    expectChannels(teamsCall, "msteams");
+    expect(teamsCall.to).toBe("conversation:teams-abc");
   });
 
   test("agent rejects unknown channel", async () => {
@@ -243,17 +296,17 @@ describe("gateway server agent", () => {
         },
       },
     });
+    const idem = "idem-agent-webchat";
     const res = await rpcReq(ws, "agent", {
       message: "hi",
       sessionKey: "main",
       channel: "last",
       deliver: true,
-      idempotencyKey: "idem-agent-webchat",
+      idempotencyKey: idem,
     });
     expect(res.ok).toBe(true);
 
-    const spy = vi.mocked(agentCommand);
-    const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const call = findAgentCallByRunId(idem);
     expectChannels(call, "whatsapp");
     expect(call.to).toBe("+1555");
     expect(call.deliver).toBe(true);
@@ -274,17 +327,17 @@ describe("gateway server agent", () => {
         },
       },
     });
+    const idem = "idem-agent-webchat-internal";
     const res = await rpcReq(ws, "agent", {
       message: "hi",
       sessionKey: "main",
       channel: "last",
       deliver: false,
-      idempotencyKey: "idem-agent-webchat-internal",
+      idempotencyKey: idem,
     });
     expect(res.ok).toBe(true);
 
-    const spy = vi.mocked(agentCommand);
-    const call = spy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const call = findAgentCallByRunId(idem);
     expectChannels(call, "webchat");
     expect(call.to).toBeUndefined();
     expect(call.deliver).toBe(false);
@@ -402,6 +455,7 @@ describe("gateway server agent", () => {
         main: {
           sessionId: "sess-main",
           updatedAt: Date.now(),
+          ownerUserId: "user-webchat",
         },
       },
     });
@@ -414,6 +468,11 @@ describe("gateway server agent", () => {
         version: "1.0.0",
         platform: "test",
         mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+      },
+      identity: {
+        userId: "user-webchat",
+        principalId: "user-webchat:principal",
+        alias: "Webchat User",
       },
     });
 

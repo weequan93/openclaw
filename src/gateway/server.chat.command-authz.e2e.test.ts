@@ -241,6 +241,7 @@ describe("gateway chat command authz (real reply path)", () => {
               text: true,
               config: true,
               debug: true,
+              restart: true,
             },
             plugins: {
               slots: {
@@ -332,6 +333,11 @@ describe("gateway chat command authz (real reply path)", () => {
           message: "/approve abc allow-once",
           idempotencyKey: "idem-chat-command-approve-deny",
           method: "command.approve",
+        },
+        {
+          message: "/restart",
+          idempotencyKey: "idem-chat-command-restart-deny",
+          method: "command.restart",
         },
       ];
 

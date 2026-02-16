@@ -675,4 +675,183 @@ describe("gateway server sessions", () => {
 
     ws.close();
   });
+
+  test("sessions delegated access works with owner-partitioned session store template", async () => {
+    const dir = await fs.mkdtemp(
+      path.join(os.tmpdir(), "openclaw-sessions-resolve-delegated-template-"),
+    );
+    const storeTemplate = path.join(dir, "{ownerUserId}", "sessions.json");
+    const userAStorePath = path.join(dir, "user-a", "sessions.json");
+    const userBStorePath = path.join(dir, "user-b", "sessions.json");
+
+    await fs.mkdir(path.dirname(userAStorePath), { recursive: true });
+    await fs.mkdir(path.dirname(userBStorePath), { recursive: true });
+    await fs.writeFile(
+      userAStorePath,
+      JSON.stringify(
+        {
+          "agent:main:main": {
+            sessionId: "sess-main-owner-a",
+            updatedAt: Date.now(),
+            ownerUserId: "user-a",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+    await fs.writeFile(
+      userBStorePath,
+      JSON.stringify(
+        {
+          "agent:main:discord:group:delegated-template": {
+            sessionId: "sess-delegated-template",
+            updatedAt: Date.now(),
+            ownerUserId: "user-b",
+            label: "Delegated Template Session",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    testState.sessionConfig = { store: storeTemplate };
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+          delegation: {
+            enabled: true,
+            rules: [
+              {
+                fromUserId: "user-a",
+                toUserId: "user-b",
+                resources: ["sessions"],
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const { ws } = await openClient({
+      scopes: ["operator.read", "operator.write"],
+      identity: {
+        userId: "user-a",
+        principalId: "msg:discord:default:user-a",
+        alias: "Alice",
+      },
+    });
+
+    const delegatedList = await rpcReq<{ count?: number; sessions: Array<{ key: string }> }>(
+      ws,
+      "sessions.list",
+      {
+        includeGlobal: false,
+        includeUnknown: false,
+      },
+    );
+    expect(delegatedList.ok).toBe(true);
+    expect(delegatedList.payload?.count).toBe(2);
+    const delegatedKeys = delegatedList.payload?.sessions.map((session) => session.key) ?? [];
+    expect(delegatedKeys).toContain("agent:main:main");
+    expect(delegatedKeys).toContain("agent:main:discord:group:delegated-template");
+
+    const resolveByKey = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      key: "discord:group:delegated-template",
+    });
+    expect(resolveByKey.ok).toBe(true);
+    expect(resolveByKey.payload?.key).toBe("agent:main:discord:group:delegated-template");
+
+    const patchDelegated = await rpcReq<{ ok: true }>(ws, "sessions.patch", {
+      key: "discord:group:delegated-template",
+      verboseLevel: "on",
+    });
+    expect(patchDelegated.ok).toBe(true);
+
+    const userAStore = JSON.parse(await fs.readFile(userAStorePath, "utf-8")) as Record<
+      string,
+      { verboseLevel?: string }
+    >;
+    const userBStore = JSON.parse(await fs.readFile(userBStorePath, "utf-8")) as Record<
+      string,
+      { verboseLevel?: string }
+    >;
+    expect(userAStore["agent:main:discord:group:delegated-template"]).toBeUndefined();
+    expect(userBStore["agent:main:discord:group:delegated-template"]?.verboseLevel).toBe("on");
+
+    ws.close();
+  });
+
+  test("admin owner filter resolves owner-partitioned session stores", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sessions-owner-filter-"));
+    const storeTemplate = path.join(dir, "{ownerUserId}", "sessions.json");
+    const userBStorePath = path.join(dir, "user-b", "sessions.json");
+    const ownerSessionKey = "agent:main:discord:dm:owned-owner-filter";
+
+    await fs.mkdir(path.dirname(userBStorePath), { recursive: true });
+    await fs.writeFile(
+      userBStorePath,
+      JSON.stringify(
+        {
+          [ownerSessionKey]: {
+            sessionId: "sess-owner-filter-user-b",
+            updatedAt: Date.now(),
+            ownerUserId: "user-b",
+          },
+        },
+        null,
+        2,
+      ),
+      "utf-8",
+    );
+
+    testState.sessionConfig = { store: storeTemplate };
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+      },
+    });
+
+    const { ws } = await openClient();
+
+    const withoutOwnerFilter = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      key: "discord:dm:owned-owner-filter",
+    });
+    expect(withoutOwnerFilter.ok).toBe(false);
+    expect(withoutOwnerFilter.error?.message ?? "").toContain("No session found");
+
+    const resolveWithOwnerFilter = await rpcReq<{ ok: true; key: string }>(ws, "sessions.resolve", {
+      key: "discord:dm:owned-owner-filter",
+      ownerUserId: "user-b",
+    });
+    expect(resolveWithOwnerFilter.ok).toBe(true);
+    expect(resolveWithOwnerFilter.payload?.key).toBe(ownerSessionKey);
+
+    const listWithOwnerFilter = await rpcReq<{ sessions?: Array<{ key: string }>; count?: number }>(
+      ws,
+      "sessions.list",
+      {
+        ownerUserId: "user-b",
+        includeGlobal: false,
+        includeUnknown: false,
+      },
+    );
+    expect(listWithOwnerFilter.ok).toBe(true);
+    expect(listWithOwnerFilter.payload?.count).toBe(1);
+    expect((listWithOwnerFilter.payload?.sessions ?? []).map((session) => session.key)).toEqual([
+      ownerSessionKey,
+    ]);
+
+    ws.close();
+  });
 });

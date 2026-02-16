@@ -5,11 +5,75 @@ import { agentCommand } from "../commands/agent.js";
 import { loadConfig } from "../config/config.js";
 import { updateSessionStore } from "../config/sessions.js";
 import { requestHeartbeatNow } from "../infra/heartbeat-wake.js";
+import { getPairedNode } from "../infra/node-pairing.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { normalizeMainKey } from "../routing/session-key.js";
 import { defaultRuntime } from "../runtime.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
+import { resolveSessionOwnerUserIdForGateway } from "./session-owner-resolver.js";
+import { assertSessionAccess } from "./session-owner.js";
 import { loadSessionEntry } from "./session-utils.js";
 import { formatForLog } from "./ws-log.js";
+
+function normalizeOwnerUserId(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function createNodeOwnerContext(params: { nodeId: string; ownerUserId: string }) {
+  return {
+    userId: params.ownerUserId,
+    principalId: `node:${params.nodeId}`,
+    role: "node" as const,
+    sourceRole: "node" as const,
+    scopes: [],
+  };
+}
+
+async function resolveNodeOwnerUserId(nodeId: string): Promise<string | undefined> {
+  const normalizedNodeId = nodeId.trim();
+  if (!normalizedNodeId) {
+    return undefined;
+  }
+  try {
+    const paired = await getPairedNode(normalizedNodeId);
+    return normalizeOwnerUserId(paired?.ownerUserId);
+  } catch {
+    return undefined;
+  }
+}
+
+function canNodeAccessSession(params: {
+  cfg: ReturnType<typeof loadConfig>;
+  sessionKey: string;
+  nodeOwnerUserId?: string;
+  allowMissingSessionOwner?: boolean;
+}): boolean {
+  if (resolveGatewayMultiUserMode(params.cfg) === "off") {
+    return true;
+  }
+  if (!params.nodeOwnerUserId) {
+    return false;
+  }
+  const sessionOwnerUserId = resolveSessionOwnerUserIdForGateway({
+    cfg: params.cfg,
+    sessionKey: params.sessionKey,
+    preferredOwnerUserId: params.nodeOwnerUserId,
+  });
+  if (!sessionOwnerUserId) {
+    return Boolean(params.allowMissingSessionOwner);
+  }
+  return hasGatewayDelegatedAccess({
+    cfg: params.cfg,
+    fromUserId: params.nodeOwnerUserId,
+    ownerUserId: sessionOwnerUserId,
+    resource: "sessions",
+  });
+}
 
 export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt: NodeEvent) => {
   switch (evt.event) {
@@ -36,12 +100,41 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
       const cfg = loadConfig();
       const rawMainKey = normalizeMainKey(cfg.session?.mainKey);
       const sessionKey = sessionKeyRaw.length > 0 ? sessionKeyRaw : rawMainKey;
-      const { storePath, entry, canonicalKey } = loadSessionEntry(sessionKey);
+      const ownerUserId = await resolveNodeOwnerUserId(nodeId);
+      if (
+        !canNodeAccessSession({
+          cfg,
+          sessionKey,
+          nodeOwnerUserId: ownerUserId,
+          allowMissingSessionOwner: true,
+        })
+      ) {
+        ctx.logGateway.warn(`node voice.transcript denied node=${nodeId} session=${sessionKey}`);
+        return;
+      }
+      const { storePath, entry, canonicalKey } = loadSessionEntry(sessionKey, { ownerUserId });
+      if (ownerUserId && resolveGatewayMultiUserMode(cfg) !== "off") {
+        const ownerAccess = assertSessionAccess({
+          owner: createNodeOwnerContext({ nodeId, ownerUserId }),
+          entry,
+          sessionKey: canonicalKey,
+          cfg,
+        });
+        if (!ownerAccess.ok) {
+          ctx.logGateway.warn(
+            `node voice.transcript denied node=${nodeId} session=${canonicalKey}`,
+          );
+          return;
+        }
+      }
       const now = Date.now();
       const sessionId = entry?.sessionId ?? randomUUID();
+      const effectiveOwnerUserId = normalizeOwnerUserId(entry?.ownerUserId) ?? ownerUserId;
       if (storePath) {
         await updateSessionStore(storePath, (store) => {
           store[canonicalKey] = {
+            ...entry,
+            ...(effectiveOwnerUserId ? { ownerUserId: effectiveOwnerUserId } : {}),
             sessionId,
             updatedAt: now,
             thinkingLevel: entry?.thinkingLevel,
@@ -113,12 +206,40 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
 
       const sessionKeyRaw = (link?.sessionKey ?? "").trim();
       const sessionKey = sessionKeyRaw.length > 0 ? sessionKeyRaw : `node-${nodeId}`;
-      const { storePath, entry, canonicalKey } = loadSessionEntry(sessionKey);
+      const ownerUserId = await resolveNodeOwnerUserId(nodeId);
+      const cfg = loadConfig();
+      if (
+        !canNodeAccessSession({
+          cfg,
+          sessionKey,
+          nodeOwnerUserId: ownerUserId,
+          allowMissingSessionOwner: true,
+        })
+      ) {
+        ctx.logGateway.warn(`node agent.request denied node=${nodeId} session=${sessionKey}`);
+        return;
+      }
+      const { storePath, entry, canonicalKey } = loadSessionEntry(sessionKey, { ownerUserId });
+      if (ownerUserId && resolveGatewayMultiUserMode(cfg) !== "off") {
+        const ownerAccess = assertSessionAccess({
+          owner: createNodeOwnerContext({ nodeId, ownerUserId }),
+          entry,
+          sessionKey: canonicalKey,
+          cfg,
+        });
+        if (!ownerAccess.ok) {
+          ctx.logGateway.warn(`node agent.request denied node=${nodeId} session=${canonicalKey}`);
+          return;
+        }
+      }
       const now = Date.now();
       const sessionId = entry?.sessionId ?? randomUUID();
+      const effectiveOwnerUserId = normalizeOwnerUserId(entry?.ownerUserId) ?? ownerUserId;
       if (storePath) {
         await updateSessionStore(storePath, (store) => {
           store[canonicalKey] = {
+            ...entry,
+            ...(effectiveOwnerUserId ? { ownerUserId: effectiveOwnerUserId } : {}),
             sessionId,
             updatedAt: now,
             thinkingLevel: entry?.thinkingLevel,
@@ -168,6 +289,12 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
       if (!sessionKey) {
         return;
       }
+      const cfg = loadConfig();
+      const nodeOwnerUserId = await resolveNodeOwnerUserId(nodeId);
+      if (!canNodeAccessSession({ cfg, sessionKey, nodeOwnerUserId })) {
+        ctx.logGateway.warn(`node subscribe denied node=${nodeId} session=${sessionKey}`);
+        return;
+      }
       ctx.nodeSubscribe(nodeId, sessionKey);
       return;
     }
@@ -185,6 +312,12 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
         typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
       const sessionKey = typeof obj.sessionKey === "string" ? obj.sessionKey.trim() : "";
       if (!sessionKey) {
+        return;
+      }
+      const cfg = loadConfig();
+      const nodeOwnerUserId = await resolveNodeOwnerUserId(nodeId);
+      if (!canNodeAccessSession({ cfg, sessionKey, nodeOwnerUserId })) {
+        ctx.logGateway.warn(`node unsubscribe denied node=${nodeId} session=${sessionKey}`);
         return;
       }
       ctx.nodeUnsubscribe(nodeId, sessionKey);
@@ -207,6 +340,12 @@ export const handleNodeEvent = async (ctx: NodeEventContext, nodeId: string, evt
       const sessionKey =
         typeof obj.sessionKey === "string" ? obj.sessionKey.trim() : `node-${nodeId}`;
       if (!sessionKey) {
+        return;
+      }
+      const cfg = loadConfig();
+      const nodeOwnerUserId = await resolveNodeOwnerUserId(nodeId);
+      if (!canNodeAccessSession({ cfg, sessionKey, nodeOwnerUserId })) {
+        ctx.logGateway.warn(`node exec event denied node=${nodeId} session=${sessionKey}`);
         return;
       }
       const runId = typeof obj.runId === "string" ? obj.runId.trim() : "";

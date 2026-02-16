@@ -23,6 +23,7 @@ Implementation status update: February 13, 2026.
   - Bundle apply uses `config.policyBundle.apply` (with fallback to `config.patch`) and requires config base hash.
 - Gateway tests now cover policy bundle apply flow end-to-end via `config.policyBundle.apply` and `config.patch`.
 - CI sensitive-gateway merge gate now covers additional authz and ownership control points (`call`, shared gateway handlers, config and ownership methods, and session utility paths) and requires related test updates when these change.
+  - Boundary-path normalization (`src/gateway/path-normalize.ts`) is now also included in the sensitive-gateway merge gate to prevent untested endpoint-guard regressions.
 - Skill visibility now enforces owner-aware filtering in runtime prompt construction and slash-skill discovery paths.
   - `shared` skills remain visible to all users.
   - `user_private` skills are hidden from non-owners in strict mode, with compat-mode fallback behavior.
@@ -42,15 +43,29 @@ Implementation status update: February 13, 2026.
   - The tool is hidden from non-admin owner-bound tool lists in multi-user mode.
   - Non-admin owner-bound runs are denied for gateway restart, config, and update actions.
   - Owner context is now propagated through embedded runner and inline tool-dispatch paths so this guard applies to normal user chat flows.
+  - Restart sentinel payloads now include `ownerUserId`, and wake-time session metadata fallback uses owner-scoped session-store reads (with thread-base fallback); unit coverage verifies owner partition usage.
 - Built-in `cron` agent tool now follows the same owner-bound admin control-plane policy in multi-user mode.
   - The tool is hidden from non-admin owner-bound tool lists in multi-user mode.
   - Non-admin owner-bound direct tool execution is denied by default.
 - Internal gateway calls from owner-aware agent tools now propagate owner identity (`userId`, `principalId`, optional `alias`) into gateway connect context.
   - Applies to gateway, cron, browser, canvas, nodes, and sessions tool flows routed through `callGateway` or `callGatewayTool`.
   - Identity payload emission is conditional so legacy call paths remain shape-compatible when no owner context exists.
+  - Internal tool dispatch now rejects unclassified gateway methods unless explicit scopes are provided, preventing implicit admin-scope fallback on unknown method names.
+  - Shared `callGateway` scope resolution now applies the same explicit classification guard, so direct internal callers cannot implicitly escalate unknown methods to admin scope.
 - Gateway method classification now includes `sessions.resolve` as a read operation, removing admin-scope fallback for common session lookup flows.
 - Session tools now propagate owner identity for session discovery and history retrieval paths (`sessions.list`, `sessions.resolve`, `chat.history`) including shared helper resolution and agent-to-agent announce-target lookup.
 - `sessions.list` owner filtering is now applied at list-build time, so payload metadata (`count`) reflects only caller-visible sessions and does not leak hidden cross-user session totals.
+- `sessions.list` and `sessions.resolve` now support explicit `ownerUserId` filters for admin callers so owner-partitioned session stores can be inspected without disabling user isolation.
+  - Owner-restricted non-admin callers remain bound to their resolved owner context and cannot widen session scope with `ownerUserId` request parameters.
+- Owner-partitioned session store routing now also applies across interactive gateway user paths (`chat.*`, `send`, `agent`, and `sessions.usage*`) for owner-restricted callers so user-scoped requests do not fall back to shared session store partitions.
+- Node-originated runtime paths (`voice.transcript` and `agent.request`) now resolve node owner from pairing metadata and apply owner-scoped session-store lookups before session writes, preserving existing session ownership metadata during updates.
+- Node-originated runtime event writes now enforce session ownership checks:
+  - `voice.transcript`, `agent.request`, and `exec.*` events are denied when the paired node owner cannot access the target session.
+  - Strict mode denies ownerless session targets for node-originated transcript/request writes to prevent ownership takeover.
+- Agent `session_status` tool now uses owner-scoped session-store resolution (including sessionId lookups), preventing fallback to shared partitions in owner-partitioned store mode.
+- Run-to-session key fallback resolution now checks owner-scoped partitions first (run-owner + mapped identity owners) before default store fallback, improving event/session linkage in owner-partitioned session stores.
+- Chat runtime tool-verbosity fallback now resolves session entries with run-owner scoping, so tool-event verbosity reads do not probe shared partitions in owner-partitioned session-store mode.
+- Runtime fanout owner-resolution now skips unscoped session-store probes when `session.store` is owner-partitioned (`{ownerUserId}`), using owner-scoped lookups only.
 - Subagent lifecycle follow-up RPCs now preserve owner identity (wait, announce, patch, cleanup delete, and persisted registry resume paths) so spawned-run completion handling remains owner-scoped.
 - `/subagents` command runtime calls (`chat.history`, `agent`, `agent.wait`) now execute with the resolved owner identity, preventing unscoped follow-up access in owner-bound sessions.
 - `/approve` control command now includes resolved owner identity on approval resolution RPCs for consistent actor attribution and policy evaluation.
@@ -66,6 +81,11 @@ Implementation status update: February 13, 2026.
 - Browser extension relay profile access is now restricted for non-admin users:
   - Non-admin access requires explicit owner binding (`ownerUserId`) on the selected extension relay profile.
   - Compat mode no longer allows fallback access to unowned extension relay profiles.
+- Browser profile ownership enforcement now treats shared browser profiles as compat-only for non-admin access:
+  - In `strict` mode, non-admin users must use owner-bound (or delegated owner-bound) profiles.
+  - Shared profiles remain available for non-admin users only in `compat` mode for migration compatibility.
+  - Browser ownership path checks now normalize encoded route variants so encoded `/profiles` mutation paths cannot bypass admin-only profile configuration rules.
+  - E2E coverage now verifies encoded `/profiles` mutation attempts via `browser.request` are denied for non-admin callers with `ROLE_FORBIDDEN` and emitted in authz denied feeds.
 - Command-plane authorization denials now emit authz deny events for admin security visibility:
   - `/config` and `/debug` denials are recorded with reason codes (`UNKNOWN_SENDER` or `ROLE_FORBIDDEN`) under `command.config`/`command.debug`.
   - `/allowlist` denials are recorded with reason codes (`UNKNOWN_SENDER` or `ROLE_FORBIDDEN`) under `command.allowlist`.
@@ -105,6 +125,7 @@ Implementation status update: February 13, 2026.
   - Auth/connect e2e coverage now also verifies `strict` and `compat` modes both deny admin-only methods (`status`) for mapped non-admin and role-missing mapped principals requesting `operator.admin`, while mapped admins remain allowed.
   - Chat runtime e2e coverage now also verifies owner-scoped `agent` event fanout follows live `strict -> off -> strict` mode switching on existing sockets (owner-only in strict, broad in off).
   - `/tts` setting mutations (`on`/`off` and changing provider/limit/summary) are now admin-only in gateway multi-user mode; non-admin denials are logged under `command.tts` while `/tts status` and `/tts audio` remain available to users.
+  - `/restart` command is now admin-only in gateway multi-user mode; mapped non-admin and non-gateway callers are denied with reason-coded audit events under `command.restart`.
 - Cross-user runtime denial observability is covered in e2e tests:
   - Owner-mismatch denials for `chat.history`/`chat.send`/`chat.abort`, `sessions.delete`/`sessions.compact`, `node.invoke`/`node.describe`, and `browser.request` are asserted in `authz.denied.list` responses with owner alias metadata.
 - Runtime event fanout isolation is covered in e2e tests:
@@ -147,6 +168,9 @@ Implementation status update: February 13, 2026.
   - Non-local requests are denied with `403 forbidden`.
   - Denials are recorded in authz deny logs under method `http.openresponses.responses` with reason code `ROLE_FORBIDDEN`.
   - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.openresponses.responses`.
+- Core HTTP endpoint routing precedence now evaluates built-in security boundaries (hooks, tools invoke, OpenAI, OpenResponses, and canvas) before plugin HTTP handlers.
+  - This prevents plugin routes from shadowing protected core endpoints such as `/hooks/*`, `/v1/chat/completions`, `/v1/responses`, and canvas host paths.
+  - E2E coverage now verifies plugin route collisions on those paths do not bypass local-admin enforcement.
 - OpenAI/OpenResponses/tools invoke/canvas endpoint auth failures (missing or invalid token / sender) now emit `UNKNOWN_SENDER` deny events so unauthorized probe attempts remain visible in admin security feeds.
 - Hooks HTTP endpoint (`POST /hooks/*`) is now local-admin only when multi-user mode is enabled (`compat` or `strict`):
   - Non-local requests are denied with `403 forbidden`.
@@ -205,6 +229,7 @@ Implementation status update: February 13, 2026.
   - Local allow-path requests in `compat` and `strict` now also emit authz allow events under `http.canvas` and `ws.canvas`.
   - Canvas websocket local-admin checks now also cover trailing-slash websocket paths under `/canvas/ws/*` to prevent bypass through path variants.
   - Canvas HTTP path classification now also treats websocket-path trailing-slash variants as canvas-protected paths so local-admin checks run before host routing.
+  - Canvas HTTP handling now also fails closed for canvas-classified encoded path variants when canvas host raw path matching does not accept the request, preventing fallback to plugin/control handlers.
   - Canvas WS upgrade handling now fails closed for canvas-classified encoded path variants when canvas host raw path matching does not accept the request, preventing fallback to gateway WS upgrade paths.
   - E2E coverage now verifies canvas WS fail-closed behavior for encoded slash/backslash variants including double-encoded and triple-encoded forms with no fallback to gateway WS upgrades.
 - Admin Security presets now include one-click endpoint filters for high-risk HTTP/WS boundaries:
@@ -222,9 +247,13 @@ Implementation status update: February 13, 2026.
 - Node-role skill bin discovery is now owner-scoped in multi-user mode:
   - `skills.bins` resolves paired node owner metadata and applies that owner as the visibility and agent-ownership viewer.
   - Strict mode denies node callers without resolved node ownership metadata (`OWNER_MISMATCH`) instead of returning broad skill dependency metadata.
+- Node inventory metadata now exposes owner binding in runtime reads:
+  - `node.list` and `node.describe` now include `ownerUserId` from node pairing metadata for ownership-aware admin and audit workflows.
+  - E2E coverage now verifies admin `node.list` reflects paired `ownerUserId` after node pairing approval and ownership assignment.
 - Cross-owner delegation policy is now available under `gateway.multiUser.delegation` and disabled by default:
   - Delegation rules can explicitly allow specific users to access another user's `agents`, `nodes`, `sessions`, and `browser` resources.
   - Agent, node, session, and browser ownership checks now honor delegation rules when enabled by admins.
+  - Session delegated access now resolves owner-partitioned session stores (`session.store` with `{ownerUserId}`), so delegated `sessions.list`/`sessions.resolve`/session-key reads continue to work when stores are partitioned by owner.
   - `browser.request` now honors browser delegation in node-owner checks, and e2e coverage verifies delegated browser proxy access end-to-end.
   - `browser.request` now enforces profile-owner and node-owner alignment for non-admin node-proxy calls, preventing cross-owner profile and node mixing in a single request.
   - E2E coverage verifies delegated browser access is still denied when profile owner and node owner differ.
@@ -244,6 +273,7 @@ Implementation status update: February 13, 2026.
 - Ownership migration surfaces now include memory checks:
   - `ownership.gaps` and `ownership.backfill` support `memory` resource scanning for QMD ownership partition readiness.
   - Memory backfill safely templates `memory.qmd.sessions.exportDir` with `{ownerUserId}` and reports unresolved custom QMD path ownership entries for admin review.
+  - Memory owner-partition helpers now resolve session ownership and owned session-file discovery against owner-partitioned session store templates (`session.store` with `{ownerUserId}`) for owner-scoped memory tooling.
   - Gateway CLI `ownership-gaps` and `ownership-backfill` now accept `--resource memory` for migration workflows.
   - Admin security panel ownership views and backfill controls now include `memory` as a first-class resource target.
 - Sandbox ownership defaults are hardened for multi-user modes:

@@ -10,8 +10,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../../config/config.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../../config/config.js")>("../../../config/config.js");
+  const actual = await vi.importActual<typeof import("../../../config/config.js")>(
+    "../../../config/config.js",
+  );
   return {
     ...actual,
     loadConfig: mocks.loadConfig,
@@ -20,8 +21,9 @@ vi.mock("../../../config/config.js", async () => {
 });
 
 vi.mock("../../channel-migration.js", async () => {
-  const actual =
-    await vi.importActual<typeof import("../../channel-migration.js")>("../../channel-migration.js");
+  const actual = await vi.importActual<typeof import("../../channel-migration.js")>(
+    "../../channel-migration.js",
+  );
   return {
     ...actual,
     migrateSlackChannelConfig: mocks.migrateSlackChannelConfig,

@@ -211,7 +211,7 @@ function collectSessionStorePaths(cfg: OpenClawConfig): string[] {
     return [...ids]
       .map((agentId) => resolveStorePath(template, { agentId }))
       .filter(Boolean)
-      .sort((a, b) => a.localeCompare(b));
+      .toSorted((a, b) => a.localeCompare(b));
   }
   const defaultAgentId = normalizeAgentId(resolveDefaultAgentId(cfg));
   return [resolveStorePath(template, { agentId: defaultAgentId })];
@@ -251,7 +251,7 @@ function backfillAgentsInConfig(params: { cfg: OpenClawConfig; ownerUserId: stri
     cfg: {
       ...params.cfg,
       agents: {
-        ...(params.cfg.agents ?? {}),
+        ...params.cfg.agents,
         list: nextEntries,
       },
     },
@@ -312,7 +312,7 @@ function backfillBrowserProfilesInConfig(params: { cfg: OpenClawConfig; ownerUse
     cfg: {
       ...params.cfg,
       browser: {
-        ...(params.cfg.browser ?? {}),
+        ...params.cfg.browser,
         profiles: nextProfiles,
       },
     },
@@ -456,10 +456,10 @@ async function backfillNodes(params: {
   };
 }
 
-function backfillMemoryInConfig(params: {
+function backfillMemoryInConfig(params: { cfg: OpenClawConfig; dryRun: boolean }): {
   cfg: OpenClawConfig;
-  dryRun: boolean;
-}): { cfg: OpenClawConfig; result: OwnershipBackfillMemoryResult } {
+  result: OwnershipBackfillMemoryResult;
+} {
   const qmd = params.cfg.memory?.qmd;
   if (!qmd || typeof qmd !== "object") {
     return {
@@ -502,7 +502,7 @@ function backfillMemoryInConfig(params: {
         const trimmed = exportDirRaw.replace(/\/+$/g, "");
         const exportDirTemplate = `${trimmed}/{ownerUserId}`;
         nextQmd.sessions = {
-          ...(qmd.sessions ?? {}),
+          ...qmd.sessions,
           exportDir: exportDirTemplate,
         };
       }
@@ -526,7 +526,7 @@ function backfillMemoryInConfig(params: {
     cfg: {
       ...params.cfg,
       memory: {
-        ...(params.cfg.memory ?? {}),
+        ...params.cfg.memory,
         qmd: nextQmd as NonNullable<OpenClawConfig["memory"]>["qmd"],
       },
     },
@@ -639,7 +639,10 @@ function scanSessionOwnershipGaps(params: {
   };
 }
 
-function scanMemoryOwnershipGaps(params: { cfg: OpenClawConfig; limit: number }): OwnershipGapsMemoryResult {
+function scanMemoryOwnershipGaps(params: {
+  cfg: OpenClawConfig;
+  limit: number;
+}): OwnershipGapsMemoryResult {
   const qmd = params.cfg.memory?.qmd;
   if (!qmd || typeof qmd !== "object") {
     return {

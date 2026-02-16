@@ -35,7 +35,7 @@ describe("authz.allow.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.allow.list"]({
+    void authzHandlers["authz.allow.list"]({
       respond,
       params: { limit: 1 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.allow.list"]>[0]);
@@ -72,7 +72,7 @@ describe("authz.allow.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.allow.list"]({
+    void authzHandlers["authz.allow.list"]({
       respond,
       params: { method: "sessions.list", userId: "user-b" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.allow.list"]>[0]);
@@ -88,7 +88,7 @@ describe("authz.allow.list", () => {
 
   it("rejects invalid params", () => {
     const respond = vi.fn();
-    authzHandlers["authz.allow.list"]({
+    void authzHandlers["authz.allow.list"]({
       respond,
       params: { reasonCode: "SCOPE_MISSING" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.allow.list"]>[0]);
@@ -147,7 +147,7 @@ describe("authz.allow.summary", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.allow.summary"]({
+    void authzHandlers["authz.allow.summary"]({
       respond,
       params: { topN: 3, alertThreshold: 2 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.allow.summary"]>[0]);
@@ -186,7 +186,7 @@ describe("authz.allow.summary", () => {
 
   it("rejects invalid alertThreshold in summary params", () => {
     const respond = vi.fn();
-    authzHandlers["authz.allow.summary"]({
+    void authzHandlers["authz.allow.summary"]({
       respond,
       params: { alertThreshold: 9999 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.allow.summary"]>[0]);
@@ -233,7 +233,7 @@ describe("authz.denied.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { limit: 1 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -276,7 +276,7 @@ describe("authz.denied.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { reasonCode: "OWNER_MISMATCH", userId: "user-b" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -317,7 +317,7 @@ describe("authz.denied.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { actorRole: "node", sourceRole: "node", errorCode: "UNAUTHORIZED" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -364,7 +364,7 @@ describe("authz.denied.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { clientId: "control-ui", sourceIp: "203.0.113.1" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -380,7 +380,7 @@ describe("authz.denied.list", () => {
 
   it("rejects invalid params", () => {
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { cursor: "abc" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -433,7 +433,7 @@ describe("authz.denied.list", () => {
     });
 
     const firstRespond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond: firstRespond,
       params: { limit: 2 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -446,7 +446,7 @@ describe("authz.denied.list", () => {
     expect(typeof firstResult?.nextCursor).toBe("string");
 
     const secondRespond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond: secondRespond,
       params: { limit: 2, cursor: firstResult?.nextCursor },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -498,7 +498,7 @@ describe("authz.denied.list", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.list"]({
+    void authzHandlers["authz.denied.list"]({
       respond,
       params: { limit: 2, order: "asc" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.list"]>[0]);
@@ -559,7 +559,7 @@ describe("authz.denied.summary", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { topN: 3 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);
@@ -625,7 +625,7 @@ describe("authz.denied.summary", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { sourceRole: "node", errorCode: "UNAUTHORIZED" },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);
@@ -689,7 +689,7 @@ describe("authz.denied.summary", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { topN: 5, alertThreshold: 2 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);
@@ -768,7 +768,7 @@ describe("authz.denied.summary", () => {
     });
 
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { topN: 5, alertThreshold: 2 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);
@@ -792,7 +792,7 @@ describe("authz.denied.summary", () => {
 
   it("rejects invalid summary params", () => {
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { topN: 9999 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);
@@ -808,7 +808,7 @@ describe("authz.denied.summary", () => {
 
   it("rejects invalid alertThreshold in summary params", () => {
     const respond = vi.fn();
-    authzHandlers["authz.denied.summary"]({
+    void authzHandlers["authz.denied.summary"]({
       respond,
       params: { alertThreshold: 9999 },
     } as unknown as Parameters<(typeof authzHandlers)["authz.denied.summary"]>[0]);

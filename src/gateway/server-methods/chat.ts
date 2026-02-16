@@ -9,6 +9,7 @@ import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
 import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
+import { loadConfig } from "../../config/config.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { resolveGatewayAuditSourceIp } from "../audit-source-ip.js";
@@ -31,7 +32,7 @@ import {
   validateChatSendParams,
 } from "../protocol/index.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
-import { assertSessionAccess } from "../session-owner.js";
+import { assertSessionAccess, isOwnerRestrictedPrincipal } from "../session-owner.js";
 import {
   capArrayByJsonBytes,
   loadSessionEntry,
@@ -219,7 +220,11 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       limit?: number;
     };
-    const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
+    const cfgForOwner = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfgForOwner) ? owner?.userId : undefined;
+    const { cfg, storePath, entry } = loadSessionEntry(sessionKey, {
+      ownerUserId,
+    });
     const access = assertSessionAccess({
       owner,
       entry,
@@ -282,7 +287,9 @@ export const chatHandlers: GatewayRequestHandlers = {
       sessionKey: string;
       runId?: string;
     };
-    const session = loadSessionEntry(sessionKey);
+    const cfgForOwner = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfgForOwner) ? owner?.userId : undefined;
+    const session = loadSessionEntry(sessionKey, { ownerUserId });
     const access = assertSessionAccess({
       owner,
       entry: session.entry,
@@ -409,7 +416,15 @@ export const chatHandlers: GatewayRequestHandlers = {
       }
     }
     const rawSessionKey = p.sessionKey;
-    const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+    const cfgForOwner = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfgForOwner) ? owner?.userId : undefined;
+    const {
+      cfg,
+      entry,
+      canonicalKey: sessionKey,
+    } = loadSessionEntry(rawSessionKey, {
+      ownerUserId,
+    });
     const access = assertSessionAccess({
       owner,
       entry,
@@ -600,8 +615,10 @@ export const chatHandlers: GatewayRequestHandlers = {
               .trim();
             let message: Record<string, unknown> | undefined;
             if (combinedReply) {
-              const { storePath: latestStorePath, entry: latestEntry } =
-                loadSessionEntry(sessionKey);
+              const { storePath: latestStorePath, entry: latestEntry } = loadSessionEntry(
+                sessionKey,
+                { ownerUserId },
+              );
               const sessionId = latestEntry?.sessionId ?? entry?.sessionId ?? clientRunId;
               const appended = appendAssistantTranscriptMessage({
                 message: combinedReply,
@@ -702,7 +719,11 @@ export const chatHandlers: GatewayRequestHandlers = {
 
     // Load session to find transcript file
     const rawSessionKey = p.sessionKey;
-    const { cfg, storePath, entry } = loadSessionEntry(rawSessionKey);
+    const cfgForOwner = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfgForOwner) ? owner?.userId : undefined;
+    const { cfg, storePath, entry } = loadSessionEntry(rawSessionKey, {
+      ownerUserId,
+    });
     const access = assertSessionAccess({
       owner,
       entry,

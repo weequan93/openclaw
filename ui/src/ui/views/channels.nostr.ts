@@ -51,7 +51,8 @@ export function renderNostrCard(params: {
   const summaryLastStartAt = nostr?.lastStartAt ?? primaryAccount?.lastStartAt ?? null;
   const summaryLastError = nostr?.lastError ?? primaryAccount?.lastError ?? null;
   const hasMultipleAccounts = nostrAccounts.length > 1;
-  const showingForm = props.canManage && profileFormState !== null && profileFormState !== undefined;
+  const showingForm =
+    props.canManage && profileFormState !== null && profileFormState !== undefined;
 
   const renderAccountCard = (account: ChannelAccountSnapshot) => {
     const publicKey = (account as { publicKey?: string }).publicKey;

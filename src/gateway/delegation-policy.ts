@@ -65,9 +65,7 @@ export function hasGatewayDelegatedAccess(params: {
     if (from !== fromUserId || to !== ownerUserId) {
       continue;
     }
-    const resources = normalizeDelegationResources(
-      (rule as { resources?: unknown }).resources as unknown,
-    );
+    const resources = normalizeDelegationResources((rule as { resources?: unknown }).resources);
     if (!resources || resources.has(params.resource)) {
       return true;
     }

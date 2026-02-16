@@ -21,6 +21,10 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
   }
   const payload = sentinel.payload;
   const sessionKey = payload.sessionKey?.trim();
+  const ownerUserId =
+    typeof payload.ownerUserId === "string" && payload.ownerUserId.trim()
+      ? payload.ownerUserId.trim()
+      : undefined;
   const message = formatRestartSentinelMessage(payload);
   const summary = summarizeRestartSentinel(payload);
 
@@ -42,7 +46,7 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
     markerIndex === -1 ? undefined : sessionKey.slice(markerIndex + marker.length);
   const sessionThreadId = threadIdRaw?.trim() || undefined;
 
-  const { cfg, entry } = loadSessionEntry(sessionKey);
+  const { cfg, entry } = loadSessionEntry(sessionKey, { ownerUserId });
   const parsedTarget = resolveAnnounceTargetFromKey(baseSessionKey);
 
   // Prefer delivery context from sentinel (captured at restart) over session store
@@ -50,7 +54,7 @@ export async function scheduleRestartSentinelWake(params: { deps: CliDeps }) {
   const sentinelContext = payload.deliveryContext;
   let sessionDeliveryContext = deliveryContextFromSession(entry);
   if (!sessionDeliveryContext && markerIndex !== -1 && baseSessionKey) {
-    const { entry: baseEntry } = loadSessionEntry(baseSessionKey);
+    const { entry: baseEntry } = loadSessionEntry(baseSessionKey, { ownerUserId });
     sessionDeliveryContext = deliveryContextFromSession(baseEntry);
   }
 

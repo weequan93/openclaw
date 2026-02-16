@@ -1,8 +1,8 @@
 import { Type } from "@sinclair/typebox";
 import type { OpenClawConfig } from "../../config/config.js";
-import { loadConfig, resolveConfigSnapshotHash } from "../../config/io.js";
-import { loadSessionStore, resolveStorePath } from "../../config/sessions.js";
+import { resolveConfigSnapshotHash } from "../../config/io.js";
 import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
+import { loadSessionEntry } from "../../gateway/session-utils.js";
 import {
   formatDoctorNonInteractiveHint,
   type RestartSentinelPayload,
@@ -83,7 +83,9 @@ export function createGatewayTool(opts?: {
       ? opts.ownerPrincipalId.trim()
       : undefined;
   const ownerAlias =
-    typeof opts?.ownerAlias === "string" && opts.ownerAlias.trim() ? opts.ownerAlias.trim() : undefined;
+    typeof opts?.ownerAlias === "string" && opts.ownerAlias.trim()
+      ? opts.ownerAlias.trim()
+      : undefined;
   const multiUserMode = resolveGatewayMultiUserMode(opts?.config);
   const ownerBoundRun = Boolean(ownerUserId);
   const enforceAdminControlPlane = multiUserMode !== "off" && ownerBoundRun;
@@ -129,12 +131,9 @@ export function createGatewayTool(opts?: {
             threadIndex === -1 ? undefined : sessionKey.slice(threadIndex + threadMarker.length);
           threadId = threadIdRaw?.trim() || undefined;
           try {
-            const cfg = loadConfig();
-            const storePath = resolveStorePath(cfg.session?.store);
-            const store = loadSessionStore(storePath);
-            let entry = store[sessionKey];
+            let entry = loadSessionEntry(sessionKey, { ownerUserId }).entry;
             if (!entry?.deliveryContext && threadIndex !== -1 && baseSessionKey) {
-              entry = store[baseSessionKey];
+              entry = loadSessionEntry(baseSessionKey, { ownerUserId }).entry;
             }
             if (entry?.deliveryContext) {
               deliveryContext = {
@@ -152,6 +151,7 @@ export function createGatewayTool(opts?: {
           status: "ok",
           ts: Date.now(),
           sessionKey,
+          ownerUserId,
           deliveryContext,
           threadId,
           message: note ?? reason ?? null,

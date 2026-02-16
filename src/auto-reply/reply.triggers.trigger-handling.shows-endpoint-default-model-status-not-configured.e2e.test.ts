@@ -164,7 +164,7 @@ describe("trigger handling", () => {
         makeCfg(home),
       );
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("/restart is disabled");
+      expect(text).toContain("/restart is admin-only");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });
@@ -177,6 +177,10 @@ describe("trigger handling", () => {
           From: "+1001",
           To: "+2000",
           CommandAuthorized: true,
+          GatewayOwnerUserId: "11111111-1111-1111-1111-111111111111",
+          GatewayOwnerPrincipalId: "msg:whatsapp:default:+1001",
+          GatewayOwnerRole: "admin",
+          GatewayClientScopes: ["operator.admin", "operator.write"],
         },
         {},
         cfg,

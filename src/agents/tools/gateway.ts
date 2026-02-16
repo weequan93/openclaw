@@ -1,6 +1,7 @@
 import { callGateway } from "../../gateway/call.js";
 import {
   classifyGatewayMethodAccess,
+  isGatewayMethodExplicitlyClassified,
   resolveGatewayOperatorScopesForMethod,
 } from "../../gateway/operator-scopes.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../../utils/message-channel.js";
@@ -74,6 +75,11 @@ export async function callGatewayTool<T = Record<string, unknown>>(
     explicitScopes.length > 0
       ? Array.from(new Set(explicitScopes))
       : (() => {
+          if (!isGatewayMethodExplicitlyClassified(method)) {
+            throw new Error(
+              `gateway method '${method}' is not explicitly scope-classified; pass scopes=[...] to avoid implicit admin fallback`,
+            );
+          }
           const accessClass = classifyGatewayMethodAccess(method);
           if (accessClass === "admin" && extra?.allowAdmin !== true) {
             throw new Error(

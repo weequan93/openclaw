@@ -161,7 +161,8 @@ describe("trigger handling", () => {
       expect(text).toBe("ok");
       expect(runEmbeddedPiAgent).toHaveBeenCalledOnce();
       const extra = vi.mocked(runEmbeddedPiAgent).mock.calls[0]?.[0]?.extraSystemPrompt ?? "";
-      expect(extra).toContain("Test Group");
+      expect(extra).toContain("## Inbound Context (trusted metadata)");
+      expect(extra).toContain('"channel": "whatsapp"');
       expect(extra).toContain("Activation: always-on");
     });
   });

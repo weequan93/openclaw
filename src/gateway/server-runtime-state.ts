@@ -1,6 +1,7 @@
 import type { Server as HttpServer } from "node:http";
 import { WebSocketServer } from "ws";
 import type { CliDeps } from "../cli/deps.js";
+import type { OpenClawConfig } from "../config/config.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -28,10 +29,20 @@ import { attachGatewayUpgradeHandler, createGatewayHttpServer } from "./server-h
 import { createGatewayHooksRequestHandler } from "./server/hooks.js";
 import { listenGatewayHttpServer } from "./server/http-listen.js";
 import { createGatewayPluginRequestHandler } from "./server/plugins-http.js";
-import { loadSessionEntry } from "./session-utils.js";
+import { resolveSessionOwnerUserIdForGateway } from "./session-owner-resolver.js";
+
+export function resolveSessionOwnerUserIdForFanout(params: {
+  sessionKey: string;
+  cfg: OpenClawConfig;
+}): string | undefined {
+  return resolveSessionOwnerUserIdForGateway({
+    cfg: params.cfg,
+    sessionKey: params.sessionKey,
+  });
+}
 
 export async function createGatewayRuntimeState(params: {
-  cfg: import("../config/config.js").OpenClawConfig;
+  cfg: OpenClawConfig;
   bindHost: string;
   port: number;
   controlUiEnabled: boolean;
@@ -117,14 +128,8 @@ export async function createGatewayRuntimeState(params: {
     clients,
     multiUserMode,
     getMultiUserMode: () => resolveGatewayMultiUserMode(loadConfig()),
-    resolveOwnerUserIdForSessionKey: (sessionKey) => {
-      try {
-        const ownerUserId = loadSessionEntry(sessionKey).entry?.ownerUserId;
-        return typeof ownerUserId === "string" ? ownerUserId : undefined;
-      } catch {
-        return undefined;
-      }
-    },
+    resolveOwnerUserIdForSessionKey: (sessionKey) =>
+      resolveSessionOwnerUserIdForGateway({ sessionKey, cfg: loadConfig() }),
     canAccessOwnerScopedEvent: ({ viewerUserId, ownerUserId }) =>
       hasGatewayDelegatedAccess({
         cfg: loadConfig(),

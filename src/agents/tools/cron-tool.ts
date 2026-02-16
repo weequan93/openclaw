@@ -241,7 +241,9 @@ export function createCronTool(opts?: CronToolOptions): AnyAgentTool {
       ? opts.ownerPrincipalId.trim()
       : undefined;
   const ownerAlias =
-    typeof opts?.ownerAlias === "string" && opts.ownerAlias.trim() ? opts.ownerAlias.trim() : undefined;
+    typeof opts?.ownerAlias === "string" && opts.ownerAlias.trim()
+      ? opts.ownerAlias.trim()
+      : undefined;
   const multiUserMode = resolveGatewayMultiUserMode(opts?.config);
   const ownerBoundRun = Boolean(ownerUserId);
   const enforceAdminControlPlane = multiUserMode !== "off" && ownerBoundRun;
@@ -507,10 +509,15 @@ Use jobId as the canonical identifier; id is accepted for compatibility. Use con
               ? params.mode
               : "next-heartbeat";
           return jsonResult(
-            await callGatewayTool("wake", gatewayOpts, { mode, text }, {
-              expectFinal: false,
-              allowAdmin: true,
-            }),
+            await callGatewayTool(
+              "wake",
+              gatewayOpts,
+              { mode, text },
+              {
+                expectFinal: false,
+                allowAdmin: true,
+              },
+            ),
           );
         }
         default:

@@ -17,7 +17,10 @@ import {
 } from "../utils/message-channel.js";
 import { GatewayClient } from "./client.js";
 import { pickPrimaryLanIPv4 } from "./net.js";
-import { resolveGatewayOperatorScopesForMethod } from "./operator-scopes.js";
+import {
+  isGatewayMethodExplicitlyClassified,
+  resolveGatewayOperatorScopesForMethod,
+} from "./operator-scopes.js";
 import { PROTOCOL_VERSION } from "./protocol/index.js";
 
 export type CallGatewayOptions = {
@@ -328,6 +331,11 @@ export function resolveCallGatewayScopes(params: { method: string; scopes?: stri
     : [];
   if (explicit.length > 0) {
     return Array.from(new Set(explicit));
+  }
+  if (!isGatewayMethodExplicitlyClassified(params.method)) {
+    throw new Error(
+      `gateway method '${params.method}' is not explicitly scope-classified; pass scopes=[...] to avoid implicit admin fallback`,
+    );
   }
   return resolveGatewayOperatorScopesForMethod(params.method);
 }

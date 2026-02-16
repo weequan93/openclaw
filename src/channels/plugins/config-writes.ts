@@ -1,7 +1,7 @@
 import type { OpenClawConfig } from "../../config/config.js";
 import type { ChannelId } from "./types.js";
-import { normalizeAccountId } from "../../routing/session-key.js";
 import { resolveGatewayMultiUserMode } from "../../gateway/multi-user-mode.js";
+import { normalizeAccountId } from "../../routing/session-key.js";
 
 const ADMIN_SCOPE = "operator.admin";
 

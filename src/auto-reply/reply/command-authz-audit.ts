@@ -51,9 +51,9 @@ export function recordCommandAuthzDeny(params: {
   const hasGatewayIdentity = Boolean(userId || principalId || ownerRole || scopes.length > 0);
   const actorRole = !hasGatewayIdentity
     ? null
-    : ownerRole ??
+    : (ownerRole ??
       // Do not infer admin actor role from scope alone when principal role is unresolved.
-      (scopes.includes(ADMIN_SCOPE) ? null : "user");
+      (scopes.includes(ADMIN_SCOPE) ? null : "user"));
   const sourceRole = hasGatewayIdentity ? "operator" : null;
   const clientId = normalizeToken(params.ctx.GatewayClientId) ?? null;
   const clientMode =

@@ -18,12 +18,7 @@ import {
   setSseHeaders,
   writeDone,
 } from "./http-common.js";
-import {
-  getBearerToken,
-  getHeader,
-  resolveAgentIdForRequest,
-  resolveSessionKey,
-} from "./http-utils.js";
+import { getBearerToken, resolveAgentIdForRequest, resolveSessionKey } from "./http-utils.js";
 import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import { normalizeGatewayBoundaryPath } from "./path-normalize.js";
 

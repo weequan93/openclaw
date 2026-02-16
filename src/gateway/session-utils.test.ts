@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
@@ -7,6 +8,7 @@ import {
   capArrayByJsonBytes,
   classifySessionKey,
   deriveSessionTitle,
+  loadCombinedSessionStoreForGateway,
   listAgentsForGateway,
   listSessionsFromStore,
   parseGroupKey,
@@ -92,6 +94,126 @@ describe("gateway session utils", () => {
     expect(target.canonicalKey).toBe("agent:ops:main");
     expect(target.storeKeys).toEqual(expect.arrayContaining(["agent:ops:main", "main"]));
     expect(target.storePath).toBe(path.resolve(storeTemplate.replace("{agentId}", "ops")));
+  });
+
+  test("resolveGatewaySessionStoreTarget picks delegated owner-partitioned store when session exists there", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-utils-delegated-"));
+    try {
+      const storeTemplate = path.join(root, "{ownerUserId}", "{agentId}", "sessions.json");
+      const delegatedStorePath = path.join(root, "user-b", "main", "sessions.json");
+      fs.mkdirSync(path.dirname(delegatedStorePath), { recursive: true });
+      fs.writeFileSync(
+        delegatedStorePath,
+        JSON.stringify(
+          {
+            "agent:main:delegated-chat": {
+              sessionId: "sess-delegated",
+              updatedAt: Date.now(),
+              ownerUserId: "user-b",
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      const cfg = {
+        session: { mainKey: "main", store: storeTemplate },
+        agents: { list: [{ id: "main", default: true }] },
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["sessions"],
+                },
+              ],
+            },
+          },
+        },
+      } as OpenClawConfig;
+      const target = resolveGatewaySessionStoreTarget({
+        cfg,
+        key: "delegated-chat",
+        ownerUserId: "user-a",
+      });
+      expect(target.storePath).toBe(path.resolve(delegatedStorePath));
+      expect(target.canonicalKey).toBe("agent:main:delegated-chat");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("loadCombinedSessionStoreForGateway includes delegated owner-partitioned stores", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-session-utils-combined-"));
+    try {
+      const storeTemplate = path.join(root, "{ownerUserId}", "{agentId}", "sessions.json");
+      const requesterStorePath = path.join(root, "user-a", "main", "sessions.json");
+      const delegatedStorePath = path.join(root, "user-b", "main", "sessions.json");
+      fs.mkdirSync(path.dirname(requesterStorePath), { recursive: true });
+      fs.mkdirSync(path.dirname(delegatedStorePath), { recursive: true });
+      fs.writeFileSync(
+        requesterStorePath,
+        JSON.stringify(
+          {
+            "agent:main:mine": {
+              sessionId: "sess-mine",
+              updatedAt: Date.now(),
+              ownerUserId: "user-a",
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      fs.writeFileSync(
+        delegatedStorePath,
+        JSON.stringify(
+          {
+            "agent:main:delegated": {
+              sessionId: "sess-delegated",
+              updatedAt: Date.now(),
+              ownerUserId: "user-b",
+            },
+          },
+          null,
+          2,
+        ),
+        "utf-8",
+      );
+      const cfg = {
+        session: { mainKey: "main", store: storeTemplate },
+        agents: { list: [{ id: "main", default: true }] },
+        gateway: {
+          multiUser: {
+            mode: "strict",
+            delegation: {
+              enabled: true,
+              rules: [
+                {
+                  fromUserId: "user-a",
+                  toUserId: "user-b",
+                  resources: ["sessions"],
+                },
+              ],
+            },
+          },
+        },
+      } as OpenClawConfig;
+      const { storePath, store } = loadCombinedSessionStoreForGateway(cfg, {
+        ownerUserId: "user-a",
+      });
+      expect(storePath).toBe("(multiple)");
+      expect(store["agent:main:mine"]?.ownerUserId).toBe("user-a");
+      expect(store["agent:main:delegated"]?.ownerUserId).toBe("user-b");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("listAgentsForGateway filters by ownerUserId when provided", () => {

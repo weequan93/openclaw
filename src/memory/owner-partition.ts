@@ -2,7 +2,6 @@ import path from "node:path";
 import type { OpenClawConfig } from "../config/config.js";
 import { resolveSessionFilePath, resolveStorePath } from "../config/sessions/paths.js";
 import { loadSessionStore } from "../config/sessions/store.js";
-import type { SessionEntry } from "../config/sessions/types.js";
 
 function trimToken(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
@@ -43,8 +42,37 @@ export function resolveOwnerPartitionedFile(filePath: string, ownerUserId?: stri
   return path.join(parsed.dir, ownerPartition, parsed.base);
 }
 
-function resolveSessionStorePath(cfg: OpenClawConfig, agentId: string): string {
-  return resolveStorePath(cfg.session?.store, { agentId });
+function resolveSessionStorePath(
+  cfg: OpenClawConfig,
+  agentId: string,
+  ownerUserId?: string,
+): string {
+  return resolveStorePath(cfg.session?.store, { agentId, ownerUserId });
+}
+
+function listKnownOwnerUserIds(cfg: OpenClawConfig): string[] {
+  const ownerIds = new Set<string>();
+  for (const mapping of Object.values(cfg.gateway?.multiUser?.identities ?? {})) {
+    const ownerUserId = normalizeOwnerUserId(mapping?.userId);
+    if (ownerUserId) {
+      ownerIds.add(ownerUserId);
+    }
+  }
+  for (const entry of cfg.agents?.list ?? []) {
+    const ownerUserId = normalizeOwnerUserId(entry?.ownerUserId);
+    if (ownerUserId) {
+      ownerIds.add(ownerUserId);
+    }
+  }
+  for (const profile of Object.values(cfg.browser?.profiles ?? {})) {
+    const ownerUserId = normalizeOwnerUserId(
+      (profile as { ownerUserId?: string | undefined } | undefined)?.ownerUserId,
+    );
+    if (ownerUserId) {
+      ownerIds.add(ownerUserId);
+    }
+  }
+  return Array.from(ownerIds);
 }
 
 export function resolveSessionOwnerUserId(params: {
@@ -56,9 +84,28 @@ export function resolveSessionOwnerUserId(params: {
   if (!sessionKey) {
     return undefined;
   }
-  const storePath = resolveSessionStorePath(params.cfg, params.agentId);
-  const store = loadSessionStore(storePath);
-  return normalizeOwnerUserId(store[sessionKey]?.ownerUserId);
+  const resolveFromStore = (ownerUserId?: string): string | undefined => {
+    const storePath = resolveSessionStorePath(params.cfg, params.agentId, ownerUserId);
+    const store = loadSessionStore(storePath);
+    return normalizeOwnerUserId(store[sessionKey]?.ownerUserId);
+  };
+
+  const directOwner = resolveFromStore();
+  if (directOwner) {
+    return directOwner;
+  }
+  const storeTemplate =
+    typeof params.cfg.session?.store === "string" ? params.cfg.session.store : "";
+  if (!storeTemplate.includes("{ownerUserId}")) {
+    return undefined;
+  }
+  for (const ownerUserId of listKnownOwnerUserIds(params.cfg)) {
+    const resolvedOwnerUserId = resolveFromStore(ownerUserId);
+    if (resolvedOwnerUserId) {
+      return resolvedOwnerUserId;
+    }
+  }
+  return undefined;
 }
 
 export function resolveOwnedSessionFilesForAgent(params: {
@@ -70,7 +117,7 @@ export function resolveOwnedSessionFilesForAgent(params: {
   if (!ownerUserId) {
     return null;
   }
-  const storePath = resolveSessionStorePath(params.cfg, params.agentId);
+  const storePath = resolveSessionStorePath(params.cfg, params.agentId, ownerUserId);
   const store = loadSessionStore(storePath);
   const owned = new Set<string>();
   for (const entry of Object.values(store)) {
@@ -82,7 +129,7 @@ export function resolveOwnedSessionFilesForAgent(params: {
     if (!sessionId) {
       continue;
     }
-    const sessionFile = resolveSessionFilePath(sessionId, entry as SessionEntry, {
+    const sessionFile = resolveSessionFilePath(sessionId, entry, {
       agentId: params.agentId,
     });
     owned.add(path.resolve(sessionFile));

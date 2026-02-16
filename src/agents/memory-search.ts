@@ -2,9 +2,9 @@ import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig, MemorySearchConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
+import { resolveOwnerPartitionedFile } from "../memory/owner-partition.js";
 import { clampInt, clampNumber, resolveUserPath } from "../utils.js";
 import { resolveAgentConfig } from "./agent-scope.js";
-import { resolveOwnerPartitionedFile } from "../memory/owner-partition.js";
 
 export type ResolvedMemorySearchConfig = {
   enabled: boolean;

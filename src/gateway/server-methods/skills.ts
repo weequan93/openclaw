@@ -10,8 +10,8 @@ import { installSkill } from "../../agents/skills-install.js";
 import { buildWorkspaceSkillStatus } from "../../agents/skills-status.js";
 import { loadWorkspaceSkillEntries, type SkillEntry } from "../../agents/skills.js";
 import { loadConfig, writeConfigFile } from "../../config/config.js";
-import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { getPairedNode } from "../../infra/node-pairing.js";
+import { getRemoteSkillEligibility } from "../../infra/skills-remote.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { normalizeSecretInput } from "../../utils/normalize-secret-input.js";
 import { assertAgentOwnership } from "../agent-owner-policy.js";
@@ -179,13 +179,11 @@ function canViewSkillForOwner(params: {
 function collectVisibleBins(params: {
   cfg: OpenClawConfig;
   ownerForWorkspaces?: GatewayOwnerContext | null;
-  viewer:
-    | {
-        role: string;
-        userId: string;
-        groupIds?: string[];
-      }
-    | null;
+  viewer: {
+    role: string;
+    userId: string;
+    groupIds?: string[];
+  } | null;
 }): string[] {
   const workspaceDirs = listWorkspaceDirs({
     cfg: params.cfg,
@@ -306,7 +304,11 @@ export const skillsHandlers: GatewayRequestHandlers = {
       try {
         pairedOwnerUserId = normalizeToken((await getPairedNode(nodeId ?? ""))?.ownerUserId);
       } catch {
-        respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "failed to resolve node owner"));
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "failed to resolve node owner"),
+        );
         return;
       }
       if (!pairedOwnerUserId) {

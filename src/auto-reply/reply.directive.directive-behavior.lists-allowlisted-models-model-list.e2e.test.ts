@@ -206,8 +206,9 @@ describe("directive behavior", () => {
       );
 
       const text = Array.isArray(res) ? res[0]?.text : res?.text;
-      expect(text).toContain("Model set to minimax");
+      expect(text).toContain("Models (minimax)");
       expect(text).toContain("minimax/MiniMax-M2.1");
+      expect(text).toContain("Switch: /model <provider/model>");
       expect(runEmbeddedPiAgent).not.toHaveBeenCalled();
     });
   });

@@ -491,9 +491,6 @@ export function createGatewayHttpServer(opts: {
       if (await handleSlackHttpRequest(req, res)) {
         return;
       }
-      if (handlePluginRequest && (await handlePluginRequest(req, res))) {
-        return;
-      }
       if (openResponsesEnabled) {
         if (
           await handleOpenResponsesHttpRequest(req, res, {
@@ -517,7 +514,8 @@ export function createGatewayHttpServer(opts: {
       }
       if (canvasHost) {
         const url = new URL(req.url ?? "/", "http://localhost");
-        if (isCanvasPath(url.pathname)) {
+        const canvasPathMatched = isCanvasPath(url.pathname);
+        if (canvasPathMatched) {
           const ok = await authorizeCanvasRequest({
             req,
             config: configSnapshot,
@@ -535,6 +533,14 @@ export function createGatewayHttpServer(opts: {
           return;
         }
         if (await canvasHost.handleHttpRequest(req, res)) {
+          return;
+        }
+        if (canvasPathMatched) {
+          // Fail closed for canvas-classified HTTP paths so encoded variants cannot
+          // fall through to unrelated handlers when canvas host raw path checks reject.
+          res.statusCode = 404;
+          res.setHeader("Content-Type", "text/plain; charset=utf-8");
+          res.end("Not Found");
           return;
         }
       }
@@ -556,6 +562,9 @@ export function createGatewayHttpServer(opts: {
         ) {
           return;
         }
+      }
+      if (handlePluginRequest && (await handlePluginRequest(req, res))) {
+        return;
       }
 
       res.statusCode = 404;

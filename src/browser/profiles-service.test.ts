@@ -103,9 +103,7 @@ describe("BrowserProfilesService", () => {
     });
 
     const service = createBrowserProfilesService(ctx);
-    await expect(service.createProfile({ name: "strict" })).rejects.toThrow(
-      "ownerUserId required",
-    );
+    await expect(service.createProfile({ name: "strict" })).rejects.toThrow("ownerUserId required");
     expect(writeConfigFile).not.toHaveBeenCalled();
   });
 

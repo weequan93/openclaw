@@ -57,6 +57,7 @@ import {
 } from "./internal.js";
 import { searchKeyword, searchVector } from "./manager-search.js";
 import { ensureMemoryIndexSchema } from "./memory-schema.js";
+import { normalizeOwnerUserId, resolveOwnedSessionFilesForAgent } from "./owner-partition.js";
 import {
   buildSessionEntry,
   listSessionFilesForAgent,
@@ -65,10 +66,6 @@ import {
 } from "./session-files.js";
 import { loadSqliteVecExtension } from "./sqlite-vec.js";
 import { requireNodeSqlite } from "./sqlite.js";
-import {
-  normalizeOwnerUserId,
-  resolveOwnedSessionFilesForAgent,
-} from "./owner-partition.js";
 
 type MemoryIndexMeta = {
   model: string;

@@ -1,8 +1,8 @@
 import type { OpenClawConfig } from "../config/config.js";
 import type { GatewayOwnerContext } from "./owner-context.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
+import { resolveGatewayMultiUserMode } from "./multi-user-mode.js";
 import { ErrorCodes, errorShape, type ErrorShape } from "./protocol/index.js";
 
 function normalizeToken(raw: unknown): string | undefined {

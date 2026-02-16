@@ -39,12 +39,12 @@ vi.mock("../config/sessions.js", () => ({
     structuredClone(testState.sessionStores.get(storePath) ?? {}),
   updateSessionStore: async (
     storePath: string,
-    mutator: (store: Record<string, unknown>) => unknown | Promise<unknown>,
+    mutator: (store: Record<string, unknown>) => void | Promise<void>,
   ) => {
     const store = structuredClone(testState.sessionStores.get(storePath) ?? {});
-    const result = await mutator(store);
-    testState.sessionStores.set(storePath, store as Record<string, Record<string, unknown>>);
-    return result;
+    await mutator(store);
+    testState.sessionStores.set(storePath, store);
+    return undefined;
   },
 }));
 

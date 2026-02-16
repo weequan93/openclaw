@@ -1,13 +1,13 @@
 import type { OpenClawConfig } from "../config/config.js";
 import { loadSessionStore } from "../config/sessions.js";
 import { parseSessionLabel } from "../sessions/session-label.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import {
   ErrorCodes,
   type ErrorShape,
   errorShape,
   type SessionsResolveParams,
 } from "./protocol/index.js";
-import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import {
   listSessionsFromStore,
   loadCombinedSessionStoreForGateway,
@@ -68,7 +68,7 @@ export function resolveSessionKeyFromResolveParams(params: {
   }
 
   if (hasKey) {
-    const target = resolveGatewaySessionStoreTarget({ cfg, key });
+    const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
     const store = loadSessionStore(target.storePath);
     const existingKey = target.storeKeys.find((candidate) => store[candidate]);
     if (!existingKey) {
@@ -96,7 +96,7 @@ export function resolveSessionKeyFromResolveParams(params: {
   }
 
   if (hasSessionId) {
-    const { storePath, store } = loadCombinedSessionStoreForGateway(cfg);
+    const { storePath, store } = loadCombinedSessionStoreForGateway(cfg, { ownerUserId });
     const list = listSessionsFromStore({
       cfg,
       storePath,
@@ -149,7 +149,7 @@ export function resolveSessionKeyFromResolveParams(params: {
     };
   }
 
-  const { storePath, store } = loadCombinedSessionStoreForGateway(cfg);
+  const { storePath, store } = loadCombinedSessionStoreForGateway(cfg, { ownerUserId });
   const list = listSessionsFromStore({
     cfg,
     storePath,

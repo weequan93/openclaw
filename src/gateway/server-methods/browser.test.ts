@@ -48,7 +48,8 @@ const makeContext = (params?: {
   ({
     nodeRegistry: {
       listConnected: () => params?.nodes ?? [],
-      invoke: params?.invoke ?? (async () => ({ ok: false, error: { message: "not implemented" } })),
+      invoke:
+        params?.invoke ?? (async () => ({ ok: false, error: { message: "not implemented" } })),
     },
   }) as unknown as GatewayRequestContext;
 
@@ -87,6 +88,101 @@ describe("gateway browser.request ownership policy", () => {
     expect(ok).toBe(false);
     expect(payload).toBeUndefined();
     expect(error?.message).toContain("admin-only");
+  });
+
+  it("denies encoded non-admin profile configuration routes", async () => {
+    mocks.loadConfig.mockReturnValue({
+      browser: {
+        defaultProfile: "alice",
+        profiles: {
+          alice: { cdpPort: 18810, color: "#00AA00", ownerUserId: "user-1" },
+        },
+      },
+    });
+    mocks.dispatch.mockClear();
+    const respond = vi.fn();
+
+    await browserHandlers["browser.request"]({
+      req: { type: "req", id: "1b", method: "browser.request" },
+      params: { method: "POST", path: "/profiles%252Fcreate", body: { name: "new-profile" } },
+      respond,
+      context: makeContext(),
+      client: null,
+      owner: userOwner,
+      isWebchatConnect: () => false,
+    });
+
+    const [ok, payload, error] = respond.mock.calls.at(-1) ?? [];
+    expect(ok).toBe(false);
+    expect(payload).toBeUndefined();
+    expect(error?.message).toContain("admin-only");
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("denies shared profile access for non-admin users in strict mode", async () => {
+    mocks.loadConfig.mockReturnValue({
+      gateway: { multiUser: { mode: "strict" } },
+      browser: {
+        defaultProfile: "shared",
+        profiles: {
+          shared: { cdpPort: 18811, color: "#00BB00", shared: true },
+        },
+      },
+    });
+    mocks.dispatch.mockClear();
+    const respond = vi.fn();
+
+    await browserHandlers["browser.request"]({
+      req: { type: "req", id: "1c", method: "browser.request" },
+      params: { method: "GET", path: "/tabs", query: { profile: "shared" } },
+      respond,
+      context: makeContext(),
+      client: null,
+      owner: userOwner,
+      isWebchatConnect: () => false,
+    });
+
+    const [ok, payload, error] = respond.mock.calls.at(-1) ?? [];
+    expect(ok).toBe(false);
+    expect(payload).toBeUndefined();
+    expect(error?.message).toContain("owner mismatch");
+    expect((error?.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+      "OWNER_MISMATCH",
+    );
+    expect(mocks.dispatch).not.toHaveBeenCalled();
+  });
+
+  it("allows shared profile access for non-admin users in compat mode", async () => {
+    mocks.loadConfig.mockReturnValue({
+      gateway: { multiUser: { mode: "compat" } },
+      browser: {
+        defaultProfile: "shared",
+        profiles: {
+          shared: { cdpPort: 18811, color: "#00BB00", shared: true },
+        },
+      },
+    });
+    mocks.dispatch.mockClear();
+    const respond = vi.fn();
+
+    await browserHandlers["browser.request"]({
+      req: { type: "req", id: "1d", method: "browser.request" },
+      params: { method: "GET", path: "/tabs", query: { profile: "shared" } },
+      respond,
+      context: makeContext(),
+      client: null,
+      owner: userOwner,
+      isWebchatConnect: () => false,
+    });
+
+    expect(mocks.dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "GET",
+        path: "/tabs",
+        query: expect.objectContaining({ profile: "shared" }),
+      }),
+    );
+    expect(respond).toHaveBeenCalledWith(true, { ok: true });
   });
 
   it("injects default owned profile for non-admin browser requests", async () => {

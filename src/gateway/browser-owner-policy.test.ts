@@ -61,6 +61,34 @@ describe("enforceBrowserOwnerPolicy", () => {
     }
   });
 
+  it("denies encoded non-admin profile config mutations", () => {
+    const variants = [
+      "/profiles%2Fcreate",
+      "/profiles%5Ccreate",
+      "/profiles%252Fcreate",
+      "/profiles%255Ccreate",
+      "/profiles%25252Fcreate",
+      "/profiles%25255Ccreate",
+    ];
+    for (const path of variants) {
+      const result = enforceBrowserOwnerPolicy({
+        cfg: baseCfg,
+        owner: userOwner,
+        method: "POST",
+        path,
+        query: {},
+        body: { name: "new-profile" },
+      });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.message).toContain("admin-only");
+        expect((result.error.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+          "ROLE_FORBIDDEN",
+        );
+      }
+    }
+  });
+
   it("injects owned default profile when profile is omitted", () => {
     const result = enforceBrowserOwnerPolicy({
       cfg: baseCfg,
@@ -128,9 +156,30 @@ describe("enforceBrowserOwnerPolicy", () => {
     }
   });
 
-  it("allows shared profile access", () => {
+  it("denies shared profile access in strict mode", () => {
     const result = enforceBrowserOwnerPolicy({
       cfg: baseCfg,
+      owner: userOwner,
+      method: "GET",
+      path: "/tabs",
+      query: { profile: "shared" },
+      body: undefined,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.message).toContain("owner mismatch");
+      expect((result.error.details as { reasonCode?: string } | undefined)?.reasonCode).toBe(
+        "OWNER_MISMATCH",
+      );
+    }
+  });
+
+  it("allows shared profile access in compat mode", () => {
+    const result = enforceBrowserOwnerPolicy({
+      cfg: {
+        ...baseCfg,
+        gateway: { multiUser: { mode: "compat" } },
+      },
       owner: userOwner,
       method: "GET",
       path: "/tabs",
@@ -148,7 +197,7 @@ describe("enforceBrowserOwnerPolicy", () => {
         browser: {
           ...baseCfg.browser,
           profiles: {
-            ...(baseCfg.browser?.profiles ?? {}),
+            ...baseCfg.browser?.profiles,
             legacy: { cdpPort: 18820, color: "#22AA22" },
           },
           defaultProfile: "legacy",
@@ -171,7 +220,7 @@ describe("enforceBrowserOwnerPolicy", () => {
         browser: {
           ...baseCfg.browser,
           profiles: {
-            ...(baseCfg.browser?.profiles ?? {}),
+            ...baseCfg.browser?.profiles,
             chrome: {
               driver: "extension",
               cdpUrl: "http://127.0.0.1:19010",
@@ -204,7 +253,7 @@ describe("enforceBrowserOwnerPolicy", () => {
         browser: {
           ...baseCfg.browser,
           profiles: {
-            ...(baseCfg.browser?.profiles ?? {}),
+            ...baseCfg.browser?.profiles,
             chrome: {
               driver: "extension",
               cdpUrl: "http://127.0.0.1:19010",
@@ -246,7 +295,7 @@ describe("enforceBrowserOwnerPolicy", () => {
         browser: {
           ...baseCfg.browser,
           profiles: {
-            ...(baseCfg.browser?.profiles ?? {}),
+            ...baseCfg.browser?.profiles,
             chrome: {
               driver: "extension",
               cdpUrl: "http://127.0.0.1:19010",

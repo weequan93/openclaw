@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, vi } from "vitest";
 import { WebSocket } from "ws";
 import type { GatewayServerOptions } from "./server.js";
+import { resetSubagentRegistryForTests } from "../agents/subagent-registry.js";
 import { resolveMainSessionKeyFromConfig, type SessionEntry } from "../config/sessions.js";
 import { resetAgentRunContextForTest } from "../infra/agent-events.js";
 import {
@@ -47,6 +48,18 @@ let previousSkipCanvasHost: string | undefined;
 let previousBundledPluginsDir: string | undefined;
 let tempHome: string | undefined;
 let tempConfigRoot: string | undefined;
+
+async function cleanupGatewayRelativeSessionArtifacts() {
+  // Some tests intentionally use relative session.store templates such as
+  // "sessions/{ownerUserId}.json". Clean up generated local artifacts so
+  // test runs do not dirty the repo workspace.
+  await fs.rm(path.resolve("sessions"), {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 10,
+  });
+}
 
 export async function writeSessionStore(params: {
   entries: Record<string, Partial<SessionEntry>>;
@@ -143,11 +156,13 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   embeddedRunMock.waitResults.clear();
   drainSystemEvents(resolveMainSessionKeyFromConfig());
   resetAgentRunContextForTest();
+  resetSubagentRegistryForTests();
   const mod = await serverModulePromise;
   mod.__resetModelCatalogCacheForTest();
   piSdkMock.enabled = false;
   piSdkMock.discoverCalls = 0;
   piSdkMock.models = [];
+  await cleanupGatewayRelativeSessionArtifacts();
 }
 
 async function cleanupGatewayTestHome(options: { restoreEnv: boolean }) {
@@ -204,6 +219,7 @@ async function cleanupGatewayTestHome(options: { restoreEnv: boolean }) {
     });
     tempHome = undefined;
   }
+  await cleanupGatewayRelativeSessionArtifacts();
   tempConfigRoot = undefined;
 }
 

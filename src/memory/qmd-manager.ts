@@ -16,16 +16,16 @@ import { resolveStateDir } from "../config/paths.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import {
+  normalizeOwnerUserId,
+  resolveOwnedSessionFilesForAgent,
+  resolveOwnerPartitionedDirectory,
+} from "./owner-partition.js";
+import {
   listSessionFilesForAgent,
   buildSessionEntry,
   type SessionFileEntry,
 } from "./session-files.js";
 import { requireNodeSqlite } from "./sqlite.js";
-import {
-  normalizeOwnerUserId,
-  resolveOwnedSessionFilesForAgent,
-  resolveOwnerPartitionedDirectory,
-} from "./owner-partition.js";
 
 type SqliteDatabase = import("node:sqlite").DatabaseSync;
 import type { ResolvedMemoryBackendConfig, ResolvedQmdConfig } from "./backend-config.js";

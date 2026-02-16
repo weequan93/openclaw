@@ -167,12 +167,15 @@ function resolveSessionKeyFromSessionId(params: {
   cfg: OpenClawConfig;
   sessionId: string;
   agentId?: string;
+  ownerUserId?: string;
 }): string | null {
   const trimmed = params.sessionId.trim();
   if (!trimmed) {
     return null;
   }
-  const { store } = loadCombinedSessionStoreForGateway(params.cfg);
+  const { store } = loadCombinedSessionStoreForGateway(params.cfg, {
+    ownerUserId: params.ownerUserId,
+  });
   const match = Object.entries(store).find(([key, entry]) => {
     if (entry?.sessionId !== trimmed) {
       return false;
@@ -251,6 +254,7 @@ async function resolveModelOverride(params: {
 export function createSessionStatusTool(opts?: {
   agentSessionKey?: string;
   config?: OpenClawConfig;
+  ownerUserId?: string;
 }): AnyAgentTool {
   return {
     label: "Session Status",
@@ -263,6 +267,10 @@ export function createSessionStatusTool(opts?: {
       const cfg = opts?.config ?? loadConfig();
       const { mainKey, alias } = resolveMainSessionAlias(cfg);
       const a2aPolicy = createAgentToAgentPolicy(cfg);
+      const ownerUserId =
+        typeof opts?.ownerUserId === "string" && opts.ownerUserId.trim()
+          ? opts.ownerUserId.trim()
+          : undefined;
 
       const requestedKeyParam = readStringParam(params, "sessionKey");
       let requestedKeyRaw = requestedKeyParam ?? opts?.agentSessionKey;
@@ -296,7 +304,7 @@ export function createSessionStatusTool(opts?: {
       let agentId = isExplicitAgentKey
         ? resolveAgentIdFromSessionKey(requestedKeyRaw)
         : requesterAgentId;
-      let storePath = resolveStorePath(cfg.session?.store, { agentId });
+      let storePath = resolveStorePath(cfg.session?.store, { agentId, ownerUserId });
       let store = loadSessionStore(storePath);
 
       // Resolve against the requester-scoped store first to avoid leaking default agent data.
@@ -312,13 +320,14 @@ export function createSessionStatusTool(opts?: {
           cfg,
           sessionId: requestedKeyRaw,
           agentId: a2aPolicy.enabled ? undefined : requesterAgentId,
+          ownerUserId,
         });
         if (resolvedKey) {
           // If resolution points at another agent, enforce A2A policy before switching stores.
           ensureAgentAccess(resolveAgentIdFromSessionKey(resolvedKey));
           requestedKeyRaw = resolvedKey;
           agentId = resolveAgentIdFromSessionKey(resolvedKey);
-          storePath = resolveStorePath(cfg.session?.store, { agentId });
+          storePath = resolveStorePath(cfg.session?.store, { agentId, ownerUserId });
           store = loadSessionStore(storePath);
           resolved = resolveSessionEntry({
             store,

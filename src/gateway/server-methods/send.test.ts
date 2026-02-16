@@ -313,7 +313,9 @@ describe("gateway send mirroring", () => {
   });
 
   it("stamps owner on explicit session mirroring for owner-restricted callers", async () => {
-    mocks.deliverOutboundPayloads.mockResolvedValue([{ messageId: "m-owner-explicit", channel: "slack" }]);
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      { messageId: "m-owner-explicit", channel: "slack" },
+    ]);
     mocks.loadSessionEntry.mockReturnValueOnce({
       entry: { sessionId: "sess-explicit" },
       canonicalKey: "agent:main:main",
@@ -355,7 +357,9 @@ describe("gateway send mirroring", () => {
   });
 
   it("stamps owner on derived route mirroring for owner-restricted callers", async () => {
-    mocks.deliverOutboundPayloads.mockResolvedValue([{ messageId: "m-owner-derived", channel: "slack" }]);
+    mocks.deliverOutboundPayloads.mockResolvedValue([
+      { messageId: "m-owner-derived", channel: "slack" },
+    ]);
     mocks.loadSessionEntry.mockReturnValueOnce({
       entry: { sessionId: "sess-derived" },
       canonicalKey: "agent:main:slack:channel:resolved",

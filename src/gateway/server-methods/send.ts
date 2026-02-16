@@ -20,7 +20,11 @@ import {
   validatePollParams,
   validateSendParams,
 } from "../protocol/index.js";
-import { assertSessionAccess, isOwnerRestrictedPrincipal, stampSessionOwner } from "../session-owner.js";
+import {
+  assertSessionAccess,
+  isOwnerRestrictedPrincipal,
+  stampSessionOwner,
+} from "../session-owner.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 
@@ -119,6 +123,7 @@ export const sendHandlers: GatewayRequestHandlers = {
     const work = (async (): Promise<InflightResult> => {
       try {
         const cfg = loadConfig();
+        const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
         const resolved = resolveOutboundTarget({
           channel: outboundChannel,
           to,
@@ -167,7 +172,9 @@ export const sendHandlers: GatewayRequestHandlers = {
             ? request.sessionKey.trim().toLowerCase()
             : undefined;
         if (providedSessionKey) {
-          const { entry, canonicalKey, storePath } = loadSessionEntry(providedSessionKey);
+          const { entry, canonicalKey, storePath } = loadSessionEntry(providedSessionKey, {
+            ownerUserId,
+          });
           const access = assertSessionAccess({
             owner,
             entry,
@@ -196,7 +203,9 @@ export const sendHandlers: GatewayRequestHandlers = {
             })
           : null;
         if (derivedRoute) {
-          const { entry, canonicalKey, storePath } = loadSessionEntry(derivedRoute.sessionKey);
+          const { entry, canonicalKey, storePath } = loadSessionEntry(derivedRoute.sessionKey, {
+            ownerUserId,
+          });
           const access = assertSessionAccess({
             owner,
             entry,

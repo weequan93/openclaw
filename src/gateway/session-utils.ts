@@ -31,11 +31,11 @@ import {
 } from "../routing/session-key.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { normalizeSessionDeliveryFields } from "../utils/delivery-context.js";
+import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 import {
   readFirstUserMessageFromTranscript,
   readLastMessagePreviewFromTranscript,
 } from "./session-utils.fs.js";
-import { hasGatewayDelegatedAccess } from "./delegation-policy.js";
 
 export {
   archiveFileOnDisk,
@@ -182,15 +182,24 @@ export function deriveSessionTitle(
   return undefined;
 }
 
-export function loadSessionEntry(sessionKey: string) {
+export function loadSessionEntry(
+  sessionKey: string,
+  opts?: {
+    ownerUserId?: string;
+  },
+) {
   const cfg = loadConfig();
-  const sessionCfg = cfg.session;
-  const canonicalKey = resolveSessionStoreKey({ cfg, sessionKey });
-  const agentId = resolveSessionStoreAgentId(cfg, canonicalKey);
-  const storePath = resolveStorePath(sessionCfg?.store, { agentId });
+  const target = resolveGatewaySessionStoreTarget({
+    cfg,
+    key: sessionKey,
+    ownerUserId: opts?.ownerUserId,
+  });
+  const canonicalKey = target.canonicalKey;
+  const storePath = target.storePath;
   const store = loadSessionStore(storePath);
-  const entry = store[canonicalKey];
-  return { cfg, storePath, store, entry, canonicalKey };
+  const entry =
+    target.storeKeys.map((candidate) => store[candidate]).find(Boolean) ?? store[canonicalKey];
+  return { cfg, storePath, store, entry, canonicalKey, agentId: target.agentId };
 }
 
 export function classifySessionKey(key: string, entry?: SessionEntry): GatewaySessionRow["kind"] {
@@ -435,7 +444,85 @@ function canonicalizeSpawnedByForAgent(agentId: string, spawnedBy?: string): str
   return `agent:${normalizeAgentId(agentId)}:${raw}`;
 }
 
-export function resolveGatewaySessionStoreTarget(params: { cfg: OpenClawConfig; key: string }): {
+function normalizeToken(raw: unknown): string | undefined {
+  if (typeof raw !== "string") {
+    return undefined;
+  }
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function listDelegatedSessionOwnerUserIds(cfg: OpenClawConfig, ownerUserId: string): string[] {
+  const delegation = cfg.gateway?.multiUser?.delegation;
+  if (!delegation || delegation.enabled !== true) {
+    return [];
+  }
+  const delegated = new Set<string>();
+  const rules = Array.isArray(delegation.rules) ? delegation.rules : [];
+  for (const rule of rules) {
+    const fromUserId = normalizeToken((rule as { fromUserId?: unknown }).fromUserId);
+    const toUserId = normalizeToken((rule as { toUserId?: unknown }).toUserId);
+    if (!fromUserId || !toUserId || fromUserId !== ownerUserId) {
+      continue;
+    }
+    const resources = Array.isArray((rule as { resources?: unknown }).resources)
+      ? ((rule as { resources?: unknown }).resources as unknown[])
+      : undefined;
+    const allowsSessions =
+      !resources || resources.length === 0 || resources.some((resource) => resource === "sessions");
+    if (!allowsSessions) {
+      continue;
+    }
+    delegated.add(toUserId);
+  }
+  return Array.from(delegated);
+}
+
+function resolveSessionStoreOwnerCandidates(params: {
+  cfg: OpenClawConfig;
+  storeConfig?: string;
+  ownerUserId?: string;
+}): Array<string | undefined> {
+  const ownerUserId = normalizeToken(params.ownerUserId);
+  if (!ownerUserId) {
+    return [undefined];
+  }
+  if (!params.storeConfig?.includes("{ownerUserId}")) {
+    return [ownerUserId];
+  }
+  const candidates = [ownerUserId, ...listDelegatedSessionOwnerUserIds(params.cfg, ownerUserId)];
+  return Array.from(new Set(candidates));
+}
+
+function resolveSessionStorePathCandidates(params: {
+  cfg: OpenClawConfig;
+  storeConfig?: string;
+  agentId: string;
+  ownerUserId?: string;
+}): Array<{ storePath: string; ownerUserId?: string }> {
+  const ownerCandidates = resolveSessionStoreOwnerCandidates({
+    cfg: params.cfg,
+    storeConfig: params.storeConfig,
+    ownerUserId: params.ownerUserId,
+  });
+  const uniqueByPath = new Map<string, { storePath: string; ownerUserId?: string }>();
+  for (const ownerUserId of ownerCandidates) {
+    const storePath = resolveStorePath(params.storeConfig, {
+      agentId: params.agentId,
+      ownerUserId,
+    });
+    if (!uniqueByPath.has(storePath)) {
+      uniqueByPath.set(storePath, { storePath, ownerUserId });
+    }
+  }
+  return Array.from(uniqueByPath.values());
+}
+
+export function resolveGatewaySessionStoreTarget(params: {
+  cfg: OpenClawConfig;
+  key: string;
+  ownerUserId?: string;
+}): {
   agentId: string;
   storePath: string;
   canonicalKey: string;
@@ -447,24 +534,52 @@ export function resolveGatewaySessionStoreTarget(params: { cfg: OpenClawConfig; 
     sessionKey: key,
   });
   const agentId = resolveSessionStoreAgentId(params.cfg, canonicalKey);
-  const storeConfig = params.cfg.session?.store;
-  const storePath = resolveStorePath(storeConfig, { agentId });
-
+  const storeKeys = new Set<string>();
   if (canonicalKey === "global" || canonicalKey === "unknown") {
-    const storeKeys = key && key !== canonicalKey ? [canonicalKey, key] : [key];
-    return { agentId, storePath, canonicalKey, storeKeys };
+    storeKeys.add(canonicalKey);
+    if (key && key !== canonicalKey) {
+      storeKeys.add(key);
+    }
+  } else {
+    storeKeys.add(canonicalKey);
+    if (key && key !== canonicalKey) {
+      storeKeys.add(key);
+    }
   }
 
-  const storeKeys = new Set<string>();
-  storeKeys.add(canonicalKey);
-  if (key && key !== canonicalKey) {
+  const storeConfig = params.cfg.session?.store;
+  const storePathCandidates = resolveSessionStorePathCandidates({
+    cfg: params.cfg,
+    storeConfig,
+    agentId,
+    ownerUserId: params.ownerUserId,
+  });
+  let storePath = storePathCandidates[0]?.storePath;
+  const candidates = Array.from(storeKeys);
+  if (storePathCandidates.length > 1 && candidates.length > 0) {
+    for (const candidate of storePathCandidates) {
+      const store = loadSessionStore(candidate.storePath);
+      if (candidates.some((sessionKey) => Boolean(store[sessionKey]))) {
+        storePath = candidate.storePath;
+        break;
+      }
+    }
+  }
+  if (!storePath) {
+    storePath = resolveStorePath(storeConfig, {
+      agentId,
+      ownerUserId: params.ownerUserId,
+    });
+  }
+
+  if (key && key !== canonicalKey && !storeKeys.has(key)) {
     storeKeys.add(key);
   }
   return {
     agentId,
     storePath,
     canonicalKey,
-    storeKeys: Array.from(storeKeys),
+    storeKeys: candidates.length > 0 ? candidates : Array.from(storeKeys),
   };
 }
 
@@ -493,46 +608,71 @@ function mergeSessionEntryIntoCombined(params: {
   }
 }
 
-export function loadCombinedSessionStoreForGateway(cfg: OpenClawConfig): {
+export function loadCombinedSessionStoreForGateway(
+  cfg: OpenClawConfig,
+  opts?: { ownerUserId?: string },
+): {
   storePath: string;
   store: Record<string, SessionEntry>;
 } {
   const storeConfig = cfg.session?.store;
   if (storeConfig && !isStorePathTemplate(storeConfig)) {
-    const storePath = resolveStorePath(storeConfig);
     const defaultAgentId = normalizeAgentId(resolveDefaultAgentId(cfg));
-    const store = loadSessionStore(storePath);
+    const storePathCandidates = resolveSessionStorePathCandidates({
+      cfg,
+      storeConfig,
+      agentId: defaultAgentId,
+      ownerUserId: opts?.ownerUserId,
+    });
     const combined: Record<string, SessionEntry> = {};
-    for (const [key, entry] of Object.entries(store)) {
-      const canonicalKey = canonicalizeSessionKeyForAgent(defaultAgentId, key);
-      mergeSessionEntryIntoCombined({
-        combined,
-        entry,
-        agentId: defaultAgentId,
-        canonicalKey,
-      });
+    for (const candidate of storePathCandidates) {
+      const store = loadSessionStore(candidate.storePath);
+      for (const [key, entry] of Object.entries(store)) {
+        const canonicalKey = canonicalizeSessionKeyForAgent(defaultAgentId, key);
+        mergeSessionEntryIntoCombined({
+          combined,
+          entry,
+          agentId: defaultAgentId,
+          canonicalKey,
+        });
+      }
     }
+    const storePath =
+      storePathCandidates.length === 1
+        ? (storePathCandidates[0]?.storePath ?? resolveStorePath(storeConfig))
+        : "(multiple)";
     return { storePath, store: combined };
   }
 
   const agentIds = listConfiguredAgentIds(cfg);
   const combined: Record<string, SessionEntry> = {};
+  const loadedStorePaths = new Set<string>();
   for (const agentId of agentIds) {
-    const storePath = resolveStorePath(storeConfig, { agentId });
-    const store = loadSessionStore(storePath);
-    for (const [key, entry] of Object.entries(store)) {
-      const canonicalKey = canonicalizeSessionKeyForAgent(agentId, key);
-      mergeSessionEntryIntoCombined({
-        combined,
-        entry,
-        agentId,
-        canonicalKey,
-      });
+    const storePathCandidates = resolveSessionStorePathCandidates({
+      cfg,
+      storeConfig,
+      agentId,
+      ownerUserId: opts?.ownerUserId,
+    });
+    for (const candidate of storePathCandidates) {
+      if (loadedStorePaths.has(candidate.storePath)) {
+        continue;
+      }
+      loadedStorePaths.add(candidate.storePath);
+      const store = loadSessionStore(candidate.storePath);
+      for (const [key, entry] of Object.entries(store)) {
+        const canonicalKey = canonicalizeSessionKeyForAgent(agentId, key);
+        mergeSessionEntryIntoCombined({
+          combined,
+          entry,
+          agentId,
+          canonicalKey,
+        });
+      }
     }
   }
 
-  const storePath =
-    typeof storeConfig === "string" && storeConfig.trim() ? storeConfig.trim() : "(multiple)";
+  const storePath = loadedStorePaths.size === 1 ? Array.from(loadedStorePaths)[0] : "(multiple)";
   return { storePath, store: combined };
 }
 

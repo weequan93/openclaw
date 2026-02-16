@@ -47,6 +47,19 @@ import {
 import { applySessionsPatchToStore } from "../sessions-patch.js";
 import { resolveSessionKeyFromResolveParams } from "../sessions-resolve.js";
 
+function resolveRequestedSessionOwnerUserId(params: {
+  owner: Parameters<typeof isOwnerRestrictedPrincipal>[0];
+  cfg: Parameters<typeof isOwnerRestrictedPrincipal>[1];
+  requestedOwnerUserId?: string;
+}): string | undefined {
+  if (isOwnerRestrictedPrincipal(params.owner, params.cfg)) {
+    return params.owner?.userId;
+  }
+  const requested =
+    typeof params.requestedOwnerUserId === "string" ? params.requestedOwnerUserId.trim() : "";
+  return requested.length > 0 ? requested : undefined;
+}
+
 export const sessionsHandlers: GatewayRequestHandlers = {
   "sessions.list": ({ params, respond, owner }) => {
     if (!validateSessionsListParams(params)) {
@@ -62,8 +75,12 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const cfg = loadConfig();
-    const { storePath, store } = loadCombinedSessionStoreForGateway(cfg);
-    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const ownerUserId = resolveRequestedSessionOwnerUserId({
+      cfg,
+      owner,
+      requestedOwnerUserId: p.ownerUserId,
+    });
+    const { storePath, store } = loadCombinedSessionStoreForGateway(cfg, { ownerUserId });
     const result = listSessionsFromStore({
       cfg,
       storePath,
@@ -108,12 +125,13 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
     const storeCache = new Map<string, Record<string, SessionEntry>>();
     const previews: SessionsPreviewEntry[] = [];
 
     for (const key of keys) {
       try {
-        const target = resolveGatewaySessionStoreTarget({ cfg, key });
+        const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
         const store = storeCache.get(target.storePath) ?? loadSessionStore(target.storePath);
         storeCache.set(target.storePath, store);
         const entry =
@@ -167,7 +185,11 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
     const p = params;
     const cfg = loadConfig();
-    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const ownerUserId = resolveRequestedSessionOwnerUserId({
+      cfg,
+      owner,
+      requestedOwnerUserId: p.ownerUserId,
+    });
 
     const resolved = resolveSessionKeyFromResolveParams({ cfg, p, ownerUserId });
     if (!resolved.ok) {
@@ -176,7 +198,7 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
     const access = assertSessionAccess({
       owner,
-      entry: loadSessionEntry(resolved.key).entry,
+      entry: loadSessionEntry(resolved.key, { ownerUserId }).entry,
       sessionKey: resolved.key,
       cfg,
     });
@@ -206,7 +228,8 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
-    const target = resolveGatewaySessionStoreTarget({ cfg, key });
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
     const storePath = target.storePath;
     const ownerCheckStore = loadSessionStore(storePath);
     const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
@@ -294,7 +317,8 @@ export const sessionsHandlers: GatewayRequestHandlers = {
     }
 
     const cfg = loadConfig();
-    const target = resolveGatewaySessionStoreTarget({ cfg, key });
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
     const storePath = target.storePath;
     const ownerCheckStore = loadSessionStore(storePath);
     const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);
@@ -369,7 +393,8 @@ export const sessionsHandlers: GatewayRequestHandlers = {
 
     const cfg = loadConfig();
     const mainKey = resolveMainSessionKey(cfg);
-    const target = resolveGatewaySessionStoreTarget({ cfg, key });
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
     if (target.canonicalKey === mainKey) {
       respond(
         false,
@@ -477,7 +502,8 @@ export const sessionsHandlers: GatewayRequestHandlers = {
         : 400;
 
     const cfg = loadConfig();
-    const target = resolveGatewaySessionStoreTarget({ cfg, key });
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
+    const target = resolveGatewaySessionStoreTarget({ cfg, key, ownerUserId });
     const storePath = target.storePath;
     const ownerCheckStore = loadSessionStore(storePath);
     const ownerCheckKey = target.storeKeys.find((candidate) => ownerCheckStore[candidate]);

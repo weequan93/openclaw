@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { MsgContext } from "../templating.js";
-import { callGateway } from "../../gateway/call.js";
 import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "../../gateway/authz-denied-events.js";
+import { callGateway } from "../../gateway/call.js";
 import { buildCommandContext, handleCommands } from "./commands.js";
 import { parseInlineDirectives } from "./directive-handling.js";
 

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { resolveMainSessionKeyFromConfig } from "../config/sessions.js";
 import { drainSystemEvents, peekSystemEvents } from "../infra/system-events.js";
 import {
@@ -9,10 +9,13 @@ import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "./authz-denied-events.js";
+import { createTestRegistry } from "./server/__tests__/test-utils.js";
 import {
   cronIsolatedRun,
   getFreePort,
   installGatewayTestHooks,
+  resetTestPluginRegistry,
+  setTestPluginRegistry,
   startGatewayServer,
   testState,
   waitForSystemEvent,
@@ -23,6 +26,64 @@ installGatewayTestHooks({ scope: "suite" });
 const resolveMainKey = () => resolveMainSessionKeyFromConfig();
 
 describe("gateway server hooks", () => {
+  test("routes /hooks before plugin HTTP handlers", async () => {
+    authzDeniedEventsTest.clear();
+    const routeHandler = vi.fn(
+      async (
+        _req: import("node:http").IncomingMessage,
+        res: import("node:http").ServerResponse,
+      ) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ source: "plugin-route" }));
+      },
+    );
+    setTestPluginRegistry(
+      createTestRegistry({
+        httpRoutes: [
+          {
+            pluginId: "demo",
+            path: "/hooks/wake",
+            handler: routeHandler,
+            source: "demo",
+          },
+        ],
+      }),
+    );
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        trustedProxies: ["127.0.0.1"],
+        multiUser: {
+          mode: "strict",
+        },
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer hook-secret",
+          "x-forwarded-for": "203.0.113.198",
+        },
+        body: JSON.stringify({ text: "nope" }),
+      });
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+      expect(routeHandler).not.toHaveBeenCalled();
+    } finally {
+      await server.close();
+      resetTestPluginRegistry();
+    }
+  });
+
   test("denies non-local requests in multi-user mode and records deny events", async () => {
     authzDeniedEventsTest.clear();
     testState.hooksConfig = { enabled: true, token: "hook-secret" };

@@ -1,11 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import type { MsgContext } from "../templating.js";
+import type { HandleCommandsParams } from "./commands-types.js";
 import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "../../gateway/authz-denied-events.js";
-import type { MsgContext } from "../templating.js";
-import type { HandleCommandsParams } from "./commands-types.js";
 import { handlePTTCommand } from "./commands-ptt.js";
 
 const callGatewayMock = vi.fn();

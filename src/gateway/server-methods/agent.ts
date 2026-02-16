@@ -95,6 +95,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       spawnedBy?: string;
     };
     const cfg = loadConfig();
+    const ownerUserId = isOwnerRestrictedPrincipal(owner, cfg) ? owner?.userId : undefined;
     const idem = request.idempotencyKey;
     const groupIdRaw = typeof request.groupId === "string" ? request.groupId.trim() : "";
     const groupChannelRaw =
@@ -232,7 +233,9 @@ export const agentHandlers: GatewayRequestHandlers = {
     let cfgForAgent: ReturnType<typeof loadConfig> | undefined;
 
     if (requestedSessionKey) {
-      const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(requestedSessionKey);
+      const { cfg, storePath, entry, canonicalKey } = loadSessionEntry(requestedSessionKey, {
+        ownerUserId,
+      });
       const sessionAccess = assertSessionAccess({
         owner,
         entry,
@@ -253,7 +256,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         | undefined;
       if (spawnedByValue && (!resolvedGroupId || !resolvedGroupChannel || !resolvedGroupSpace)) {
         try {
-          const parentEntry = loadSessionEntry(spawnedByValue)?.entry;
+          const parentEntry = loadSessionEntry(spawnedByValue, { ownerUserId })?.entry;
           inheritedGroup = {
             groupId: parentEntry?.groupId,
             groupChannel: parentEntry?.groupChannel,

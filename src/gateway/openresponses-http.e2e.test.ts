@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { HISTORY_CONTEXT_MARKER } from "../auto-reply/reply/history.js";
 import { CURRENT_MESSAGE_MARKER } from "../auto-reply/reply/mentions.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
@@ -10,7 +10,14 @@ import {
   __test as authzDeniedEventsTest,
   listGatewayAuthzDenyEvents,
 } from "./authz-denied-events.js";
-import { agentCommand, getFreePort, installGatewayTestHooks } from "./test-helpers.js";
+import { createTestRegistry } from "./server/__tests__/test-utils.js";
+import {
+  agentCommand,
+  getFreePort,
+  installGatewayTestHooks,
+  resetTestPluginRegistry,
+  setTestPluginRegistry,
+} from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -123,6 +130,64 @@ describe("OpenResponses HTTP API (e2e)", () => {
       await ensureResponseConsumed(res);
     } finally {
       await disabledServer.close({ reason: "test done" });
+    }
+  });
+
+  it("routes /v1/responses before plugin HTTP handlers", async () => {
+    authzDeniedEventsTest.clear();
+    const routeHandler = vi.fn(
+      async (
+        _req: import("node:http").IncomingMessage,
+        res: import("node:http").ServerResponse,
+      ) => {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "application/json; charset=utf-8");
+        res.end(JSON.stringify({ source: "plugin-route" }));
+      },
+    );
+    setTestPluginRegistry(
+      createTestRegistry({
+        httpRoutes: [
+          {
+            pluginId: "demo",
+            path: "/v1/responses",
+            handler: routeHandler,
+            source: "demo",
+          },
+        ],
+      }),
+    );
+
+    const { writeConfigFile } = await import("../config/config.js");
+    await writeConfigFile({
+      gateway: {
+        multiUser: {
+          mode: "strict",
+        },
+        trustedProxies: ["127.0.0.1"],
+      },
+      // oxlint-disable-next-line typescript/no-explicit-any
+    } as any);
+
+    const port = await getFreePort();
+    const server = await startServer(port);
+    try {
+      const res = await postResponses(
+        port,
+        {
+          model: "openclaw",
+          input: "hi",
+        },
+        { "x-forwarded-for": "203.0.113.161" },
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as { error?: { type?: string } };
+      expect(body.error?.type).toBe("forbidden");
+      expect(routeHandler).not.toHaveBeenCalled();
+      await ensureResponseConsumed(res);
+    } finally {
+      await server.close({ reason: "test done" });
+      resetTestPluginRegistry();
     }
   });
 

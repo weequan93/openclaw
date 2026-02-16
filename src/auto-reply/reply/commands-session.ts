@@ -1,6 +1,7 @@
 import type { SessionEntry } from "../../config/sessions.js";
 import type { CommandHandler } from "./commands-types.js";
 import { abortEmbeddedPiRun } from "../../agents/pi-embedded.js";
+import { resolveGatewayConfigAdminAccess } from "../../channels/plugins/config-writes.js";
 import { updateSessionStore } from "../../config/sessions.js";
 import { logVerbose } from "../../globals.js";
 import { createInternalHookEvent, triggerInternalHook } from "../../hooks/internal-hooks.js";
@@ -18,6 +19,21 @@ import {
 } from "./abort.js";
 import { recordCommandAuthzDeny } from "./command-authz-audit.js";
 import { clearSessionQueues } from "./queue.js";
+
+function hasGatewayIdentity(ctx: {
+  GatewayOwnerUserId?: string;
+  GatewayOwnerPrincipalId?: string;
+  GatewayOwnerRole?: string;
+  GatewayClientScopes?: string[];
+}): boolean {
+  return (
+    (typeof ctx.GatewayOwnerUserId === "string" && ctx.GatewayOwnerUserId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerPrincipalId === "string" &&
+      ctx.GatewayOwnerPrincipalId.trim().length > 0) ||
+    (typeof ctx.GatewayOwnerRole === "string" && ctx.GatewayOwnerRole.trim().length > 0) ||
+    (Array.isArray(ctx.GatewayClientScopes) && ctx.GatewayClientScopes.length > 0)
+  );
+}
 
 function resolveSessionEntryForKey(
   store: Record<string, SessionEntry> | undefined,
@@ -276,6 +292,24 @@ export const handleRestartCommand: CommandHandler = async (params, allowTextComm
       message: "/restart denied for unauthorized sender",
     });
     return { shouldContinue: false };
+  }
+  if (!resolveGatewayConfigAdminAccess({ ctx: params.ctx, cfg: params.cfg })) {
+    logVerbose(
+      `Denied /restart from non-admin gateway principal: ${params.ctx.GatewayOwnerPrincipalId ?? "<unknown>"}`,
+    );
+    recordCommandAuthzDeny({
+      ctx: params.ctx,
+      command: params.command,
+      method: "command.restart",
+      reasonCode: hasGatewayIdentity(params.ctx) ? "ROLE_FORBIDDEN" : "UNKNOWN_SENDER",
+      message: "/restart is admin-only in gateway user mode",
+    });
+    return {
+      shouldContinue: false,
+      reply: {
+        text: "⚠️ /restart is admin-only in gateway user mode.",
+      },
+    };
   }
   if (params.cfg.commands?.restart !== true) {
     return {

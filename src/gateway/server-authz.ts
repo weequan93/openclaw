@@ -46,7 +46,7 @@ function withReasonDetails(
 ): Record<string, unknown> {
   return {
     reasonCode,
-    ...(details ?? {}),
+    ...details,
   };
 }
 
@@ -99,24 +99,24 @@ export function authorizeGatewayMethod(params: {
     return deny({
       owner,
       reasonCode: GatewayDenyReasonCodes.ROLE_FORBIDDEN,
-      message: `unauthorized role: ${role}`,
-      details: { role },
+      message: "unauthorized role",
+      details: { role: owner.sourceRole },
     });
   }
   if (role === "node") {
     return deny({
       owner,
       reasonCode: GatewayDenyReasonCodes.ROLE_FORBIDDEN,
-      message: `unauthorized role: ${role}`,
-      details: { role },
+      message: "unauthorized role",
+      details: { role: owner.sourceRole },
     });
   }
   if (role !== "operator") {
     return deny({
       owner,
       reasonCode: GatewayDenyReasonCodes.ROLE_FORBIDDEN,
-      message: `unauthorized role: ${role}`,
-      details: { role },
+      message: "unauthorized role",
+      details: { role: owner.sourceRole },
     });
   }
   if (hasAdminScope && isAdminPrincipal) {
