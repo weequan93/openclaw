@@ -550,6 +550,8 @@ These existing features should be treated as enhancement targets because they ar
 
 ### P0 security boundary first
 
+Status: completed and verified on February 17, 2026.
+
 1. Remove implicit admin scope fallback at connect time.
    Scope: enforce explicit role and scopes, deny when missing.
    Target files: `src/gateway/server/ws-connection/message-handler.ts`, `src/gateway/protocol/schema/frames.ts`, `src/gateway/server-methods.ts`.
